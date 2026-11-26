@@ -252,14 +252,20 @@ def _remember_items(items: dict, name: str, out: dict):
             items["products"] = ([cur] + [x for x in items.get("products", []) if x["id"] != cur["id"]])[:10]
 
 
-def render(text: str) -> tuple[str, list[dict], list[str]]:
-    """Убирает служебные метки из текста и собирает карточки товаров и кнопки выбора."""
+def render(text: str, offers_seen=None) -> tuple[str, list[dict], list[str]]:
+    """Убирает служебные метки из текста и собирает карточки товаров и кнопки выбора.
+
+    offers_seen: id вариантов, которые инструменты показали в этом диалоге. Карточка варианта строится только по ним:
+    модель могла поставить в метку id продукта или чужое число, и тогда клиент увидел бы чужой товар с чужой ценой.
+    """
     cards, seen, offers = [], set(), []
     for kind, ident in _MARK.findall(text):
         if (kind, ident) in seen:
             continue
         seen.add((kind, ident))
         try:
+            if kind == "offer" and offers_seen is not None and ident not in offers_seen:
+                continue
             if kind == "offer":
                 o = catalog.get_offer(int(ident))
                 if o:
@@ -484,7 +490,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
         saved = tools.save_facts(ctx, facts, from_model=True)
         store.add_step(sid, turn, "tool", "note_facts", facts, saved)
         trace.append({"kind": "tool", "name": "note_facts", "input": facts, "output": saved})
-    clean, cards, choices = render(reply)
+    clean, cards, choices = render(reply, set(positions))
     if not clean.strip():  # ответа нет или в нем одни служебные метки: пустое сообщение клиенту не уходит
         clean, cards, choices = FALLBACK, [], []
         if store.open_handoff(sid) is None:  # не статус с начала хода: заявку мог завести инструмент в этом ходе
