@@ -80,7 +80,7 @@ function card(h, now) {
   const due = done ? STATUS[h.status] : h.from_run ? "диалог проверочного прогона"
     : late ? `просрочено на ${span(left)}` : `ответить до ${left > 12 * 3600 ? dt(c.sla_due) : hm(c.sla_due)} МСК, осталось ${span(left)}`;
   const kv = (o) => Object.entries(o).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ");
-  const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}`).join("<br>");
+  const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}${o.list_price ? ` (со скидкой ${num(o.discount_percent)}%, по каталогу ${rub(o.list_price)})` : ""}`).join("<br>");
   const money = [c.calc_total ? `расчет ${rub(c.calc_total)}` : "", c.quote ? `${c.quote.url ? `<a href="${esc(c.quote.url)}" target="_blank" rel="noopener">черновик ${esc(c.quote.number)}</a>` : `черновик ${esc(c.quote.number)}`} на ${rub(c.quote.total)}${c.quote.url ? "" : ", КП доступен оператору"}` : ""].filter(Boolean).join(" · ");
   const client = [kv(c.client), c.client["контакт"] || h.from_run || done ? "" : '<em class="nc">контакта нет: ответьте здесь, клиент увидит ответ в чате сайта</em>'].filter(Boolean).join("<br>");
   const rows = [
