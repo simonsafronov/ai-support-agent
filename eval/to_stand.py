@@ -2,9 +2,11 @@
 
     python -m eval.to_stand eval/runs/full5            # каталог прогона: в нем или в подкаталогах лежат app.sqlite
     python -m eval.to_stand eval/runs/full5 --replace  # сначала убрать со стенда диалоги прошлых прогонов
+    python -m eval.to_stand --requote                  # пересобрать все КП стенда после правки бланка
 
 Диалоги, шаги агента и обращения копируются как есть. Черновики КП формируются заново кодом стенда, чтобы
 номер, файл PDF и запись в базе совпадали: в прогоне, разбитом на части, номера КП у частей пересекаются.
+Скидка в КП та, что агент дал в диалоге: она лежит в памяти диалога.
 Контакт клиента в памяти диалога и в обращении берется из его сообщений тем же кодом, что на стенде.
 Повторный запуск уже перенесенные диалоги не трогает. Диалоги живых посетителей стенда не затрагиваются.
 """
@@ -33,20 +35,33 @@ def _copy(src: sqlite3.Connection, dst: sqlite3.Connection, table: str, where: s
     dst.executemany(f"INSERT INTO {table}({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})", rows)
 
 
-def _requote(src: sqlite3.Connection, dst: sqlite3.Connection, session: sqlite3.Row) -> int:
-    """КП диалога заново: позиции из последнего вызова make_quote, реквизиты из памяти диалога."""
-    sid = session["id"]
-    old = src.execute("SELECT number FROM quotes WHERE session_id=? ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
-    step = src.execute("SELECT input_json FROM steps WHERE session_id=? AND kind='tool' AND name='make_quote' "
+def requote(sid: str) -> dict | None:
+    """КП диалога заново текущим бланком: позиции из последнего вызова make_quote, реквизиты и скидка из памяти."""
+    dst = store.db()
+    step = dst.execute("SELECT input_json FROM steps WHERE session_id=? AND kind='tool' AND name='make_quote' "
                        "ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
-    if not old or not step:
-        return 0
-    args = json.loads(step["input_json"])
+    if not step:
+        return None
+    args = json.loads(step[0])
     facts = json.loads(dst.execute("SELECT facts_json FROM sessions WHERE id=?", (sid,)).fetchone()[0] or "{}")
     res = kp.make_quote(sid, facts.get("компания") or args.get("customer", ""), args.get("items") or [],
                         inn=facts.get("ИНН", ""), kpp=facts.get("КПП", ""), payment=args.get("payment", ""),
-                        contact=facts.get("контакт", ""))
-    if not res.get("ok"):
+                        contact=facts.get("контакт", ""), discount_percent=str(facts.get("скидка", "0")).rstrip("% "))
+    return res if res.get("ok") else None
+
+
+def requote_all() -> int:
+    """Все КП стенда заново: номера остаются, файлы и суммы обновляются."""
+    sessions = [r[0] for r in store.db().execute("SELECT DISTINCT session_id FROM quotes").fetchall()]
+    return sum(1 for sid in sessions if requote(sid))
+
+
+def _requote(src: sqlite3.Connection, dst: sqlite3.Connection, session: sqlite3.Row) -> int:
+    """КП перенесенного диалога: номер прогона во всех его сообщениях меняется на номер стенда."""
+    sid = session["id"]
+    old = src.execute("SELECT number FROM quotes WHERE session_id=? ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+    res = requote(sid) if old else None
+    if not res:
         return 0
     for table, column in (("messages", "meta_json"), ("messages", "content"), ("steps", "output_json"),
                           ("handoffs", "summary")):
@@ -101,6 +116,8 @@ def load(run_dir: Path) -> dict:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--requote"]:
+        sys.exit(print(json.dumps({"requoted": requote_all()}, ensure_ascii=False)))
     args = [a for a in sys.argv[1:] if a != "--replace"]
     if len(args) != 1:
         sys.exit(__doc__)

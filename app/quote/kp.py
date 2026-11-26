@@ -68,7 +68,10 @@ LEFT, RIGHT = 35.5, 567.0  # края таблицы в шаблоне, по н�
 WIDTH = RIGHT - LEFT
 TOP, BOTTOM = 41.9, 752.0  # верх логотипа и низ поля текста (ниже слоган), от верхнего края листа
 TOP_NEXT = 88.0  # верх поля текста на второй и следующих страницах
-COLS = (90.0, 186.0, 35.5, 72.0, 76.0, 72.0)  # артикул, наименование, кол-во, цена, сумма, НДС
+COLS = {"code": 90.0, "name": 167.5, "qty": 42.0, "price": 72.0, "sum": 76.0, "vat": 84.0}  # в сумме WIDTH
+HEAD = (("code", "Артикул"), ("name", "Наименование"), ("qty", "Кол-во"), ("price", "Цена, руб."),
+        ("sum", "Сумма, руб."), ("vat", "В т.ч. НДС, руб."))  # заголовки шаблона, каждый в одну строку
+MINUS = "−"
 PAD = 4.0  # поля ячейки слева и справа
 BRAND = colors.HexColor("#9F1A2F")  # красный из логотипа
 BRAND_TINT = colors.HexColor("#FAF1F2")
@@ -91,6 +94,7 @@ S_QTY = _style("qty", alignment=TA_CENTER)
 S_NUM = _style("num", alignment=TA_RIGHT)
 S_NUM_BOLD = _style("num-bold", "Inter-Bold", alignment=TA_RIGHT)
 S_TOTAL = _style("total", "Inter-Bold", 9, alignment=TA_CENTER)
+S_SUBTOTAL = _style("subtotal", alignment=TA_CENTER)
 S_FOOTNOTE = _style("footnote", size=7, alignment=TA_RIGHT, textColor=GREY)
 S_TERMS = _style("terms", leading=12.5, leftIndent=43.1)
 S_DRAFT = _style("draft", size=9, leading=13)
@@ -145,6 +149,17 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+def _vat(amount: Decimal | None, registry: bool) -> Decimal | str | None:
+    """НДС в том числе: у ПО из реестра его нет, у суммы по запросу он неизвестен."""
+    if registry:
+        return NO_VAT
+    return _money(amount * VAT_RATE / (100 + VAT_RATE)) if amount is not None else None
+
+
+def _percent(value: Decimal) -> str:
+    return f"{float(value):g}".replace(".", ",")
+
+
 def _fmt(value: Decimal) -> str:
     """1054.17 -> «1 054,17»."""
     return f"{value:,.2f}".replace(",", NBSP).replace(".", ",")
@@ -160,6 +175,12 @@ def _clean(text) -> str:
 
 def _sentence(text: str) -> str:
     return text.rstrip(" .") + "."
+
+
+def _totals(rows: list[dict]) -> tuple[Decimal, Decimal]:
+    """Сумма и НДС по строкам: без позиций по запросу и без строк, где НДС нет."""
+    return (sum((r["sum"] for r in rows if r["sum"] is not None), Decimal(0)),
+            sum((r["vat"] for r in rows if isinstance(r["vat"], Decimal)), Decimal(0)))
 
 
 def _error(text: str) -> dict:
@@ -227,22 +248,20 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         if not offer:
             problems.append(f"позиция {n}: offer_id {offer_id} не найден в каталоге, возьмите id из get_product")
             continue
-        price = _price(offer.get("price"))
-        if price is not None and discount:
-            price = discounted(price, discount)
+        list_price = _price(offer.get("price"))
+        price = discounted(list_price, discount) if list_price is not None and discount else list_price
         amount = _money(price * qty) if price is not None else None
-        if _clean(offer.get("registry_no")):
-            vat = NO_VAT
-        else:
-            vat = _money(amount * VAT_RATE / (100 + VAT_RATE)) if amount is not None else None
+        list_sum = _money(list_price * qty) if list_price is not None else None
+        registry = bool(_clean(offer.get("registry_no")))
         lines.append({"offer_id": offer_id, "name": _clean(offer.get("name")).strip(" ,;"),
                       "vendor_code": _clean(offer.get("vendor_code")), "qty": qty, "price": price, "sum": amount,
-                      "vat": vat, "available": bool(offer.get("available"))})
+                      "vat": _vat(amount, registry), "available": bool(offer.get("available")),
+                      "list": {"price": list_price, "sum": list_sum, "vat": _vat(list_sum, registry)}})
     if problems:
         return _error("КП не сформировано, исправьте и повторите: " + "; ".join(problems) + ".")
 
-    total = sum((ln["sum"] for ln in lines if ln["sum"] is not None), Decimal(0))
-    vat_total = sum((ln["vat"] for ln in lines if isinstance(ln["vat"], Decimal)), Decimal(0))
+    total, vat_total = _totals(lines)
+    list_total, list_vat_total = _totals([ln["list"] for ln in lines])
     on_request = any(ln["price"] is None for ln in lines)
     today = datetime.now(MSK).date()
     quote = {
@@ -251,9 +270,9 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         "date": today.strftime("%d.%m.%Y"), "valid_until": (today + timedelta(days=VALID_DAYS)).strftime("%d.%m.%Y"),
         "lines": lines, "total": total, "vat_total": vat_total, "has_price_on_request": on_request,
         "has_unavailable": any(not ln["available"] and ln["price"] is not None for ln in lines),
-        "discount": discount,
+        "discount": discount, "list_total": list_total, "list_vat_total": list_vat_total,
     }
-    out_items = [{**ln, "price": _num(ln["price"]), "sum": _num(ln["sum"]),
+    out_items = [{**{k: v for k, v in ln.items() if k != "list"}, "price": _num(ln["price"]), "sum": _num(ln["sum"]),
                   "vat": _num(ln["vat"]) if isinstance(ln["vat"], Decimal) else ln["vat"]} for ln in lines]
 
     with _NUMBER_LOCK:  # номер, файл и запись идут вместе, чтобы два КП не получили один номер
@@ -278,9 +297,11 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
     missing = requisites(customer, inn, kpp)[2]
     wrong = [name for name, given, kept in (("ИНН", given_inn, inn), ("КПП", given_kpp, kpp)) if given and not kept
              and not (name == "КПП" and len(inn) == 12)]
-    note = QUOTE_NOTE
-    if discount:
-        note += f" Цены в КП указаны со скидкой {float(discount):g}%."
+    note, saved = QUOTE_NOTE, {}
+    if discount and list_total > total:
+        note += (f" Цены и суммы в этом ответе указаны со скидкой {float(discount):g}%. В документе клиент видит "
+                 "цены каталога, сумму без скидки, скидку и итог.")
+        saved = {"total_without_discount": float(list_total), "discount_sum": float(list_total - total)}
     if Decimal(str(discount_percent or 0)) > discount:
         note += (f" Сами вы даете не больше {config.AGENT_DISCOUNT_MAX:g}%: скидку больше согласует менеджер, "
                  "передайте ему запрос.")
@@ -295,6 +316,7 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
             "url": f"/quotes/{number}.pdf", "file": str(path), "date": quote["date"],
             "valid_until": quote["valid_until"], "customer": customer, "items": out_items, "total": float(total),
             "vat_total": float(vat_total), "has_price_on_request": on_request, "discount_percent": float(discount),
+            **saved,
             "needs_availability_check": [ln["name"] for ln in lines if not ln["available"] and ln["price"] is not None],
             "note": note}
 
@@ -329,40 +351,68 @@ def _wrap_code(code: str, width: float, style: ParagraphStyle) -> Paragraph:
     return Paragraph("<br/>".join(escape(r.rstrip()) for r in rows if r.strip()), style)
 
 
+def column_widths(with_article: bool) -> dict:
+    """Ширины колонок; без артикулов графа «Артикул» не печатается, ее место занимает наименование."""
+    widths = dict(COLS)
+    if not with_article:
+        widths["name"] += widths.pop("code")
+    return widths
+
+
 def _items_table(q: dict) -> Table:
-    inner = [w - 2 * PAD for w in COLS]
-    data = [[Paragraph(t, S_HEAD) for t in ("Артикул", "Наименование", "Кол-<br/>во", "Цена, руб.", "Сумма, руб.",
-                                             "В т.ч. НДС,<br/>руб.")]]
-    for ln in q["lines"]:
-        priced = ln["price"] is not None
-        vat = _fmt(ln["vat"]) if isinstance(ln["vat"], Decimal) else (ln["vat"] or "—")
-        data.append([_wrap_code(ln["vendor_code"], inner[0], S_CODE), Paragraph(escape(ln["name"]), S_NAME),
-                     _fit(str(ln["qty"]), inner[2], S_QTY),
-                     _fit(_fmt(ln["price"]) if priced else ON_REQUEST, inner[3], S_NUM),
-                     _fit(_fmt(ln["sum"]) if priced else ON_REQUEST, inner[4], S_NUM),
-                     _fit(vat, inner[5], S_NUM)])
-    vats = [ln["vat"] for ln in q["lines"]]
-    if any(isinstance(v, Decimal) for v in vats):
-        vat_total = _fmt(q["vat_total"])
-    else:
-        vat_total = NO_VAT if all(v == NO_VAT for v in vats) else "—"
-    has_sum = any(ln["sum"] is not None for ln in q["lines"])
-    total_name = f"Итого со скидкой {float(q['discount']):g}%" if q.get("discount") else "Итого"
-    data.append(["", Paragraph(total_name, S_TOTAL), "", "",
-                 _fit(_fmt(q["total"]) if has_sum else ON_REQUEST, inner[4], S_NUM_BOLD),
-                 _fit(vat_total, inner[5], S_NUM_BOLD)])
-    data.append([Paragraph(VAT_FOOTNOTE, S_FOOTNOTE), "", "", "", "", ""])
-    return Table(data, colWidths=COLS, repeatRows=1, style=[
+    lines = q["lines"]
+    widths = column_widths(any(ln["vendor_code"] for ln in lines))
+    inner = {key: w - 2 * PAD for key, w in widths.items()}
+
+    def row(**cells) -> list:
+        return [cells.get(key, "") for key in widths]
+
+    def money_cells(amount: str, vat: str, style: ParagraphStyle) -> dict:
+        return {"sum": _fit(amount, inner["sum"], style), "vat": _fit(vat, inner["vat"], style)}
+
+    def vat_text(rows: list[dict], vat_sum: Decimal, sign: str = "") -> str:
+        """НДС итоговой строки: сумма, а когда складывать нечего, «Без НДС» или прочерк."""
+        vats = [r["vat"] for r in rows]
+        if any(isinstance(v, Decimal) for v in vats):
+            return sign + _fmt(vat_sum)
+        return NO_VAT if all(v == NO_VAT for v in vats) else "—"
+
+    has_sum = any(ln["sum"] is not None for ln in lines)
+    off = q["list_total"] - q["total"]  # скидка в рублях: в документе позиции идут по ценам каталога
+    shown = [ln["list"] if off else ln for ln in lines]
+    data = [row(**{key: Paragraph(title.replace(" ", NBSP), S_HEAD) for key, title in HEAD})]
+    for ln, cell in zip(lines, shown):
+        priced = cell["price"] is not None
+        vat = _fmt(cell["vat"]) if isinstance(cell["vat"], Decimal) else (cell["vat"] or "—")
+        code = _wrap_code(ln["vendor_code"] or "—", inner["code"], S_CODE) if "code" in inner else ""
+        data.append(row(code=code,
+                        name=Paragraph(escape(ln["name"]), S_NAME), qty=_fit(str(ln["qty"]), inner["qty"], S_QTY),
+                        price=_fit(_fmt(cell["price"]) if priced else ON_REQUEST, inner["price"], S_NUM),
+                        **money_cells(_fmt(cell["sum"]) if priced else ON_REQUEST, vat, S_NUM)))
+    extra = []
+    if off:
+        extra = [row(name=Paragraph("Сумма без скидки", S_SUBTOTAL),
+                     **money_cells(_fmt(q["list_total"]), vat_text(shown, q["list_vat_total"]), S_NUM)),
+                 row(name=Paragraph(f"Скидка {_percent(q['discount'])}%", S_SUBTOTAL),
+                     **money_cells(MINUS + _fmt(off), vat_text(shown, q["list_vat_total"] - q["vat_total"], MINUS),
+                                   S_NUM))]
+    data += extra
+    data.append(row(name=Paragraph("Итого", S_TOTAL),
+                    **money_cells(_fmt(q["total"]) if has_sum else ON_REQUEST, vat_text(lines, q["vat_total"]),
+                                  S_NUM_BOLD)))
+    data.append([Paragraph(VAT_FOOTNOTE, S_FOOTNOTE)] + [""] * (len(widths) - 1))
+    return Table(data, colWidths=list(widths.values()), repeatRows=1, style=[
         ("GRID", (0, 0), (-1, -2), 0.5, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), PAD), ("RIGHTPADDING", (0, 0), (-1, -1), PAD),
         ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 0), (-1, 0), 6), ("BOTTOMPADDING", (0, 0), (-1, 0), 7),
         ("TOPPADDING", (0, -2), (-1, -2), 7), ("BOTTOMPADDING", (0, -2), (-1, -2), 7),
         ("SPAN", (0, -1), (-1, -1)),
         ("LEFTPADDING", (0, -1), (-1, -1), 0), ("RIGHTPADDING", (0, -1), (-1, -1), 0),
         ("TOPPADDING", (0, -1), (-1, -1), 3), ("BOTTOMPADDING", (0, -1), (-1, -1), 0),
-        ("NOSPLIT", (0, -3), (-1, -1)),  # последняя позиция, итог и сноска не отрываются друг от друга
+        # последняя позиция, строки скидки, итог и сноска не отрываются друг от друга
+        ("NOSPLIT", (0, -3 - len(extra)), (-1, -1)),
     ])
 
 

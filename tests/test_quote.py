@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfReader
+from reportlab.pdfbase import pdfmetrics
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # чтобы тест находил пакет app и при запуске .venv/bin/pytest
@@ -87,6 +88,13 @@ def offers(catalog):
         "plain": pick(f"price > 0 AND price <> CAST(price AS INTEGER) AND {foreign}", f"price > 0 AND {foreign}"),
         "request": pick("price IS NULL"),
     }
+
+
+def fake_catalog(monkeypatch, fake_offers: dict):
+    """Каталог из словаря: позиции с заданными ценами, артикулами и признаком реестра."""
+    fake = types.ModuleType("app.catalog.search")
+    fake.get_offer = lambda offer_id: fake_offers.get(offer_id) or {"error": "offer_not_found", "offer_id": offer_id}
+    monkeypatch.setitem(sys.modules, "app.catalog.search", fake)
 
 
 @pytest.fixture(scope="module")
@@ -277,9 +285,7 @@ def test_catalog_search_is_used_and_rounding_is_to_kopecks(monkeypatch):
         3: {"offer_id": 3, "name": "Отечественная ОС", "vendor_code": None, "price": 999.99, "registry_no": "1999"},
         4: {"offer_id": 4, "name": "Цена по запросу", "vendor_code": "D-4", "price": None, "registry_no": None},
     }
-    fake = types.ModuleType("app.catalog.search")
-    fake.get_offer = lambda offer_id: fake_offers.get(offer_id) or {"error": "offer_not_found", "offer_id": offer_id}
-    monkeypatch.setitem(sys.modules, "app.catalog.search", fake)
+    fake_catalog(monkeypatch, fake_offers)
 
     res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 1}, {"offer_id": 2, "qty": 3},
                                            {"offer_id": 3, "qty": 2}, {"offer_id": 4, "qty": 5}])
@@ -327,3 +333,78 @@ def test_missing_and_malformed_requisites_are_named(offers, storage):
     assert "12345" not in text and "КПП" not in text
     sole = kp.make_quote("s2", "ИП Иванов И.И.", item, inn="770123456789", kpp="770101001")
     assert sole["customer_missing"] == [] and "КПП" not in squeeze(pdf_pages(sole["file"])[0])
+
+
+def test_discount_is_shown_as_separate_rows_before_the_total(monkeypatch):
+    """Скидка видна в документе: позиции по ценам каталога, ниже сумма без скидки, скидка и итог."""
+    fake_catalog(monkeypatch, {
+        1: {"offer_id": 1, "name": "Лицензия А", "vendor_code": "A-1", "price": 1000, "registry_no": None},
+        2: {"offer_id": 2, "name": "Лицензия Б", "vendor_code": "B-2", "price": 0.99, "registry_no": ""}})
+    items = [{"offer_id": 1, "qty": 2}, {"offer_id": 2, "qty": 3}]
+
+    res = kp.make_quote("s1", "ООО Тест", items, discount_percent=5)
+    assert [(i["price"], i["sum"], i["vat"]) for i in res["items"]] == [(950.0, 1900.0, 342.62), (0.94, 2.82, 0.51)]
+    assert (res["total"], res["vat_total"]) == (1902.82, 343.13)
+    assert (res["total_without_discount"], res["discount_sum"]) == (2002.97, 100.15)
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "A-1ЛицензияА21000,002000,00360,66" in text and "B-2ЛицензияБ30,992,970,54" in text
+    assert "Суммабезскидки2002,97361,20" in text
+    assert "Скидка5%−100,15−18,07" in text
+    assert "Итого1902,82343,13" in text and "Итогосо" not in text
+
+    plain = kp.make_quote("s2", "ООО Тест", items)
+    assert "total_without_discount" not in plain and "discount_sum" not in plain
+    text = squeeze(pdf_pages(plain["file"])[0])
+    assert "Суммабезскидки" not in text and "Скидка" not in text and "Итого2002,97361,20" in text
+
+
+def test_discount_on_registry_software_has_no_vat_in_any_row(monkeypatch):
+    fake_catalog(monkeypatch, {3: {"offer_id": 3, "name": "Отечественная ОС", "vendor_code": None, "price": 999.99,
+                                   "registry_no": "1999"}})
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 3, "qty": 2}], discount_percent=2.5)
+    assert (res["total"], res["total_without_discount"], res["discount_sum"]) == (1949.98, 1999.98, 50.0)
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "Суммабезскидки1999,98БезНДС" in text and "Скидка2,5%−50,00БезНДС" in text
+    assert "Итого1949,98БезНДС" in text
+
+
+def test_article_column_is_dropped_when_no_item_has_an_article(monkeypatch):
+    """В фиде у части позиций артикула нет: пустой графы в документе быть не должно."""
+    fake_catalog(monkeypatch, {
+        1: {"offer_id": 1, "name": "Лицензия А", "vendor_code": None, "price": 100, "registry_no": None},
+        2: {"offer_id": 2, "name": "Лицензия Б", "vendor_code": "B-2", "price": 50, "registry_no": None}})
+    bare = squeeze(pdf_pages(kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 1}])["file"])[0])
+    assert "Артикул" not in bare
+    assert squeeze("Наименование Кол-во Цена, руб. Сумма, руб. В т.ч. НДС, руб. Лицензия А 1 100,00") in bare
+
+    mixed = squeeze(pdf_pages(kp.make_quote("s2", "ООО Тест", [{"offer_id": 1, "qty": 1},
+                                                              {"offer_id": 2, "qty": 1}])["file"])[0])
+    assert squeeze("Артикул Наименование Кол-во") in mixed
+    assert "—ЛицензияА1100,00" in mixed and "B-2ЛицензияБ150,00" in mixed
+
+
+def test_table_header_fits_its_columns_in_one_line():
+    for with_article in (True, False):
+        widths = kp.column_widths(with_article)
+        assert ("code" in widths) is with_article and sum(widths.values()) == pytest.approx(kp.WIDTH)
+        for key, title in kp.HEAD:
+            if key in widths:
+                need = pdfmetrics.stringWidth(title, kp.S_HEAD.fontName, kp.S_HEAD.fontSize)
+                assert need <= widths[key] - 2 * kp.PAD, (title, need, widths[key])
+
+
+def test_stand_quote_is_rebuilt_with_the_discount_given_in_the_dialog(monkeypatch):
+    """Перенос диалога на стенд собирает КП заново: скидка берется из памяти диалога, номер остается прежним."""
+    from eval import to_stand
+    fake_catalog(monkeypatch, {1: {"offer_id": 1, "name": "Лицензия А", "vendor_code": "A-1", "price": 1000,
+                                   "registry_no": None}})
+    sid = store.get_session(None, "eval-c55")["id"]
+    store.update_session(sid, facts={"компания": "ООО Ромашка", "ИНН": "7701234567", "скидка": "5%"})
+    store.add_step(sid, 1, "tool", "make_quote", {"items": [{"offer_id": 1, "qty": 2}], "customer": "[компания]"}, {})
+
+    first = to_stand.requote(sid)
+    assert (first["total"], first["discount_percent"], first["customer"]) == (1900.0, 5.0, "ООО Ромашка")
+    again = to_stand.requote(sid)
+    assert again["number"] == first["number"] and len(quote_rows()) == 1
+    assert "Скидка5%−100,00" in squeeze(pdf_pages(again["file"])[0])
+    assert to_stand.requote(store.get_session(None, "eval-c01")["id"]) is None  # в диалоге КП не было
