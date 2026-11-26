@@ -241,3 +241,24 @@ def test_contact_is_hidden_from_model_and_reaches_manager():
 def test_marker_used_instead_of_name_gets_the_name(offer):
     clean, cards, _ = loop.render(f"Есть варианты, например [[offer:{offer['offer_id']}]] (цена в карточке).")
     assert cards and cards[0]["title"] in clean and "например (" not in clean
+
+
+def test_quantity_range_next_to_price_is_not_glued_into_one_sum():
+    assert loop.unknown_prices("до 14 лицензий 1 841,40 руб., от 15 до 19 1 710,90 руб.", {1841, 1711}) == []
+    assert loop.unknown_prices("до 14 1 841,40 руб.", {1841}) == []
+
+
+def test_unambiguous_search_brings_variants_in_the_same_step(product):
+    llm = Scripted([{"name": "search_products", "args": {"query": product["title"]}}, "Нашел."])
+    res = loop.run_turn(None, "Нужен " + product["title"], llm=llm)
+    out = res["trace"][0]["output"]
+    if out["total"] <= 2:
+        assert out["first_product"]["offers"] and out["first_product"]["product_id"] == out["products"][0]["product_id"]
+        assert store.get_session(res["session_id"])["items"]["offers"]  # варианты запомнены, как после get_product
+
+
+def test_perpetual_term_filter_reaches_catalog():
+    from app.agent import tools
+    astra = catalog.search_products("Astra Linux Special Edition", limit=1)["products"][0]
+    out = tools.call(tools.ToolContext("x"), "get_product", {"product_id": astra["product_id"], "term_months": 0})
+    assert out["matching"] and all(o["term_months"] == 0 for o in out["offers"])

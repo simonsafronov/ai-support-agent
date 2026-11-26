@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from app import store
 from app.catalog import search as catalog
-from app.kb import search as kb
+from app.kb import answers, search as kb
 from app.quote import kp
 
 
@@ -25,13 +25,29 @@ def _obj(properties: dict, required: list[str] | None = None) -> dict:
 
 def _search_products(ctx, query: str, vendor: str = "", only_available: bool = False, russian_only: bool = False,
                      category_id: int | None = None, product_type: str = ""):
-    return catalog.search_products(query, vendor=vendor or None, category_id=category_id,
-                                   only_available=only_available, russian_only=russian_only,
-                                   product_type=product_type or None, limit=6)
+    res = catalog.search_products(query, vendor=vendor or None, category_id=category_id,
+                                  only_available=only_available, russian_only=russian_only,
+                                  product_type=product_type or None, limit=6)
+    first = (res.get("products") or [None])[0]
+    if first and res.get("match") == "all" and res.get("total", 0) <= 2:
+        # продукт найден однозначно: его варианты отдаются сразу, второй вызов модели на get_product не нужен
+        top = catalog.get_product(first["product_id"], limit=4)
+        res["first_product"] = {"product_id": first["product_id"], **{k: top[k] for k in (
+            "matching", "facets", "clarify", "offers", "shown", "all_matching") if top.get(k)}}
+    return _with_answers(res, query)
+
+
+def _with_answers(res: dict, query: str) -> dict:
+    """Добавляет к ответу инструмента то, как менеджер уже отвечал на похожий вопрос."""
+    learned = answers.find(query)
+    if learned:
+        res["manager_answers"] = learned
+    return res
 
 
 def _get_product(ctx, product_id: str, quantity: int | None = None, **filters):
-    filters = {k: v for k, v in filters.items() if v not in (None, "", False) and (v != 0 or k == "term_months")}
+    filters = {k: v for k, v in filters.items()
+               if v is not None and v != "" and v is not False and (v != 0 or k == "term_months")}
     if quantity:  # одно число на все виды ступеней: комплект на N пользователей, диапазон узлов, объем покупки
         filters.update(users=quantity, nodes=quantity, qty=quantity)
     return catalog.get_product(str(product_id), filters=filters, limit=6)
@@ -50,7 +66,7 @@ def _kb_search(ctx, query: str):
     for r in res.get("results", []):
         r["snippet"] = r["snippet"][:700]
         r.pop("score", None)
-    return res
+    return _with_answers(res, query)
 
 
 FACT_FIELDS = {  # что агент запоминает о клиенте: ключ -> как показывать в контексте и оператору
@@ -141,7 +157,8 @@ TOOLS = [
     {"name": "search_products", "handler": _search_products,
      "description": "Поиск продуктов в каталоге магазина по названию, вендору или задаче. Возвращает продукты "
                     "(линейки) с числом вариантов лицензий, диапазоном цен, наличием и признаком реестра "
-                    "отечественного ПО. Понимает опечатки и разговорные названия. Начинайте с него.",
+                    "отечественного ПО. Понимает опечатки и разговорные названия. Начинайте с него. Продукт найден "
+                    "однозначно: в first_product сразу его варианты, как из get_product без фильтров.",
      "parameters": _obj({
          "query": {"type": "string", "description": "только название продукта, вендор, артикул или тип ПО в "
                    "нормальном написании: без приветствий, количества и слов 'цена', 'лицензия', 'купить'"},
@@ -196,8 +213,9 @@ TOOLS = [
                         ["query"])},
     {"name": "calc_total", "handler": _calc_total,
      "description": "Посчитать стоимость: цена варианта на количество и итог по позициям одной покупки. Любую "
-                    "сумму, кроме цены из каталога, называйте клиенту только после этого инструмента. Варианты на "
-                    "выбор считайте отдельными вызовами: total складывает все позиции.",
+                    "сумму, кроме цены из каталога, называйте клиенту только после этого инструмента. У каждой "
+                    "позиции своя сумма в lines: варианты на выбор считайте одним вызовом и берите суммы строк, "
+                    "total это все позиции вместе.",
      "parameters": _obj({
          "items": {"type": "array", "description": "позиции расчета",
                    "items": _obj({"offer_id": {"type": "integer"}, "qty": {"type": "integer"}},
@@ -205,8 +223,8 @@ TOOLS = [
      }, ["items"])},
     {"name": "make_quote", "handler": _make_quote,
      "description": "Сформировать черновик коммерческого предложения (PDF по шаблону Softline) для проверки "
-                    "менеджером. После того, как клиент согласился с выбором и назвал количество. Название "
-                    "организации спросите один раз; не назвал, формируйте без него.",
+                    "менеджером, когда вариант и количество понятны. Название организации не обязательно. "
+                    "Повторный вызов в том же диалоге обновляет тот же черновик.",
      "parameters": _obj({
          "customer": {"type": "string", "description": "наименование заказчика, если клиент его назвал"},
          "items": {"type": "array", "description": "позиции КП",

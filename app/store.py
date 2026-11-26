@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS handoffs(
 CREATE TABLE IF NOT EXISTS quotes(
   id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, ts REAL, number TEXT, customer TEXT, items_json TEXT,
   total REAL, file TEXT);
+CREATE TABLE IF NOT EXISTS answers(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, handoff_id INT, session_id TEXT, question TEXT, answer TEXT,
+  teach INT DEFAULT 0);
+CREATE VIRTUAL TABLE IF NOT EXISTS answers_fts USING fts5(text);
 CREATE INDEX IF NOT EXISTS ix_messages_session ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_steps_session ON steps(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_sessions_client ON sessions(client_id, updated_at);
@@ -117,8 +121,8 @@ def add_handoff(session_id: str, reason: str, summary: str, contact: str) -> int
 
 
 def open_handoff(session_id: str) -> dict | None:
-    row = db().execute("SELECT id, reason, summary, contact FROM handoffs WHERE session_id=? ORDER BY id DESC LIMIT 1",
-                       (session_id,)).fetchone()
+    row = db().execute("SELECT id, reason, summary, contact FROM handoffs WHERE session_id=? AND status='new' "
+                       "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
     return dict(row) if row else None
 
 
@@ -132,6 +136,18 @@ def add_quote(session_id: str, number: str, customer: str, items: list[dict], to
                        "VALUES(?,?,?,?,?,?,?)", (session_id, time.time(), number, customer, _j(items), total, file))
     db().commit()
     return cur.lastrowid
+
+
+def last_quote(session_id: str) -> dict | None:
+    row = db().execute("SELECT id, number, customer, total FROM quotes WHERE session_id=? ORDER BY id DESC LIMIT 1",
+                       (session_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_quote(quote_id: int, customer: str, items: list[dict], total: float):
+    db().execute("UPDATE quotes SET ts=?, customer=?, items_json=?, total=? WHERE id=?",
+                 (time.time(), customer, _j(items), total, quote_id))
+    db().commit()
 
 
 def previous_session(client_id: str, exclude: str) -> dict | None:

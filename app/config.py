@@ -43,4 +43,8 @@ BRIDGE_TIMEOUT = float(env("BRIDGE_TIMEOUT", "1800"))  # сколько секу
 PRICE_IN_PER_1K = float(env("PRICE_IN_PER_1K", "0.65"))
 PRICE_OUT_PER_1K = float(env("PRICE_OUT_PER_1K", "0.65"))
 
-ADMIN_TOKEN = env("ADMIN_TOKEN", "")
+# Фид каталога: сервер раз в сутки скачивает его и пересобирает базу (app/catalog/update.py); пусто = не обновлять
+FEED_URL = env("FEED_URL", "https://store.softline.ru/feeds/Softline.yml.gz")
+FEED_UPDATE_HOUR = int(env("FEED_UPDATE_HOUR", "4"))  # час по Москве
+
+ADMIN_TOKEN = env("ADMIN_TOKEN", "")  # задан: экран оператора открывается по адресу /admin?token=...

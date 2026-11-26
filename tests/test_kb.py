@@ -244,3 +244,9 @@ def test_word_forms_and_yo_give_same_results():
 
     assert urls("счёт на оплату") == urls("счет на оплату") == urls("СЧЕТА НА ОПЛАТУ")
     assert urls("возврат лицензии") == urls("возвраты лицензий")
+
+
+def test_unknown_product_name_marks_results_as_off_topic():
+    res = kb_search("XSpider продление лицензии")
+    assert "xspider" in res["note"]
+    assert "note" not in kb_search("доставка электронной лицензии")

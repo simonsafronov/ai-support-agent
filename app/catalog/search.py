@@ -754,6 +754,8 @@ def _filter_quantity(rows: list, key: str, need: int) -> tuple[list, dict, dict 
     if not higher:
         return kept, gaps, None
     nearest = min(floor for floor, _ in higher)
+    for r in kept:  # ступени под это количество нет: вариант без ступени (цена за одну лицензию) подходит лучше всего
+        gaps[r["id"]] = 0
     for floor, r in higher:
         if floor == nearest:
             kept.append(r)
@@ -898,7 +900,7 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
     ценами артикула из фида не извлекается и одну цену называть нельзя.
     """
     conn = _conn()
-    filters = {k: v for k, v in (filters or {}).items() if v not in (None, "", False)}
+    filters = {k: v for k, v in (filters or {}).items() if v is not None and v != "" and v is not False}
     product = conn.execute(
         f"SELECT {_PRODUCT_COLS} FROM products p WHERE p.product_id = ?",
         (str(product_id),)).fetchone()

@@ -40,6 +40,7 @@ PREFIX_MIN_STEM = 5  # стем короче ищется точно, иначе
 _STEMMER = snowballstemmer.stemmer("russian")
 _TOKEN_RE = re.compile(r"[a-zа-я0-9]+")
 _CYRILLIC_RE = re.compile(r"[а-я]")
+_LATIN_RE = re.compile(r"[a-z]")
 _SENTENCE_RE = re.compile(r"(?<=[.!?…;])\s+")
 _STOPWORDS = frozenset(
     """и в во на по с со к ко у о об от до за из для при или а но же ли бы не ни что как это этот эта
@@ -194,15 +195,23 @@ def kb_search(query: str, limit: int = 5, source: str | None = None, db_path: Pa
         "FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN docs d ON d.id = c.doc_id "
         "WHERE chunks_fts MATCH ?"
     )
-    params: list = [fts_query(terms)]
-    if source:
-        sql += " AND d.source = ?"
-        params.append(source)
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
+    tail = (" AND d.source = ?" if source else "") + " ORDER BY rank LIMIT ?"
+    extra = ([source] if source else []) + [limit]
+    # названия продуктов и сокращения латиницей (xspider, vba) должны быть на странице: без них выдача это шум
+    names = [t for t in terms if _LATIN_RE.search(t[0])]
+    rest = [t for t in terms if t not in names]
+    strict = " AND ".join(f"({fts_query([t])})" for t in names) + (f" AND ({fts_query(rest)})" if rest else "")
+    note = None
     db = _connect(db_path)
     try:
-        rows = db.execute(sql, params).fetchall()
+        rows = db.execute(sql + tail, [strict, *extra]).fetchall() if names else []
+        if not rows and names and rest:
+            rows = db.execute(sql + tail, [" AND ".join(f"({fts_query([t])})" for t in names), *extra]).fetchall()
+        if not rows:
+            rows = db.execute(sql + tail, [fts_query(terms), *extra]).fetchall()
+            if names and rows:
+                note = ("В справке нет страниц со словами " + ", ".join(t[0] for t in names)
+                        + ": найденное ниже может быть не по теме вопроса.")
     finally:
         db.close()
     results = [
@@ -216,7 +225,7 @@ def kb_search(query: str, limit: int = 5, source: str | None = None, db_path: Pa
         }
         for title, url, heading, text, src, rank in rows
     ]
-    return {"query": query, "results": results}
+    return {"query": query, "results": results, **({"note": note} if note else {})}
 
 
 def stats(db_path: Path | None = None) -> dict:

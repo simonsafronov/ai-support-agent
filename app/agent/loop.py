@@ -21,7 +21,7 @@ TOOL_RESULT_LIMIT = 6000
 FALLBACK = ("Сейчас не получается ответить автоматически. Передаю вопрос менеджеру, он ответит в рабочее время. "
             "Оставьте, пожалуйста, почту или телефон для связи.")
 
-_MONEY = re.compile(r"(\d[\d\s  ]*(?:[.,]\d{1,2})?)\s*(?:₽|руб|р\.)", re.I)
+_MONEY = re.compile(r"(?<![\d.,])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:₽|руб|р\.)", re.I)
 _NUMBER = re.compile(r"\d[\d\s\u00a0\u202f]*(?:[.,]\d{1,2})?")
 _MARK = re.compile(r"\[\[(product|offer):\s*([\w-]+)\]\]")
 _CHOICES = re.compile(r"\[\[choices:\s*(.+?)\]\]", re.S)
@@ -203,6 +203,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     for m in store.messages(sid):
         if m["role"] == "user":
             known.update(round(v) for v in map(_num, _NUMBER.findall(m["content"])) if v)
+    s["quote"] = store.last_quote(sid)
     previous = store.previous_session(s["client_id"], sid) if turn == 1 else None
     msgs = [{"role": "system", "content": prompts.system_prompt(s, page_hint(page_url or s.get("page_url") or ""),
                                                                  previous)}] + _history(sid)
@@ -228,6 +229,8 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             usage[3] += 1
             _collect_prices(out, known)
             _remember_items(items, name, out)
+            if out.get("first_product"):  # поиск сразу вернул варианты однозначно найденного продукта
+                _remember_items(items, "get_product", out["first_product"])
             store.add_step(sid, turn, "tool", name, args, out)
             trace.append({"kind": "tool", "name": name, "input": args, "output": out})
             msgs.append({"role": "assistant", "content": res.text, "tool_call": res.tool_call, "extra": res.extra})

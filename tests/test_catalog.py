@@ -403,3 +403,10 @@ def test_price_range_covers_all_matching_not_only_shown():
 def test_empty_search_tells_how_to_search_further():
     res = search_products("зщшгнекуц", limit=3)
     assert res["match"] == "none" and "названию конкретного продукта" in res["note"]
+
+
+def test_single_licence_goes_before_tiers_that_start_higher():
+    """Нужна 1 лицензия, а ступени начинаются с 2: первым идет вариант без ступени, а не ближайшая ступень."""
+    pid = search_products("Handy Backup", limit=1)["products"][0]["product_id"]
+    res = get_product(pid, filters={"users": 1, "nodes": 1, "qty": 1}, limit=6)
+    assert res["tier_notes"] and res["offers"][0].get("qty_min") is None

@@ -224,8 +224,11 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
                   "vat": _num(ln["vat"]) if isinstance(ln["vat"], Decimal) else ln["vat"]} for ln in lines]
 
     with _NUMBER_LOCK:  # номер, файл и запись идут вместе, чтобы два КП не получили один номер
+        prev = store.last_quote(session_id)
+        if prev and customer == NO_CUSTOMER and prev["customer"] != NO_CUSTOMER:
+            quote["customer"] = customer = prev["customer"]  # название уже называли: при правке позиций не теряем
         seq = store.db().execute("SELECT COALESCE(MAX(id), 0) + 1 FROM quotes").fetchone()[0]
-        quote["number"] = number = f"КП-{today:%Y%m%d}-{seq:04d}"
+        quote["number"] = number = prev["number"] if prev else f"КП-{today:%Y%m%d}-{seq:04d}"
         try:
             pdf = _render(quote)
         except LayoutError:  # текст, который не помещается на лист целиком
@@ -234,9 +237,13 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         config.QUOTES_DIR.mkdir(parents=True, exist_ok=True)
         path = config.QUOTES_DIR / f"{number}.pdf"
         path.write_bytes(pdf)
-        store.add_quote(session_id, number, customer, out_items, float(total), str(path))
+        if prev:
+            store.update_quote(prev["id"], customer, out_items, float(total))
+        else:
+            store.add_quote(session_id, number, customer, out_items, float(total), str(path))
 
-    return {"ok": True, "number": number, "url": f"/quotes/{number}.pdf", "file": str(path), "date": quote["date"],
+    return {"ok": True, "number": number, "updated": bool(prev), "contact_in_quote": bool(quote["contact"]),
+            "url": f"/quotes/{number}.pdf", "file": str(path), "date": quote["date"],
             "valid_until": quote["valid_until"], "customer": customer, "items": out_items, "total": float(total),
             "vat_total": float(vat_total), "has_price_on_request": on_request,
             "needs_availability_check": [ln["name"] for ln in lines if not ln["available"] and ln["price"] is not None],

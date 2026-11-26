@@ -297,3 +297,13 @@ def test_quote_without_customer_name_is_still_a_draft(offers, storage):
     """Клиент не назвал организацию: черновик все равно собирается, менеджер уточнит название."""
     res = kp.make_quote("s1", "  ", [{"offer_id": offers["plain"]["id"], "qty": 1}])
     assert res["ok"] and res["customer"] == kp.NO_CUSTOMER and "не указано" in res["note"]
+
+
+def test_second_quote_in_dialog_updates_the_same_draft(offers, storage):
+    first = kp.make_quote("s-upd", customer="", items=[{"offer_id": offers["registry"]["id"], "qty": 2}])
+    second = kp.make_quote("s-upd", customer="ООО Ромашка", items=[{"offer_id": offers["registry"]["id"], "qty": 3}])
+    assert second["number"] == first["number"] and second["updated"] and not first["updated"]
+    rows = store.db().execute("SELECT customer FROM quotes WHERE session_id='s-upd'").fetchall()
+    assert [r[0] for r in rows] == ["ООО Ромашка"]
+    third = kp.make_quote("s-upd", customer="", items=[{"offer_id": offers["registry"]["id"], "qty": 5}])
+    assert third["customer"] == "ООО Ромашка"  # название, названное раньше, при правке количества не теряется

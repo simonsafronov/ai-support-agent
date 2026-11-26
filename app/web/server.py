@@ -1,24 +1,39 @@
 """Веб-сервер стенда: чат покупателя, экран оператора, файлы КП."""
 from __future__ import annotations
 
+import contextlib
+import csv
+import datetime
+import io
 import json
 import queue
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import config, store
 from app.agent import loop
-from app.catalog import search as catalog
-from app.kb import search as kb
+from app.catalog import search as catalog, update as catalog_update
+from app.kb import answers, search as kb
 
 STATIC = Path(__file__).parent / "static"
-app = FastAPI(title="ИИ-консультант Softline Store", docs_url=None, redoc_url=None)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app):
+    if config.FEED_URL:  # каталог обновляется с фида раз в сутки, пока работает сервер
+        threading.Thread(target=_daily_update, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="ИИ-консультант Softline Store", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -28,6 +43,40 @@ async def revalidate_static(request, call_next):
     if not request.url.path.startswith(("/api/", "/quotes/", "/fonts/")):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+MSK = datetime.timezone(datetime.timedelta(hours=3))
+_update_lock = threading.Lock()
+
+
+def update_catalog() -> bool:
+    """Пересобирает каталог с фида отдельным процессом: чат в это время отвечает по прежней базе."""
+    if not config.FEED_URL or not _update_lock.acquire(blocking=False):
+        return False
+
+    def work():
+        try:
+            subprocess.run([sys.executable, "-m", "app.catalog.update"], cwd=config.ROOT, timeout=3600)
+        finally:
+            _update_lock.release()
+
+    threading.Thread(target=work, daemon=True).start()
+    return True
+
+
+def _daily_update():
+    while True:
+        now = datetime.datetime.now(MSK)
+        run_at = now.replace(hour=config.FEED_UPDATE_HOUR, minute=0, second=0, microsecond=0)
+        time.sleep(((run_at - now).total_seconds() - 1) % 86400 + 1)
+        update_catalog()
+
+
+def admin(request: Request):
+    """Экран оператора: если задан ADMIN_TOKEN, нужен он же в заголовке или адресе."""
+    if config.ADMIN_TOKEN and config.ADMIN_TOKEN not in (request.headers.get("x-admin-token"),
+                                                         request.query_params.get("token")):
+        raise HTTPException(403, "нужен ключ оператора")
 
 
 _turn_lock = threading.Lock()  # GigaChat для физлиц работает в один поток: ходы идут по очереди
@@ -85,8 +134,8 @@ def chat(body: ChatIn):
 def session(session_id: str):
     s = store.get_session(session_id)
     return {"session_id": s["id"], "status": s["status"],
-            "messages": [{"role": m["role"], "content": m["content"], **{k: m["meta"].get(k, []) for k in
-                                                                         ("cards", "choices", "events")}}
+            "messages": [{"role": m["role"], "content": m["content"], "from": m["meta"].get("from", ""),
+                          **{k: m["meta"].get(k, []) for k in ("cards", "choices", "events")}}
                          for m in store.messages(session_id)]}
 
 
@@ -109,7 +158,7 @@ def products(q: str = "", limit: int = 12):
     return {"query": "", "total": len(found), "products": found}
 
 
-# --- экран оператора: только чтение ---
+# --- экран оператора ---
 
 def _session_row(r) -> dict:
     d = dict(r)
@@ -117,7 +166,7 @@ def _session_row(r) -> dict:
     return d
 
 
-@app.get("/api/admin/sessions")
+@app.get("/api/admin/sessions", dependencies=[Depends(admin)])
 def admin_sessions(limit: int = 100):
     con = store.db()
     rows = con.execute(
@@ -130,7 +179,7 @@ def admin_sessions(limit: int = 100):
     return {"sessions": [_session_row(r) for r in rows]}
 
 
-@app.get("/api/admin/session/{session_id}")
+@app.get("/api/admin/session/{session_id}", dependencies=[Depends(admin)])
 def admin_session(session_id: str):
     con = store.db()
     row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
@@ -143,7 +192,61 @@ def admin_session(session_id: str):
             "quotes": [dict(r) for r in con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,))]}
 
 
-@app.get("/api/admin/stats")
+class AnswerIn(BaseModel):
+    answer: str = Field(min_length=1, max_length=4000)
+    teach: bool = False
+
+
+@app.post("/api/admin/handoff/{handoff_id}/answer", dependencies=[Depends(admin)])
+def admin_answer(handoff_id: int, body: AnswerIn):
+    """Ответ менеджера на обращение: клиент видит его в чате; общий ответ становится знанием агента."""
+    h = store.db().execute("SELECT * FROM handoffs WHERE id=?", (handoff_id,)).fetchone()
+    if h is None:
+        raise HTTPException(404, "нет такого обращения")
+    asked = [m["content"] for m in store.messages(h["session_id"]) if m["role"] == "user"][-3:]
+    question = loop.mask_contacts(" ".join(asked))[0][:600] + " | " + h["reason"] + ": " + h["summary"]
+    return answers.add(handoff_id, body.answer.strip(), body.teach, question)
+
+
+@app.get("/api/admin/export.csv", dependencies=[Depends(admin)])
+def admin_export():
+    """Журнал всех вопросов клиентов и ответов агента для контроля: одна строка на сообщение."""
+    con = store.db()
+    tools = {}
+    for r in con.execute("SELECT session_id, turn, GROUP_CONCAT(name, ', ') AS names FROM steps WHERE kind='tool' "
+                         "GROUP BY session_id, turn"):
+        tools[(r["session_id"], r["turn"])] = r["names"]
+    handed = {r[0] for r in con.execute("SELECT DISTINCT session_id FROM handoffs")}
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=";")
+    w.writerow(["время (МСК)", "диалог", "кто", "текст", "инструменты хода", "диалог передан менеджеру"])
+    turn = {}
+    for m in con.execute("SELECT session_id, ts, role, content, meta_json FROM messages ORDER BY id"):
+        sid = m["session_id"]
+        if m["role"] == "user":
+            turn[sid] = turn.get(sid, 0) + 1
+        who = "клиент" if m["role"] == "user" else ("менеджер" if '"from": "manager"' in m["meta_json"] else "агент")
+        w.writerow([datetime.datetime.fromtimestamp(m["ts"], MSK).strftime("%d.%m.%Y %H:%M:%S"), sid, who,
+                    m["content"], tools.get((sid, turn.get(sid, 0)), "") if who == "агент" else "",
+                    "да" if sid in handed else "нет"])
+    return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="dialogs.csv"'})
+
+
+@app.get("/api/admin/catalog", dependencies=[Depends(admin)])
+def admin_catalog():
+    c = catalog.stats()
+    return {"offers": c["offers"], "products": c["products"], "feed_date": c.get("feed_date"),
+            "feed_url": config.FEED_URL, "update_hour_msk": config.FEED_UPDATE_HOUR,
+            "updating": _update_lock.locked(), "last_update": catalog_update.last()}
+
+
+@app.post("/api/admin/catalog/update", dependencies=[Depends(admin)])
+def admin_catalog_update():
+    return {"started": update_catalog()}
+
+
+@app.get("/api/admin/stats", dependencies=[Depends(admin)])
 def admin_stats():
     con = store.db()
     one = lambda sql: con.execute(sql).fetchone()[0] or 0
@@ -155,7 +258,8 @@ def admin_stats():
     total = loop.cost_rub(pt, ct)
     return {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff,
             "without_human_share": round(1 - handoff / dialogs, 3) if dialogs else None,
-            "quotes": one("SELECT COUNT(*) FROM quotes"), "prompt_tokens": pt, "completion_tokens": ct,
+            "quotes": one("SELECT COUNT(*) FROM quotes"), "learned_answers": answers.count(),
+            "prompt_tokens": pt, "completion_tokens": ct,
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
