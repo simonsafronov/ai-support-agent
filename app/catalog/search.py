@@ -895,7 +895,8 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
     filters:
       users, nodes  нужное количество. Подходят ярусы не меньше него ("до 25
                     пользователей" при users=20) и ступени от-до, в которые оно попадает;
-                    ближайший ярус первым, варианты без ярусов остаются.
+                    ближайший ярус первым, варианты без ярусов остаются. Ближайший ярус
+                    ищется среди вариантов, уже прошедших остальные фильтры.
       qty           количество лицензий для ступени цены (qty_min..qty_max).
       term_months   срок в месяцах, 0 = бессрочная.
       license_type, org_type, user_type, version, platform  подстрока без регистра.
@@ -915,15 +916,10 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
     if product is None:
         return {"error": "product_not_found", "product_id": str(product_id)}
     all_rows = conn.execute(_OFFER_SQL, (str(product_id),)).fetchall()
-    rows, gaps, notes = _apply_quantity_filters(all_rows, filters)
-    rows = _apply_value_filters(rows, filters)
-
-    def order(r: sqlite3.Row) -> tuple:
-        buyable = 0 if r["available"] and r["price"] is not None else 1
-        price = r["price"] if r["price"] is not None else _INF
-        return (buyable, gaps.get(r["id"], 0), price, r["id"])
-
-    rows.sort(key=order)
+    # обязательные условия клиента (платформа, срок, тип, доступность) раньше выбора ближайшего пакета:
+    # иначе пакет на 25 под Windows вытесняет подходящий пакет на 50 под Linux и вариантов не остается
+    rows, gaps, notes = _apply_quantity_filters(_apply_value_filters(all_rows, filters), filters)
+    rows.sort(key=_offer_order(gaps))
     full_facets = facet_counts(rows)
     facets, facets_more = _facets_for_output(full_facets)
     known = {"term_months", "text", "only_available", *_QUANTITY_FILTERS, *_SUBSTRING_FILTERS}
@@ -951,26 +947,35 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
                                   "price_max": _money(max(priced)) if priced else None,
                                   "without_price": len(rows) - len(priced)}
     if not rows and all_rows:
-        result.update(_relaxed(all_rows, filters, order, limit))
+        result.update(_relaxed(all_rows, filters, limit))
     return result
 
 
-def _relaxed(all_rows: list, filters: dict, order, limit: int) -> dict:
+def _offer_order(gaps: dict):
+    """Порядок вариантов: сначала доступные с ценой, затем ближайший ярус количества, затем дешевле."""
+    def order(r: sqlite3.Row) -> tuple:
+        buyable = 0 if r["available"] and r["price"] is not None else 1
+        price = r["price"] if r["price"] is not None else _INF
+        return (buyable, gaps.get(r["id"], 0), price, r["id"])
+    return order
+
+
+def _relaxed(all_rows: list, filters: dict, limit: int) -> dict:
     """Фильтры дали ноль: показываем, что есть, если снять один из них (тот, без которого вариантов больше)."""
-    best_key, best_rows = None, []
+    best_key, best_rows, best_gaps, best_notes = None, [], {}, []
     for key in filters:
         rest = {k: v for k, v in filters.items() if k != key}
-        rows, _, _ = _apply_quantity_filters(all_rows, rest)
-        rows = _apply_value_filters(rows, rest)
+        rows, gaps, notes = _apply_quantity_filters(_apply_value_filters(all_rows, rest), rest)
         if len(rows) > len(best_rows):
-            best_key, best_rows = key, rows
+            best_key, best_rows, best_gaps, best_notes = key, rows, gaps, notes
     if not best_rows:
         return {"note": "С такими фильтрами вариантов нет. В facets значения, которые есть у продукта без фильтров.",
                 "facets": _facets_for_output(facet_counts(all_rows))[0]}
-    best_rows.sort(key=order)
+    best_rows.sort(key=_offer_order(best_gaps))
     return {"note": f"Вариантов с {best_key}={filters[best_key]} у продукта нет. Ниже варианты без этого условия: "
                     "скажите клиенту, что именно такого в каталоге нет, и предложите ближайшее.",
             "dropped_filter": best_key,
+            **({"tier_notes": best_notes} if best_notes else {}),
             "facets": _facets_for_output(facet_counts(best_rows))[0],
             "offers": [_offer_dict(r) for r in best_rows[:max(0, min(int(limit), 100))]]}
 

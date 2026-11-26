@@ -352,7 +352,8 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
         if step == MAX_STEPS - 1:
             msgs.append({"role": "user", "content": LAST_STEP})
         try:
-            res = llm.chat(msgs, tools.specs())
+            left = config.TURN_DEADLINE - (time.monotonic() - started) if config.TURN_DEADLINE else None
+            res = llm.chat(msgs, tools.specs(), time_left=left)  # ожидание модели не дольше остатка хода
         except Exception as e:  # любой сбой вокруг модели, не только LLMError: клиент без ответа не остается
             why = str(e) if isinstance(e, LLMError) else f"{type(e).__name__}: {e}"
             store.add_step(sid, turn, "error", "llm", {}, {"error": why})
