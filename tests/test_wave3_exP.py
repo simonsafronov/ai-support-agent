@@ -1,7 +1,9 @@
-"""Отличия вариантов с одинаковым названием и срок поставки."""
+"""Отличия вариантов с одинаковым названием, срок поставки и просьба о контакте после передачи менеджеру."""
 import pytest
 
-from app.agent import loop
+from app import store
+from app.agent import loop, prompts
+from app.agent.llm import Scripted
 from app.catalog import search as catalog
 
 ASTRA = "121231"
@@ -54,3 +56,27 @@ def test_offer_cards_with_the_same_title_carry_their_difference():
     assert by_id[517989]["details"] == {"Размер организации": "Малый и средний бизнес", "Тип техподдержки": "Базовая"}
     assert by_id[489925]["details"]["Размер организации"] == "Крупный бизнес"
     assert "details" not in by_id[490281]  # название у карточки свое, отличать ее не от чего
+
+
+def test_contact_is_asked_once_after_handoff():
+    llm = Scripted([
+        {"name": "handoff_to_manager", "args": {"reason": "госзакупка", "summary": "Закупка по 44-ФЗ"}},
+        "Передал менеджеру. Оставьте, пожалуйста, почту или телефон для связи.",
+        "Менеджер ответит в рабочее время.",
+    ])
+    sid = loop.run_turn(None, "Нужна закупка по 44-ФЗ", llm=llm)["session_id"]
+    session = store.get_session(sid)
+    assert "попросите его один раз" not in prompts.context_block(session)
+    assert "больше не просите" in prompts.context_block(session)
+    loop.run_turn(sid, "А сколько ждать?", llm=llm)
+    assert "больше не просите" in llm.calls[-1][0]["content"]
+
+
+def test_contact_is_asked_when_it_was_not_yet():
+    llm = Scripted([{"name": "handoff_to_manager", "args": {"reason": "жалоба", "summary": "Жалоба на заказ"}},
+                    "Передал менеджеру, он разберется с заказом."])
+    session = store.get_session(loop.run_turn(None, "Хочу пожаловаться", llm=llm)["session_id"])
+    assert "попросите его один раз" in prompts.context_block(session)
+    # "почтовый сервер" это не просьба о контакте
+    store.add_message(session["id"], "assistant", "MDaemon это почтовый сервер или шлюз.")
+    assert "попросите его один раз" in prompts.context_block(session)
