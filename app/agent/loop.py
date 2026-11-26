@@ -434,9 +434,11 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     clean, cards, choices = render(reply)
     if not clean.strip():  # ответа нет или в нем одни служебные метки: пустое сообщение клиенту не уходит
         clean, cards, choices = FALLBACK, [], []
-        if s.get("status") != "handoff":
-            hid = store.add_handoff(sid, "агент не смог ответить", f"Последнее сообщение клиента: {text[:500]}", "")
-            ctx.events.append({"type": "handoff", "id": hid, "reason": "агент не смог ответить"})
+        if store.open_handoff(sid) is None:  # не статус с начала хода: заявку мог завести инструмент в этом ходе
+            hid, created = store.handoff(sid, "агент не смог ответить", f"Последнее сообщение клиента: {text[:500]}",
+                                         "")
+            if created:
+                ctx.events.append({"type": "handoff", "id": hid, "reason": "агент не смог ответить"})
     for c in cards:  # показанные карточки тоже считаются известными позициями
         if c["type"] == "offer":
             _remember_items(items, "get_product", {"offers": [{"offer_id": c["id"], "name": c["title"],

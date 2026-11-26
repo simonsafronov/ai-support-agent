@@ -27,6 +27,7 @@ from app.agent import handoff_card
 log = logging.getLogger("notify")
 API = "https://api.telegram.org"
 SETTLE, FRESH, WATCH = 3.0, 900.0, 3600.0  # секунд: дать ходу закончиться; не слать старое; сколько обновлять карточку
+RETRY = 60.0  # секунд до повтора карточки, которую Telegram не принял: сбой не превращается в поток запросов
 EVERY, LONG_POLL = 2.0, 25
 STATUS = {"new": "ждет ответа", "taken": "в работе", "answered": "ответ дан", "returned": "возвращено агенту"}
 LIMIT, MAX_OFFERS = 3900, 12  # знаков в карточке (Telegram берет до 4096), позиций в ней
@@ -36,7 +37,9 @@ HELLO = ("Сюда приходят обращения из чата магаз�
 
 _answer = None  # как записать ответ менеджера: задает сервер при запуске
 _SCHEMA = ("CREATE TABLE IF NOT EXISTS tg_cards(handoff_id INTEGER PRIMARY KEY, chat_id TEXT, message_id INT, "
-           "text TEXT, quote TEXT DEFAULT '', ts REAL)")
+           "text TEXT, quote TEXT DEFAULT '', ts REAL)",
+           "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+_retry_at: dict[int, float] = {}  # номер обращения -> когда снова пробовать отправить или обновить карточку
 
 
 def enabled() -> bool:
@@ -45,7 +48,8 @@ def enabled() -> bool:
 
 def _db():
     con = store.db()
-    con.execute(_SCHEMA)
+    for sql in _SCHEMA:
+        con.execute(sql)
     return con
 
 
@@ -53,6 +57,7 @@ def call(method: str, files: dict | None = None, refusal: bool = False, **params
     """Вызов Telegram Bot API. Возвращает result или None: сбой Telegram не должен ронять чат магазина.
 
     С refusal=True отказ Telegram (связь есть, запрос не принят) возвращается как False, а не None.
+    Отказ правки "message is not modified" это успех: в Telegram уже этот текст, возвращается True.
     """
     try:
         url = f"{API}/bot{config.TG_TOKEN}/{method}"
@@ -61,6 +66,8 @@ def call(method: str, files: dict | None = None, refusal: bool = False, **params
             httpx.post(url, json=params, timeout=timeout)
         body = r.json()
         if not body.get("ok"):
+            if "message is not modified" in str(body.get("description", "")):
+                return True
             log.warning("telegram %s: %s", method, body.get("description"))
             return False if refusal else None
         return body["result"]
@@ -172,19 +179,42 @@ def _send_quote(h: dict, card: dict, message_id: int) -> str:
     return _quote_mark(card) if ok else ""
 
 
+def _since(con, now: float) -> float:
+    """Когда доставка в Telegram впервые заработала на этой базе: заявки задолго до этого менеджеру не шлем."""
+    row = con.execute("SELECT value FROM settings WHERE key='tg_delivery_since'").fetchone()
+    if row is None:
+        con.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('tg_delivery_since', ?)", (str(now),))
+        con.commit()
+        row = con.execute("SELECT value FROM settings WHERE key='tg_delivery_since'").fetchone()
+    return float(row[0])
+
+
+def _later(handoff_id: int, now: float) -> bool:
+    return _retry_at.get(handoff_id, 0) > now
+
+
 def sync() -> int:
-    """Отправляет карточки новых обращений и обновляет отправленные, если карточка изменилась."""
+    """Отправляет карточки открытых обращений и обновляет отправленные, если карточка изменилась.
+
+    Неотправленная открытая заявка уходит, как только Telegram снова доступен, сколько бы ни длился сбой.
+    Старые заявки, лежавшие в базе до первого запуска доставки, не шлются.
+    """
     con, now, done = _db(), time.time(), 0
-    fresh = con.execute(  # диалоги проверочного прогона менеджеру не шлем: это не посетители
-        f"SELECT * FROM handoffs WHERE ts BETWEEN ? AND ? AND id NOT IN (SELECT handoff_id FROM tg_cards) "
+    unsent = con.execute(  # диалоги проверочного прогона менеджеру не шлем: это не посетители
+        f"SELECT * FROM handoffs WHERE status IN ('new', 'taken') AND ts BETWEEN ? AND ? "
+        f"AND id NOT IN (SELECT handoff_id FROM tg_cards) "
         f"AND session_id NOT IN (SELECT id FROM sessions WHERE {store.RUN_CLIENTS}) ORDER BY id",
-        (now - FRESH, now - SETTLE)).fetchall()
-    for h in map(dict, fresh):
+        (_since(con, now) - FRESH, now - SETTLE)).fetchall()
+    for h in map(dict, unsent):
+        if _later(h["id"], now):
+            continue
         card = handoff_card.build(h, now)
         text = card_text(h, card)
         sent = _card_call("sendMessage", text, chat_id=config.TG_CHAT, reply_markup=_buttons(h))
         if sent is None:
-            continue  # Telegram не ответил: попробуем на следующем круге, пока обращение свежее
+            _retry_at[h["id"]] = now + RETRY  # Telegram не принял: повтор на одном из следующих кругов
+            continue
+        _retry_at.pop(h["id"], None)
         con.execute("INSERT OR REPLACE INTO tg_cards(handoff_id, chat_id, message_id, text, quote, ts) "
                     "VALUES(?,?,?,?,?,?)", (h["id"], str(config.TG_CHAT), sent["message_id"], text,
                                             _send_quote(h, card, sent["message_id"]), now))
@@ -196,10 +226,15 @@ def sync() -> int:
         h = _handoff(t["handoff_id"])
         card = handoff_card.build(h, now)
         text, quote = card_text(h, card), t["quote"]
-        if text != t["text"]:
-            _card_call("editMessageText", text, chat_id=t["chat_id"], message_id=t["message_id"],
-                       reply_markup=_buttons(h))
-            done += 1
+        if text != t["text"] and _later(h["id"], now):
+            text = t["text"]  # правка недавно не прошла: повтор позже
+        elif text != t["text"]:
+            if _card_call("editMessageText", text, chat_id=t["chat_id"], message_id=t["message_id"],
+                          reply_markup=_buttons(h)) is None:  # не прошла: в базе остается текст, который в Telegram
+                _retry_at[h["id"]], text = now + RETRY, t["text"]
+            else:
+                _retry_at.pop(h["id"], None)
+                done += 1
         if card["quote"] and _quote_mark(card) != quote:
             quote = _send_quote(h, card, t["message_id"]) or quote
         if text != t["text"] or quote != t["quote"]:

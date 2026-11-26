@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -36,6 +37,7 @@ CREATE INDEX IF NOT EXISTS ix_sessions_client ON sessions(client_id, updated_at)
 
 RUN_CLIENTS = "client_id LIKE 'eval-%' OR client_id = 'demo'"  # диалоги, которые создал прогон, а не посетитель
 
+log = logging.getLogger("store")
 _local = threading.local()
 
 
@@ -62,6 +64,13 @@ def _migrate(con: sqlite3.Connection):
         if column not in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     con.commit()
+    try:  # у диалога не больше одной открытой заявки: правило держит сама база
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_handoffs_open ON handoffs(session_id) "
+                    "WHERE status IN ('new', 'taken')")
+        con.commit()
+    except sqlite3.IntegrityError:  # в базе уже есть дубли из старых версий: работаем без индекса, заявки не теряем
+        con.rollback()
+        log.warning("индекс ux_handoffs_open не создан: у части диалогов несколько открытых заявок")
 
 
 def _j(v) -> str:
@@ -135,12 +144,38 @@ def steps(session_id: str) -> list[dict]:
     return [{**dict(r), "input": json.loads(r["input_json"]), "output": json.loads(r["output_json"])} for r in rows]
 
 
+def handoff(session_id: str, reason: str, summary: str, contact: str) -> tuple[int, bool]:
+    """Открытая заявка диалога или новая, одной транзакцией. Возвращает (номер, создана ли новая).
+
+    Если у диалога уже есть заявка new или taken, новая не заводится: непустые сводка и контакт дополняют
+    открытую, номер и первая причина остаются. Так сбой после передачи не дает менеджеру второй заявки.
+    """
+    con = db()
+    if con.in_transaction:
+        con.commit()
+    con.execute("BEGIN IMMEDIATE")  # между проверкой и записью другой поток заявку не заведет
+    try:
+        row = con.execute("SELECT id, summary, contact FROM handoffs WHERE session_id=? AND status IN ('new', 'taken') "
+                          "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+        if row:
+            hid, created = row["id"], False
+            con.execute("UPDATE handoffs SET summary=?, contact=? WHERE id=?",
+                        (summary or row["summary"], contact or row["contact"], hid))
+        else:
+            hid, created = con.execute("INSERT INTO handoffs(session_id, ts, reason, summary, contact) "
+                                       "VALUES(?,?,?,?,?)",
+                                       (session_id, time.time(), reason, summary, contact)).lastrowid, True
+        con.execute("UPDATE sessions SET status='handoff' WHERE id=?", (session_id,))
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    return hid, created
+
+
 def add_handoff(session_id: str, reason: str, summary: str, contact: str) -> int:
-    cur = db().execute("INSERT INTO handoffs(session_id, ts, reason, summary, contact) VALUES(?,?,?,?,?)",
-                       (session_id, time.time(), reason, summary, contact))
-    db().execute("UPDATE sessions SET status='handoff' WHERE id=?", (session_id,))
-    db().commit()
-    return cur.lastrowid
+    """Номер открытой заявки диалога: существующей или только что заведенной (см. handoff)."""
+    return handoff(session_id, reason, summary, contact)[0]
 
 
 def open_handoff(session_id: str) -> dict | None:
@@ -187,6 +222,10 @@ def last_total(session_id: str) -> float | None:
 
 def drop_session(session_id: str):
     con = db()
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tg_cards'").fetchone():
+        # копия текста карточки Telegram: в ней контакт и реквизиты клиента, она уходит вместе с заявкой
+        con.execute("DELETE FROM tg_cards WHERE handoff_id IN (SELECT id FROM handoffs WHERE session_id=?)",
+                    (session_id,))
     for table in ("messages", "steps", "handoffs", "quotes"):
         con.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
     con.execute("DELETE FROM sessions WHERE id=?", (session_id,))

@@ -105,8 +105,8 @@ async function load() {
     [st.avg_model_seconds_per_turn == null ? "нет данных" : String(st.avg_model_seconds_per_turn).replace(".", ",") + " с", "модель думает на запрос"],
   ].map(([b, s]) => `<div><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join("");
   if (!document.activeElement?.dataset?.eco) economy(st.economy);
-  const open = st.handoffs.filter((h) => h.status === "new" || h.status === "taken"), live = open.filter((h) => !h.from_run);
-  $("handn").textContent = open.length ? `ждут ответа: ${live.length}, из них просрочено: ${live.filter((h) => h.card.overdue).length}${open.length > live.length ? `; из проверочного прогона: ${open.length - live.length}` : ""}` : "";
+  const qu = st.queue;  // счетчики сервер считает по всей открытой очереди, а не по показанным карточкам
+  $("handn").textContent = qu.waiting + qu.from_run ? `ждут ответа: ${qu.waiting}, из них просрочено: ${qu.overdue}${qu.from_run ? `; из проверочного прогона: ${qu.from_run}` : ""}` : "";
   $("hand").innerHTML = st.handoffs.map((h) => card(h, st.now)).join("") || '<div class="empty">Передач менеджеру пока нет.</div>';
   $("rows").innerHTML = ss.sessions.map((s) => `<tr data-id="${esc(s.id)}"><td>${dt(s.created_at)}</td><td>${esc((s.first || "").slice(0, 140))}</td>
     <td>${s.status === "handoff" ? '<span class="tag h">менеджеру</span>' : '<span class="tag">агент</span>'}${s.quotes ? ' <span class="tag">КП</span>' : ""}</td>

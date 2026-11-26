@@ -19,6 +19,7 @@ def calc(dialogs: int, handed: int, cost_total: float, minutes: float | None = N
            "measured": None, "stand": None, "half_year": None, "per_workday": None}
     if not dialogs:
         return out
+    handed = min(max(handed, 0), dialogs)  # переданных не больше диалогов: доля без менеджера от 0 до 1
     closed = dialogs - handed
     share, per_dialog = closed / dialogs, cost_total / dialogs
 

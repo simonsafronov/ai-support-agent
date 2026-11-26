@@ -34,8 +34,8 @@ log = logging.getLogger("server")
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
-    if config.FEED_URL:  # каталог обновляется с фида раз в сутки, пока работает сервер
-        threading.Thread(target=_daily_update, daemon=True).start()
+    # раз в сутки: чистка старых диалогов всегда, обновление каталога с фида, если он задан
+    threading.Thread(target=_daily_update, daemon=True).start()
     notify.start(manager_answer)  # карточки обращений в Telegram и ответы менеджеров оттуда, если бот настроен
     yield
 
@@ -130,7 +130,8 @@ def _daily_work():
     except Exception:
         log.exception("purge")
     try:
-        update_catalog()
+        if config.FEED_URL:
+            update_catalog()
     except Exception:
         log.exception("catalog update")
 
@@ -341,8 +342,10 @@ def failed_turn(sid: str, text: str, error: Exception) -> dict:
     events = []
     if not store.open_handoff(sid):
         contact = store.get_session(sid)["facts"].get("контакт") or ", ".join(loop.mask_contacts(text)[1])
-        hid = store.add_handoff(sid, "сбой при ответе агента", f"Последнее сообщение клиента: {text[:500]}", contact)
-        events.append({"type": "handoff", "id": hid, "reason": "сбой при ответе агента"})
+        hid, created = store.handoff(sid, "сбой при ответе агента", f"Последнее сообщение клиента: {text[:500]}",
+                                     contact)
+        if created:
+            events.append({"type": "handoff", "id": hid, "reason": "сбой при ответе агента"})
     store.add_step(sid, sum(1 for m in store.messages(sid) if m["role"] == "user"), "error", type(error).__name__,
                    {}, {"error": str(error)})
     meta = {"cards": [], "choices": [], "events": events}
@@ -367,14 +370,15 @@ def call_manager(body: CallIn):
     with session_lock(own or body.client_id or "new"):
         s = store.get_session(own, body.client_id, body.page_url)
         sid, ticket = s["id"], store.open_handoff(s["id"])
+        created = False
         if not ticket:
             asked = [m["content"] for m in store.messages(sid) if m["role"] == "user"]
             said = f"Последнее сообщение клиента: {asked[-1][:500]}" if asked else "Клиент еще ничего не написал."
-            hid = store.add_handoff(sid, "клиент позвал менеджера кнопкой", said, s["facts"].get("контакт", ""))
+            hid, created = store.handoff(sid, "клиент позвал менеджера кнопкой", said, s["facts"].get("контакт", ""))
         else:
             hid = ticket["id"]
         reply = CALLED + ("" if s["facts"].get("контакт") else " Оставьте, пожалуйста, почту или телефон для связи.")
-        events = [] if ticket else [{"type": "handoff", "id": hid, "reason": "клиент позвал менеджера кнопкой"}]
+        events = [{"type": "handoff", "id": hid, "reason": "клиент позвал менеджера кнопкой"}] if created else []
         store.add_message(sid, "assistant", reply, {"cards": [], "choices": [], "events": events})
     return {"session_id": sid, "reply": reply, "cards": [], "choices": [], "events": events}
 
@@ -459,17 +463,41 @@ def admin_session(request: Request, session_id: str):
                    for r in rows(con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,)).fetchall())]})
 
 
+OPEN = "status IN ('new', 'taken')"
+OPEN_MAX = 500  # открытых обращений на экране не больше: закрытые добираются до размера страницы
+FROM_RUN = f"session_id IN (SELECT id FROM sessions WHERE {store.RUN_CLIENTS})"
+
+
 def _handoffs(where: str = "", args: tuple = (), limit: int = 50) -> list[dict]:
-    """Обращения с карточками: сначала открытые, внутри них срочные и те, у кого срок реакции ближе."""
-    rows = [dict(r) for r in store.db().execute(f"SELECT * FROM handoffs {where} ORDER BY id DESC LIMIT ?",
-                                                (*args, limit))]
-    run = {r[0] for r in store.db().execute(f"SELECT id FROM sessions WHERE {store.RUN_CLIENTS}")}
+    """Обращения с карточками: сначала открытые, внутри них срочные и те, у кого срок реакции ближе.
+
+    Открытые выбираются все (до OPEN_MAX), закрытые добирают страницу до limit: старое открытое обращение
+    не вытесняется более новыми закрытыми.
+    """
+    con, cond = store.db(), f"{where} AND" if where else "WHERE"
+    rows = [dict(r) for r in con.execute(f"SELECT * FROM handoffs {cond} {OPEN} ORDER BY {FROM_RUN}, id DESC "
+                                         f"LIMIT ?", (*args, OPEN_MAX))]
+    rows += [dict(r) for r in con.execute(f"SELECT * FROM handoffs {cond} NOT {OPEN} ORDER BY id DESC LIMIT ?",
+                                          (*args, max(0, limit - len(rows))))]
+    run = {r[0] for r in con.execute(f"SELECT id FROM sessions WHERE {store.RUN_CLIENTS}")}
     now, order = time.time(), {"high": 0, "normal": 1, "low": 2}
     for h in rows:
         h["card"] = handoff_card.build(h, now)
         h["from_run"] = h["session_id"] in run  # диалог проверочного прогона: менеджер на него не отвечает
     return sorted(rows, key=lambda h: (h["status"] in ("answered", "returned"), h["from_run"],
                                        order[h["card"]["priority"]], h["card"]["sla_due"]))
+
+
+def _queue(now: float) -> dict:
+    """Счетчики очереди по всем открытым обращениям, а не по показанной странице."""
+    con = store.db()
+    count = lambda sql, args=(): con.execute(f"SELECT COUNT(*) FROM handoffs WHERE {OPEN} AND {sql}",
+                                             args).fetchone()[0]
+    late = now - max(handoff_card.SLA_MINUTES.values()) * 60  # старше самого долгого срока реакции: уже просрочено
+    recent = con.execute(f"SELECT * FROM handoffs WHERE {OPEN} AND NOT {FROM_RUN} AND ts>=?", (late,)).fetchall()
+    return {"waiting": count(f"NOT {FROM_RUN}"), "from_run": count(FROM_RUN),
+            "overdue": count(f"NOT {FROM_RUN} AND ts<?", (late,))
+                       + sum(handoff_card.build(dict(h), now)["overdue"] for h in recent)}
 
 
 class TakeIn(BaseModel):
@@ -603,13 +631,15 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
                 card_share: float | None = Query(None, ge=0, le=1), volume: int | None = Query(None, ge=1, le=10**7)):
     con = store.db()
     one = lambda sql: con.execute(sql).fetchone()[0] or 0
+    # диалоги и переданные менеджеру из одной выборки: переданных не больше диалогов, доля от 0 до 1
     dialogs = one("SELECT COUNT(*) FROM sessions WHERE llm_calls>0")
     pt, ct = one("SELECT SUM(prompt_tokens) FROM sessions"), one("SELECT SUM(completion_tokens) FROM sessions")
     turns = one("SELECT COUNT(*) FROM messages WHERE role='user'")
-    handoff = one("SELECT COUNT(DISTINCT session_id) FROM handoffs")
+    handoff = one("SELECT COUNT(DISTINCT session_id) FROM handoffs "
+                  "WHERE session_id IN (SELECT id FROM sessions WHERE llm_calls>0)")
     lat = one("SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' GROUP BY session_id, turn) "
               "WHERE t > 0")  # ходы пакетных прогонов времени не несут и в среднее не идут
-    total = loop.cost_rub(pt, ct)
+    total, now = loop.cost_rub(pt, ct), time.time()
     return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff,
             "without_human_share": round(1 - handoff / dialogs, 3) if dialogs else None,
             "quotes": one("SELECT COUNT(*) FROM quotes"), "learned_answers": answers.count(),
@@ -617,9 +647,10 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
-            "handoffs": _handoffs(), "added_cases": len(cases.load()), "stand_note": config.STAND_NOTE,
+            "handoffs": _handoffs(), "queue": _queue(now), "added_cases": len(cases.load()),
+            "stand_note": config.STAND_NOTE,
             "economy": economy.calc(dialogs, handoff, total, minutes, rub_hour, card_share, volume, pt + ct),
-            "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": time.time()})
+            "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": now})
 
 
 @app.get("/quotes/{name}")
@@ -627,8 +658,10 @@ def quote_file(request: Request, name: str, k: str = Query("", max_length=64)):
     """Файл КП: по подписанной ссылке, которую клиент получил в чате, или с ключом оператора."""
     f = (config.QUOTES_DIR / name).resolve()
     allowed = is_operator(request) or secrets.compare_digest(k.encode(), quote_key(name).encode())
-    if not allowed or f.parent != config.QUOTES_DIR.resolve() or f.suffix != ".pdf" or not f.exists():
-        raise HTTPException(404, "нет такого файла")  # без подписи ответ тот же, что и для несуществующего номера
+    if not allowed or f.parent != config.QUOTES_DIR.resolve() or f.suffix != ".pdf" or not f.exists() or \
+            store.db().execute("SELECT 1 FROM quotes WHERE number=?", (f.stem,)).fetchone() is None:
+        # без подписи ответ тот же, что и для несуществующего номера; файл без записи КП (диалог удален) не отдается
+        raise HTTPException(404, "нет такого файла")
     return FileResponse(f, media_type="application/pdf", filename=name)
 
 
