@@ -76,7 +76,7 @@ function text(s) {
 function add(cls, html) {
   const d = document.createElement("div");
   d.className = cls; d.innerHTML = html; $("log").append(d);
-  $("log").scrollTop = $("log").scrollHeight;
+  scrollEnd();
   return d;
 }
 
