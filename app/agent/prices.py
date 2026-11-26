@@ -57,6 +57,25 @@ _NOT_ASSERT = re.compile(r"\bне\b|\bнет\b|\bни\b|уточн|провер|
                          r"(?:чужом|другом|стороннем|вашем) (?:сч[её]те|кп|предложении)", re.I)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?![а-яёa-z])|\n")  # "руб. за место" фразу не заканчивает
 
+# Сумма без валюты в свободной формулировке: "отдам за 4999", "обойдется вам в 4999", "стоимость лицензии 4999
+# (без НДС)", "1 лицензия = 4999". Между словом о цене и числом допускаются только строчные русские слова:
+# название продукта ("стоимость Microsoft 365") суммой не считается. Год и число с единицей измерения тоже.
+_LOOSE_CUE = (rf"(?:{_CUE}|составит|составляет|будет|отдам|отдадим|уступлю|уступим|"
+              r"обойд[её]тся(?:\s+вам)?\s+в|выйдет\s+в|за|=)")
+_NOT_A_SUM = re.compile(r"артикул|\bкод|номер|№|заказ|сч[её]т|\bкп\b|\bинн\b|\bкпп\b|тел|верси|редакци|выпуск|"
+                        r"\bдо\b|\bс\b|\bот\b|\bпо\b", re.I)
+LOOSE = re.compile(rf"(?<![а-яёa-z])({_LOOSE_CUE})((?:[\s:=~(«\"—–-]+|[а-яё]+\s+){{0,4}}?)(?<![\d.,])({_NUM})"
+                   rf"(?![{_SP}.,'’`]?\d)(?!\s*(?:{_UNIT}|{_CUR}))"
+                   # после суммы конец фразы, знак или предлог; иначе это количество чего-то: "за 100 виртуальных машин"
+                   r"(?=\s*(?:$|[.,;:!?()\n])|\s+(?:в|за|с|со|без|на|при|и|или|для|плюс|это)(?![а-яёa-z]))", re.I)
+LOOSE_MAX = 99_999_999  # длиннее это ИНН, телефон или артикул
+# Сумма словами: "пять тысяч рублей", "полторы тысячи руб.". Сверить ее с каталогом нельзя, значит называть нельзя.
+_NUM_WORD = (r"(?:один|одна|одну|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|\w+надцать|двадцать|тридцать|"
+             r"сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|сто|двести|триста|четыреста|\w+сот|"
+             r"полтор[аы]|пол|тысяч[аиу]?|миллион(?:а|ов)?|млн|тыс\.?)")
+WORDS = re.compile(rf"(?<![а-яёa-z])(?:{_NUM_WORD}\s+){{0,5}}(?:сто|двести|триста|четыреста|[а-яё]+сот|тысяч[аиу]?|"
+                   rf"миллион(?:а|ов)?)\s+{_RUB}", re.I)
+
 
 def _scale(word: str | None) -> float:
     word = (word or "").strip().lower()
@@ -162,7 +181,21 @@ def _bad(text: str, known, said) -> list[tuple[int, int]]:
                 continue  # клиент сам назвал эту сумму, и ответ повторяет ее как его слова, а не как цену товара
             out.append((a, b))
             break
-    return out
+    taken = [(a, b) for a, b, _ in mentions(text)]
+    free = lambda a, b: all(b <= x or a >= y for x, y in taken + out)
+    for m in LOOSE.finditer(text):
+        v, (a, b) = number(m.group(3)), m.span(3)
+        if v is None or not BARE_MIN <= v <= LOOSE_MAX or _is_known(v, known) or not free(a, b):
+            continue
+        if _NOT_A_SUM.search(m.group(2)) or (v == int(v) and 1900 <= v <= 2100 and len(m.group(3)) == 4):
+            continue  # "стоимость по артикулу 4601546", "цена действует до 2027"
+        if _is_known(v, said) and not _asserts_price(_sentence_at(text, a)):
+            continue
+        out.append((a, b))
+    for m in WORDS.finditer(text):
+        if free(*m.span()) and not _NOT_ASSERT.search(_sentence_at(text, m.start())):
+            out.append(m.span())
+    return sorted(out)
 
 
 def unknown(text: str, known, said=()) -> list[str]:
@@ -187,12 +220,24 @@ def mask_unknown(text: str, known, said=()) -> str:
 # Потолок скидки в расчете и в КП держит код. Здесь то же самое для текста ответа: пообещать словами скидку больше
 # своей агент не вправе. Процент из справки или каталога этого диалога (акция вендора "переход со скидкой 50%")
 # пересказать можно, но не от первого лица: "даю вам 50%" остается обещанием.
-PERCENT = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
+_PCT = r"(?:%|процент\w*)"
+PERCENT = re.compile(rf"(\d+(?:[.,]\d+)?)\s*{_PCT}", re.I)
+# процент словами: "десять процентов", "двадцать пять процентов" (берется старшее слово: для сравнения хватает)
+_E = r"(?:ь|и|ью)"
+_WORD_VALUES = tuple((re.compile(rx), v) for rx, v in (  # числительные от шести: меньшие обещанием сверх своей не будут
+    (rf"шест{_E}", 6), (rf"сем{_E}", 7), (r"восемь|восьми", 8), (rf"девят{_E}", 9), (rf"десят{_E}", 10),
+    (rf"одиннадцат{_E}", 11), (rf"двенадцат{_E}", 12), (rf"тринадцат{_E}", 13), (rf"четырнадцат{_E}", 14),
+    (rf"пятнадцат{_E}", 15), (rf"шестнадцат{_E}", 16), (rf"семнадцат{_E}", 17), (rf"восемнадцат{_E}", 18),
+    (rf"девятнадцат{_E}", 19), (rf"двадцат{_E}", 20), (rf"тридцат{_E}", 30), (r"сорока?", 40),
+    (r"пятьдесят|пятидесяти", 50), (r"половин[ауы]", 50)))
+WORD_PERCENT = re.compile(r"(?<![а-яё])((?:[а-яё]+\s+){1,2})процент", re.I)
+# о снижении цены говорят и без слова "скидка": "минус 15% от цены", "цена будет на 20% ниже"
+_CHEAPER = re.compile(r"скидк|дисконт|дешевле|ниже|минус|уступ|сброш|сниж|сбав", re.I)
 REFUSAL = re.compile(r"не могу|не вправе|нельзя|не даю|не обещаю|не в моих|менеджер|больше\s+\d", re.I)
 _HARD_REFUSAL = re.compile(r"не могу|не вправе|нельзя|не даю|не обещаю|не в моих", re.I)
 _RESTATE = re.compile(r"прос(?:ите|или|ил|ит|ьб)|запр(?:ос|аш|ош)|хот(?:ите|ели)|по вопросу|насч[её]т|"
                       r"вы (?:назвали|указали|написали|упомянули|говорили)", re.I)
-_TO_PERCENT = r"[^.!?%\d]{0,30}?(\d+(?:[.,]\d+)?)\s*%"
+_TO_PERCENT = r"[^.!?%\d]{0,30}?(\d+(?:[.,]\d+)?)\s*" + _PCT
 # агент дает скидку сам: процент идет сразу за этими словами
 _GIVE_SELF = re.compile(r"(?:\bда(?:ю|м|дим|[её]м)\b|предоставл?(?:ю|яю|им|яем)\b|сдела(?:ю|ем|л[аи]?)\b|"
                         r"примен(?:ю|яю|им|яем|ил[аи]?)\b|учт[уеё]м?\b|уч[её]л[аи]?\b|"
@@ -232,10 +277,21 @@ def _discount_percents(sentence: str) -> list[str]:
             if "ндс" not in sentence[max(0, m.start() - 12):m.end() + 8].lower()]
 
 
+def _word_percents(sentence: str) -> list[str]:
+    """Проценты, названные словами: "скидка десять процентов"."""
+    found = []
+    for m in WORD_PERCENT.finditer(sentence):
+        values = [v for word in m.group(1).lower().split() for rx, v in _WORD_VALUES if rx.fullmatch(word)]
+        value = max(values, default=None)
+        if value is not None and "ндс" not in sentence[max(0, m.start() - 12):m.end() + 8].lower():
+            found.append(str(value))
+    return found
+
+
 def _promises_too_much(sentence: str, allowed=()) -> bool:
-    if "скидк" not in sentence.lower() or _HARD_REFUSAL.search(sentence):
+    if not _CHEAPER.search(sentence) or _HARD_REFUSAL.search(sentence):
         return False
-    over = [p for p in _discount_percents(sentence) if _over(p)]
+    over = [p for p in _discount_percents(sentence) + _word_percents(sentence) if _over(p)]
     if not over:
         return False
     if any(_over(m.group(1)) for m in _GIVE_SELF.finditer(sentence)) or _APPROVED.search(sentence):

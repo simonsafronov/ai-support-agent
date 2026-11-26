@@ -3,7 +3,9 @@ services:
     build: .
     env_file: .env
     ports:
-      - "8000:8000"
+      # только с этой машины: снаружи сервис доступен через прокси (Caddy). Открытый порт дает обойти лимит
+      # частоты поддельным X-Forwarded-For
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/srv/data
     restart: unless-stopped

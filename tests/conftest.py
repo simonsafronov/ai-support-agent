@@ -8,14 +8,19 @@ from app import config, store
 HAVE_DATA = config.CATALOG_DB.exists() and config.KB_DB.exists()
 
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    outcome = yield
-    report = outcome.get_result()
-    if report.failed and call.when in ("setup", "call") and not HAVE_DATA:
-        report.outcome = "skipped"
-        report.longrepr = (str(item.fspath), item.location[1] or 0,
-                           "Skipped: нет баз каталога и справки, соберите их по README (раздел Запуск)")
+def pytest_configure(config):
+    config.addinivalue_line("markers", "needs_data: тесту нужны собранные базы каталога и справки заказчика")
+
+
+def pytest_collection_modifyitems(items):
+    """Тест с пометкой needs_data на чистом клоне пропускается. Любой другой упавший тест падает: раньше здесь
+    стоял перехват, который без баз превращал в пропуск любое падение, и настоящая ошибка была не видна."""
+    if HAVE_DATA:
+        return
+    skip = pytest.mark.skip(reason="нет баз каталога и справки, соберите их по README (раздел Запуск)")
+    for item in items:
+        if item.get_closest_marker("needs_data"):
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)

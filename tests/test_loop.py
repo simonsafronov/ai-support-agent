@@ -23,6 +23,7 @@ def offer(product):
     return priced[0]
 
 
+@pytest.mark.needs_data
 def test_tool_call_then_reply_with_card(product):
     llm = Scripted([
         {"name": "search_products", "args": {"query": "Kaspersky Endpoint Security"}},
@@ -41,6 +42,7 @@ def test_tool_call_then_reply_with_card(product):
     assert llm.calls[1][-1]["role"] == "tool" and "products" in llm.calls[1][-1]["content"]
 
 
+@pytest.mark.needs_data
 def test_marker_does_not_repeat_the_written_title(product):
     mark = f"[[product:{product['product_id']}]]"
     clean, cards, _ = loop.render(f"Есть {product['title']} {mark} (вендор), цена за позицию, {mark}.")
@@ -48,6 +50,7 @@ def test_marker_does_not_repeat_the_written_title(product):
     assert loop.render(f"Есть {mark} (вендор).")[0] == f"Есть {product['title']} (вендор)."
 
 
+@pytest.mark.needs_data
 def test_price_from_catalog_passes_guard(product, offer):
     llm = Scripted([
         {"name": "get_product", "args": {"product_id": str(product["product_id"])}},
@@ -96,6 +99,7 @@ def test_model_words_do_not_replace_the_client_contact():
     assert "store@softline.ru" in said and "zakupki@" not in said and "[email]" in said
 
 
+@pytest.mark.needs_data
 def test_agent_gives_at_most_five_percent_and_requisites_stay_hidden(offer):
     qty = offer["qty_min"] or 1
     full = round(offer["price"] * qty, 2)
@@ -119,6 +123,7 @@ def test_agent_gives_at_most_five_percent_and_requisites_stay_hidden(offer):
     assert quote["customer_missing"] == []  # реквизиты в КП подставил код
 
 
+@pytest.mark.needs_data
 def test_small_discount_goes_to_the_quote_and_a_bigger_one_to_the_manager_card(offer):
     qty = offer["qty_min"] or 1
     full = round(offer["price"] * qty, 2)
@@ -160,6 +165,7 @@ def test_field_names_never_reach_the_client():
     assert loop.internal_names("Товар auto_model, артикул LBP-AC-12M-50-A3, цена price_for", known) == ["price_for"]
 
 
+@pytest.mark.needs_data
 def test_calc_total_feeds_the_guard(offer):
     qty = offer.get("qty_min") or 50                     # количество внутри ступени этого варианта
     total = round(offer["price"] * qty, 2)
@@ -172,6 +178,7 @@ def test_calc_total_feeds_the_guard(offer):
     assert not [t for t in res["trace"] if t["kind"] == "guard"]
 
 
+@pytest.mark.needs_data
 def test_calc_total_refuses_quantity_outside_price_tier():
     from app.agent import tools
     out = tools.call(tools.ToolContext("s"), "calc_total", {"items": [{"offer_id": 4857, "qty": 120}]})
@@ -243,6 +250,7 @@ def test_handoff_tool_creates_ticket_for_operator():
     assert store.get_session(res["session_id"])["status"] == "handoff"
 
 
+@pytest.mark.needs_data
 def test_page_hint_names_product_from_url():
     hint = loop.page_hint("https://store.softline.ru/kaspersky/kaspersky-endpoint-security-dlya-biznesa-standartnyy/")
     assert "Клиент пишет со страницы" in hint
@@ -283,6 +291,7 @@ def test_long_tool_result_stays_valid_json():
     assert json.loads(loop.fit_json({"a": 1}, 3000)) == {"a": 1}
 
 
+@pytest.mark.needs_data
 def test_markers_leave_clean_punctuation():
     text, _, _ = loop.render("Вариант: 3 940,20 руб. [[offer:1]]. Также есть: [[product:2]] Dr.Web, цена ниже...")
     assert text == "Вариант: 3 940,20 руб. Также есть: Dr.Web, цена ниже..."
@@ -300,6 +309,7 @@ def test_model_sees_tool_output_without_links_and_unknown_flags():
     assert tools.slim("kb_search", kb) == kb                                # на справку агент ссылается
 
 
+@pytest.mark.needs_data
 def test_total_from_earlier_turn_can_be_repeated(offer):
     qty = offer.get("qty_min") or 3
     total = round(offer["price"] * qty, 2)
@@ -347,11 +357,13 @@ def test_contact_is_hidden_from_model_and_reaches_manager():
     assert store.messages(res["session_id"])[0]["content"].count("ivanov@romashka.example") == 1  # оператор видит как есть
 
 
+@pytest.mark.needs_data
 def test_marker_used_instead_of_name_gets_the_name(offer):
     clean, cards, _ = loop.render(f"Есть варианты, например [[offer:{offer['offer_id']}]] (цена в карточке).")
     assert cards and cards[0]["title"] in clean and "например (" not in clean
 
 
+@pytest.mark.needs_data
 def test_unambiguous_search_brings_variants_in_the_same_step(product):
     llm = Scripted([{"name": "search_products", "args": {"query": product["title"]}}, "Нашел."])
     res = loop.run_turn(None, "Нужен " + product["title"], llm=llm)
@@ -361,6 +373,7 @@ def test_unambiguous_search_brings_variants_in_the_same_step(product):
         assert store.get_session(res["session_id"])["items"]["offers"]  # варианты запомнены, как после get_product
 
 
+@pytest.mark.needs_data
 def test_perpetual_term_filter_reaches_catalog():
     from app.agent import tools
     astra = catalog.search_products("Astra Linux Special Edition", limit=1)["products"][0]
@@ -368,6 +381,7 @@ def test_perpetual_term_filter_reaches_catalog():
     assert out["matching"] and all(o["term_months"] == 0 for o in out["offers"])
 
 
+@pytest.mark.needs_data
 def test_repeat_call_deadline_and_last_step(monkeypatch):
     call = {"name": "search_products", "args": {"query": "Kaspersky"}}
     res = loop.run_turn(None, "Нужен Касперский", llm=Scripted([call, call, "Нашел."]))
@@ -394,6 +408,7 @@ def test_client_text_reaches_model_without_markers_and_budget_stops_spending(mon
     assert stopped["reply"] == loop.FALLBACK and stopped["usage"]["llm_calls"] == 0
 
 
+@pytest.mark.needs_data
 def test_quote_requisites_are_remembered_between_calls(offer):
     """Название, ИНН и КПП клиент дает по частям: графа «Заказчик» собирается из всего, что уже названо."""
     from app.agent import tools

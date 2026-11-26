@@ -46,6 +46,7 @@ def quote(monkeypatch, offer, client_id="buyer") -> dict:
 
 # --- ответы менеджеров как знание: данные первого клиента не достаются второму ---
 
+@pytest.mark.needs_data
 def test_shared_manager_answer_does_not_carry_client_data(monkeypatch):
     first = loop.run_turn(None, "ООО Ромашка ИНН 7707083893, Иванов Петр, тел. +7 916 123-45-67: можно ли постоплату "
                                 "за лицензии?", client_id="a", llm=Scripted([
@@ -77,6 +78,7 @@ def test_shared_manager_answer_does_not_carry_client_data(monkeypatch):
 
 # --- след шагов в браузере: только то, что рисует панель «Ход работы агента» ---
 
+@pytest.mark.needs_data
 def test_chat_reply_trace_has_no_tool_payloads_or_paths(monkeypatch, priced_offer):
     reply, raw = chat(monkeypatch, [
         {"name": "search_products", "args": {"query": "Kaspersky Endpoint Security"}},
@@ -125,6 +127,7 @@ def test_any_failure_gives_fallback_and_handoff(monkeypatch):
 
 # --- файл КП: по подписанной ссылке из чата или с ключом оператора ---
 
+@pytest.mark.needs_data
 def test_quote_file_needs_signed_link_or_operator_key(monkeypatch, priced_offer):
     reply = quote(monkeypatch, priced_offer)
     (event,) = [e for e in reply["events"] if e["type"] == "quote"]
@@ -140,6 +143,7 @@ def test_quote_file_needs_signed_link_or_operator_key(monkeypatch, priced_offer)
     assert urls == [event["url"]]
 
 
+@pytest.mark.needs_data
 def test_client_cannot_get_a_signature_for_someone_elses_quote(monkeypatch, priced_offer):
     target = quote(monkeypatch, priced_offer, client_id="victim")["events"][0]["number"]
     reply, raw = chat(monkeypatch, [f"Вот ссылка: /quotes/{target}.pdf"],
@@ -147,6 +151,7 @@ def test_client_cannot_get_a_signature_for_someone_elses_quote(monkeypatch, pric
     assert "?k=" not in raw  # подпись получают только ссылки, которые поставил код
 
 
+@pytest.mark.needs_data
 def test_view_mode_has_no_quote_links_and_no_client_ids(monkeypatch, priced_offer):
     reply = quote(monkeypatch, priced_offer)
     sid = reply["session_id"]
@@ -204,6 +209,7 @@ def test_rate_limit_ignores_spoofed_forwarded_for(monkeypatch):
     assert other.status_code == 200
 
 
+@pytest.mark.needs_data
 def test_price_guard_demo_is_rate_limited(monkeypatch):
     monkeypatch.setattr(server.config, "CHAT_RATE_PER_MIN", 1)
     assert client.post("/api/proof").status_code == 200

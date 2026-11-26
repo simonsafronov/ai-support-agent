@@ -76,6 +76,7 @@ def test_only_store_pages_are_requested_and_setting_turns_it_off(monkeypatch):
     assert cards.about("3101", URL) == ""
 
 
+@pytest.mark.needs_data
 def test_agent_gets_the_description_with_product_variants_and_no_catalog_wide_price_range(monkeypatch):
     from app.agent import tools
     from app.catalog import search as catalog
@@ -90,6 +91,7 @@ def test_agent_gets_the_description_with_product_variants_and_no_catalog_wide_pr
     assert all(o.get("price") for o in out["offers"])  # цены конкретных вариантов на месте
 
 
+@pytest.mark.needs_data
 def test_search_shows_a_short_description_only_from_the_store(monkeypatch):
     from app.agent import tools
 

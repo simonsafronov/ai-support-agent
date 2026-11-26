@@ -8,7 +8,20 @@ const hm = (t) => new Date(t * 1000).toLocaleTimeString("ru-RU", { hour: "2-digi
 const token = new URLSearchParams(location.search).get("token") || "";
 const head = token ? { "X-Admin-Token": token } : {};
 const get = async (u) => (await fetch(u, { headers: head })).json();
-const post = async (u, body) => (await fetch(u, { method: "POST", headers: { ...head, "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })).json();
+const fail = (text) => { const e = $("err"); e.textContent = text; e.hidden = !text; if (text) e.scrollIntoView({ block: "nearest" }); };
+// Действие оператора: при отказе сервера или обрыве сети возвращает null и показывает причину, экран не перерисовывается
+const post = async (u, body) => {
+  try {
+    const r = await fetch(u, { method: "POST", headers: { ...head, "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { fail(`Не выполнено (${r.status}): ${typeof data.detail === "string" ? data.detail : "сервер отклонил запрос"}. Повторите.`); return null; }
+    fail("");
+    return data;
+  } catch (e) {
+    fail("Не выполнено: нет связи с сервером. Текст на месте, повторите отправку.");
+    return null;
+  }
+};
 if (token) $("exp").href += "?token=" + encodeURIComponent(token);
 const STATUS = { new: "ждет менеджера", taken: "в работе", answered: "отвечено", returned: "возвращено агенту" };
 const eco = {};  // допущения, которые оператор поменял на экране
@@ -97,7 +110,7 @@ async function load() {
   });
   document.querySelectorAll(".card button[data-do]").forEach((b) => (b.onclick = async () => {
     const h = b.closest(".card").dataset.h;
-    await post(`/api/admin/handoff/${h}/${b.dataset.do}`, b.dataset.do === "take" ? { who: localStorage.getItem("who") || "менеджер" } : {});
+    if (!await post(`/api/admin/handoff/${h}/${b.dataset.do}`, b.dataset.do === "take" ? { who: localStorage.getItem("who") || "менеджер" } : {})) return;
     await load(); if (current) show(current);
   }));
 }
@@ -146,7 +159,8 @@ async function show(id) {
     box.querySelector("button[data-send]").onclick = async () => {
       const answer = area.value.trim();
       if (!answer) return;
-      await post(`/api/admin/handoff/${box.dataset.h}/answer`, { answer, teach: box.querySelector("input").checked });
+      const sent = await post(`/api/admin/handoff/${box.dataset.h}/answer`, { answer, teach: box.querySelector("input").checked });
+      if (!sent) return;  // ответ клиенту не ушел: текст менеджера остается в поле
       await load(); show(id);
     };
   });
@@ -155,10 +169,10 @@ async function show(id) {
     const pick = box.querySelector("select").value;
     const r = await post(`/api/admin/session/${id}/case`, { handoff: pick === "any" ? null : pick === "yes", quote: box.querySelector("input[type=checkbox]").checked, note: box.querySelector("input[type=text]").value });
     const tag = box.querySelector(".tag");
-    tag.hidden = false; tag.textContent = r.ok ? `добавлен кейс ${r.case_id}, со стенда в наборе: ${r.added_cases}` : "не получилось добавить";
+    tag.hidden = false; tag.textContent = r && r.ok ? `добавлен кейс ${r.case_id}, со стенда в наборе: ${r.added_cases}` : "не получилось добавить";
     load();
   };
 }
-$("upd").onclick = async () => { await post("/api/admin/catalog/update"); load(); };
+$("upd").onclick = async () => { if (await post("/api/admin/catalog/update")) load(); };
 const busy = () => document.querySelector(".ans textarea:focus, .case input:focus, .case select:focus, .eco input:focus") || [...document.querySelectorAll(".ans textarea, .case input[type=text]")].some((e) => e.value);
 load(); setInterval(() => { if (!busy()) load(); }, 15000);

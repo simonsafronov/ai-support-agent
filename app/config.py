@@ -51,7 +51,7 @@ PRICE_OUT_PER_1K = float(env("PRICE_OUT_PER_1K", "0.65"))
 MAX_PARALLEL_TURNS = int(env("MAX_PARALLEL_TURNS", "4"))  # ходов одновременно; GigaChat для физлиц держит 1 поток
 TURN_DEADLINE = float(env("TURN_DEADLINE", "60"))         # секунд на один ход клиента, 0 = без предела
 CHAT_RATE_PER_MIN = int(env("CHAT_RATE_PER_MIN", "10"))   # сообщений в минуту с одного адреса, 0 = без предела
-DAILY_BUDGET_RUB = float(env("DAILY_BUDGET_RUB", "0"))    # потолок расхода на модель за сутки, 0 = без потолка
+DAILY_BUDGET_RUB = float(env("DAILY_BUDGET_RUB", "500"))  # потолок расхода на модель за сутки, 0 = без потолка
 RETENTION_DAYS = int(env("RETENTION_DAYS", "90"))         # сколько дней хранятся диалоги с контактами клиентов
 PREVIOUS_VISIT_DAYS = int(env("PREVIOUS_VISIT_DAYS", "30"))  # прошлый визит старше этого агент не вспоминает
 

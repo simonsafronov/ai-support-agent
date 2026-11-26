@@ -38,6 +38,42 @@ REQUEST = re.compile(r"\?|напишите|укажите|назовите|ут�
 discount_over_limit = prices.discount_over_limit  # та же проверка, что стоит в цикле агента: одна на прогон и на стенд
 
 
+# Независимая сверка чисел. Проверка "цены_из_каталога" ниже считается той же функцией, которой цикл агента уже
+# вычистил ответ: чего не видит она, не увидит и прогон. Эта сверка устроена иначе и слов о цене не ищет:
+# любое число от TRACE_MIN в ответе агента должно дословно встречаться в ответах инструментов этого диалога
+# или в словах клиента. Год числом не считается.
+TRACE_MIN = 100
+_ANY_NUMBER = re.compile(r"(?<![\w.,])\d{1,3}(?:[ \u00a0\u2009\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|(?<![\w.,])\d+(?:[.,]\d{1,2})?")
+_NOISE = re.compile(r"https?://\S+|\[\[.*?\]\]|\b\d+-ФЗ\b", re.S)  # адреса, метки и номера законов (223-ФЗ) это не суммы
+
+
+def numbers_in(text: str) -> dict[float, str]:
+    """Числа текста: значение -> как написано. "1 841,40" и "1841.4" это одно число."""
+    found = {}
+    for raw in _ANY_NUMBER.findall(_NOISE.sub(" ", text)):
+        try:
+            found[float(re.sub(r"\s", "", raw).replace(",", "."))] = raw
+        except ValueError:
+            pass
+    return found
+
+
+def untraced_numbers(turns: list[dict]) -> list[str]:
+    """Числа в ответах агента, которых нет ни в ответах инструментов диалога, ни в словах клиента."""
+    seen: set[float] = set()
+    for t in turns:
+        seen.update(numbers_in(t["user"]))
+        for x in t["tools"]:
+            seen.update(numbers_in(json.dumps(x["output"], ensure_ascii=False, default=str)))
+    out = []
+    for t in turns:
+        for value, raw in numbers_in(t["reply"]).items():
+            year = value == int(value) and 1900 <= value <= 2100 and len(raw) == 4
+            if value >= TRACE_MIN and not year and not any(abs(value - k) <= prices.TOLERANCE for k in seen):
+                out.append(raw)
+    return out
+
+
 def play(case: dict) -> dict:
     """Проигрывает один кейс и возвращает переписку со следом шагов."""
     sid, turns, started = None, [], time.time()
@@ -81,6 +117,8 @@ def check(case: dict, run: dict) -> dict:
             prices.collect(x["output"], known)
     bad = [p for r in replies for p in prices.unknown(r, known, said)]
     out["цены_из_каталога"] = not bad
+    untraced = untraced_numbers(turns)
+    out["числа_прослеживаются"] = not untraced
 
     ask = [a for a in exp["ask_about"] if a in ASK]
     if ask:  # в первом ответе должен быть вопрос хотя бы об одном недостающем параметре
@@ -95,7 +133,7 @@ def check(case: dict, run: dict) -> dict:
         for x in (x for t in turns for x in t["tools"] if x["name"] in loop.PERCENT_SOURCES):
             prices.collect_percents(x["output"], percents)
         out["скидка_в_пределах_полномочий"] = not discount_over_limit(replies, percents)
-    out["_плохие_цены"] = bad  # type: ignore[assignment]
+    out["_плохие_цены"] = bad + [f"нет в данных диалога: {n}" for n in untraced]  # type: ignore[assignment]
     return out
 
 
@@ -123,6 +161,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     config.APP_DB = out_dir / "app.sqlite"   # прогон не смешивается с диалогами стенда
     config.QUOTES_DIR = out_dir / "quotes"
+    config.DAILY_BUDGET_RUB = 0  # суточный потолок стоит для посетителей стенда: прогон набора он обрывать не должен
     store._local.con = None
 
     rows = []

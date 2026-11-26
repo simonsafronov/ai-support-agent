@@ -246,6 +246,7 @@ def test_word_forms_and_yo_give_same_results():
     assert urls("возврат лицензии") == urls("возвраты лицензий")
 
 
+@pytest.mark.needs_data
 def test_unknown_product_name_marks_results_as_off_topic():
     res = kb_search("XSpider продление лицензии")
     assert "xspider" in res["note"]

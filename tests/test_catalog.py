@@ -342,6 +342,7 @@ def test_text_normalization():
         "dr", "web", "р7", "офис", "1с", "бухгалтерия", "компас", "3d"]
 
 
+@pytest.mark.needs_data
 def test_article_is_found_inside_a_sentence():
     result = search_products("здравствуйте, можете оформить кп на артикул: kl4863rapfs 40 лицензий")
     assert result["products"], result
@@ -349,6 +350,7 @@ def test_article_is_found_inside_a_sentence():
     assert (hit.get("vendor_code") or "").lower() == "kl4863rapfs"
 
 
+@pytest.mark.needs_data
 def test_long_polite_message_still_finds_the_product():
     result = search_products("добрый день интересует возможность приобретения лицензии kaspersky endpoint "
                              "security для бизнеса расширенный сроком на 3 года для 100 пользователей")
@@ -396,6 +398,7 @@ def test_live_search_says_when_word_is_not_in_catalog():
         assert "rupost" in res["note"]
 
 
+@pytest.mark.needs_data
 def test_price_range_covers_all_matching_not_only_shown():
     """Вилка цен по всем подходящим вариантам, а не по шести показанным."""
     pid = search_products("Kaspersky Endpoint Security", limit=1)["products"][0]["product_id"]
@@ -407,11 +410,13 @@ def test_price_range_covers_all_matching_not_only_shown():
     assert res["all_matching"]["price_max"] >= max(o["price"] or 0 for o in res["offers"])
 
 
+@pytest.mark.needs_data
 def test_empty_search_tells_how_to_search_further():
     res = search_products("зщшгнекуц", limit=3)
     assert res["match"] == "none" and "названию конкретного продукта" in res["note"]
 
 
+@pytest.mark.needs_data
 def test_single_licence_goes_before_tiers_that_start_higher():
     """Нужна 1 лицензия, а ступени начинаются с 2: первым идет вариант без ступени, а не ближайшая ступень."""
     pid = search_products("Handy Backup", limit=1)["products"][0]["product_id"]

@@ -31,6 +31,7 @@ def _handoff_dialog() -> tuple[str, int]:
     return res["session_id"], store.open_handoff(res["session_id"])["id"]
 
 
+@pytest.mark.needs_data
 def test_manager_answer_reaches_client_and_teaches_agent():
     sid, hid = _handoff_dialog()
     r = client.post(f"/api/admin/handoff/{hid}/answer", headers=KEY, json={
@@ -173,6 +174,7 @@ def test_client_calls_manager_by_button_without_the_model():
     assert [x[0] for x in rows] == ["клиент позвал менеджера кнопкой"]
 
 
+@pytest.mark.needs_data
 def test_handoff_card_is_built_by_code_and_sorted_by_urgency(priced_offer):
     _handoff_dialog()  # обычное обращение без срочной темы
     sid, hid = _tender_dialog(priced_offer)
@@ -189,6 +191,7 @@ def test_handoff_card_is_built_by_code_and_sorted_by_urgency(priced_offer):
     assert demo["client"]["контакт"] == "[email]"
 
 
+@pytest.mark.needs_data
 def test_view_mode_hides_requisites_and_quote_files(priced_offer):
     res = loop.run_turn(None, "Нужно КП, ИНН 7701234567, КПП 770101001", llm=Scripted([
         {"name": "make_quote", "args": {"items": [{"offer_id": priced_offer["offer_id"], "qty": priced_offer["qty"]}],
@@ -215,6 +218,7 @@ def test_view_mode_hides_requisites_and_quote_files(priced_offer):
     assert card["url"] == "" and card["number"] == number
 
 
+@pytest.mark.needs_data
 def test_manager_takes_and_returns_a_request(priced_offer):
     sid, hid = _tender_dialog(priced_offer)
     assert client.post(f"/api/admin/handoff/{hid}/take", json={"who": "Анна"}).status_code == 403
@@ -261,6 +265,7 @@ def test_failed_dialog_becomes_a_regression_case(tmp_path, monkeypatch):
     assert len(cases.load()) == 1 and cases.load()[0]["expect"]["handoff"] == "any"  # повтор заменяет кейс
 
 
+@pytest.mark.needs_data
 def test_price_guard_demo_shows_both_outcomes():
     before = store.db().execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     r = client.post("/api/proof").json()
@@ -272,6 +277,7 @@ def test_price_guard_demo_shows_both_outcomes():
     assert client.get("/proof").status_code == 200
 
 
+@pytest.mark.needs_data
 def test_health_names_the_model_and_tells_if_it_answers_now(monkeypatch, tmp_path):
     """Чат и экран оператора берут отсюда имя модели; у моста еще и то, на связи ли исполнитель."""
     from app.agent import llm
