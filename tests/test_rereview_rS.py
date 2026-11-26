@@ -3,6 +3,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import store
+from app.agent import loop
+from app.agent.llm import Scripted
 from app.web import server
 
 client = TestClient(server.app)
@@ -118,3 +120,27 @@ def test_client_chat_still_reads_its_own_dialog(stand_dialogs):
     answers = client.get(f"/api/session/{sid}/answers", params={"client_id": "w3-rS-visitor"})
     assert answers.status_code == 200 and answers.json() == {"answers": []}
     assert client.get(f"/api/session/{sid}", params={"client_id": "demo"}).status_code == 404
+
+
+# --- две доли без менеджера: среди диалогов с агентом и среди всех обращений ---
+
+def test_reviewer_example_one_agent_dialog_and_two_button_calls():
+    loop.run_turn(None, "Здравствуйте", client_id="w3-rS-agent", llm=Scripted(["Здравствуйте, чем помочь?"]))
+    for who in ("w3-rS-button-1", "w3-rS-button-2"):  # прямой вызов менеджера кнопкой: модель не вызывалась
+        client.post("/api/chat/handoff", json={"client_id": who})
+    st = client.get("/api/admin/stats", headers=KEY).json()
+    assert (st["closed_dialogs"], st["dialogs"], st["without_human_share"]) == (1, 1, 1.0)
+    assert (st["closed_dialogs"], st["requests"], st["requests_without_human_share"]) == (1, 3, 0.333)
+    # экономика считается от доли среди диалогов с агентом, вызовы кнопкой в нее не входят
+    assert st["economy"]["measured"]["closed_share"] == st["without_human_share"]
+    seen = client.get("/api/admin/stats").json()  # без ключа обращений посетителей нет и в этих счетчиках
+    assert (seen["requests"], seen["requests_without_human_share"]) == (0, None)
+
+
+def test_dialog_handed_after_the_agent_is_one_request():
+    sid = loop.run_turn(None, "Нужен счет на оплату", client_id="w3-rS-a", llm=Scripted(["Подготовлю."]))["session_id"]
+    client.post("/api/chat/handoff", json={"client_id": "w3-rS-a", "session_id": sid})
+    store.get_session(None, "w3-rS-empty")  # чат открыт, но клиент ничего не написал: это не обращение
+    st = client.get("/api/admin/stats", headers=KEY).json()
+    assert (st["closed_dialogs"], st["dialogs"], st["requests"]) == (0, 1, 1)
+    assert st["without_human_share"] == st["requests_without_human_share"] == 0

@@ -814,11 +814,16 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
     turns = one(f"SELECT COUNT(*) FROM messages WHERE role='user' AND {where_id}")
     handoff = one("SELECT COUNT(DISTINCT session_id) FROM handoffs "
                   f"WHERE session_id IN (SELECT id FROM sessions WHERE llm_calls>0 AND {where_s})")
+    closed = dialogs - handoff  # диалоги с агентом без передачи менеджеру: числитель обеих долей
+    # все обращения клиентов: диалоги с агентом и вызовы менеджера без диалога с агентом (кнопкой, после сбоя)
+    requests = one(f"SELECT COUNT(*) FROM sessions WHERE {where_s} "
+                   "AND (llm_calls>0 OR id IN (SELECT session_id FROM handoffs))")
     lat = one(f"SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' AND {where_id} "
               "GROUP BY session_id, turn) WHERE t > 0")  # ходы пакетных прогонов времени не несут и в среднее не идут
     total, now = loop.cost_rub(pt, ct), time.time()
-    return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff,
-            "without_human_share": round(1 - handoff / dialogs, 3) if dialogs else None,
+    return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff, "closed_dialogs": closed,
+            "without_human_share": round(closed / dialogs, 3) if dialogs else None,  # от нее считается экономика
+            "requests": requests, "requests_without_human_share": round(closed / requests, 3) if requests else None,
             "quotes": one(f"SELECT COUNT(*) FROM quotes WHERE {where_id}"), "learned_answers": answers.count(),
             "prompt_tokens": pt, "completion_tokens": ct,
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
