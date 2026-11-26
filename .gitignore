@@ -10,3 +10,6 @@ data/runtime/
 *.db
 out/
 .DS_Store
+data/raw/
+data/db/
+*.log
