@@ -306,7 +306,7 @@ def _ru(x: float, d: int = 0) -> str:
 
 def _hours(minutes: float) -> str:
     m = round(minutes)
-    return f"{_ru(m // 60)} ч" + (f" {m % 60} мин" if m % 60 else "")
+    return f"{_ru(m // 60)} ч" if not m % 60 else f"около {_ru(round(m / 60))} ч"  # расчет на допущениях: до часа
 
 
 def before_after(eco: dict, share: float | None, closed: int, requests: int) -> list[dict]:
@@ -333,7 +333,7 @@ def before_after(eco: dict, share: float | None, closed: int, requests: int) -> 
          "after": {"value": f"около {_ru(FIRST_STEP_SEC)} с", "note": "первый шаг агента виден клиенту, docs/report.md, раздел 9",
                    "who": "замер стенда"}},
         {"title": "Обращения без менеджера",
-         "before": {"value": "0%", "note": "каждое обращение обрабатывает менеджер", "who": "оценка заказчика"},
+         "before": {"value": "0%", "note": "каждое обращение обрабатывает менеджер", "who": "со слов заказчика"},
          "after": {"value": "нет данных" if share is None else f"{round(share * 100)}%",
                    "note": "" if share is None else f"{_ru(closed)} из {_ru(requests)} обращений, включая вызов менеджера кнопкой",
                    "who": "замер стенда"}},
