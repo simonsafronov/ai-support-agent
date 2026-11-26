@@ -36,7 +36,7 @@ def _search_products(ctx, query: str, vendor: str = "", only_available: bool = F
         # продукт найден однозначно: его варианты отдаются сразу, второй вызов модели на get_product не нужен
         top = catalog.get_product(first["product_id"], limit=4)
         res["first_product"] = {"product_id": first["product_id"], **{k: top[k] for k in (
-            "matching", "facets", "clarify", "offers", "shown", "all_matching") if top.get(k)}}
+            "matching", "facets", "clarify", "offers", "delivery", "shown", "all_matching") if top.get(k)}}
     return _with_answers(res, query)
 
 
@@ -350,8 +350,8 @@ TOOLS = [
                     "что нужно, что уже подобрано. На диалог хватает одного вызова: контакт и новые детали, "
                     "которые клиент сообщит после передачи, менеджер увидит в карточке обращения сам.",
      "parameters": _obj({
-         "reason": {"type": "string", "description": "причина одной фразой"},
-         "summary": {"type": "string"},
+         "reason": {"type": "string", "description": "причина одной фразой по-русски"},
+         "summary": {"type": "string", "description": "по-русски, без имени и контактов клиента"},
          "contact": {"type": "string", "description": "почта или телефон клиента, если известны"},
      }, ["reason", "summary"])},
 ]

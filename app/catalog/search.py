@@ -653,7 +653,7 @@ _OFFER_DIMS = ("license_type", "term_months", "users_max", "nodes", "org_type", 
 _OFFER_EXTRA = ("nodes_min", "qty_min", "qty_max", "qty_pricing")
 _SUBSTRING_FILTERS = ("license_type", "org_type", "user_type", "version", "platform")
 _QUANTITY_FILTERS = ("users", "nodes", "qty")
-_OFFER_SQL = ("SELECT id, name, vendor_code, price, available, url, sales_notes, russian_vendor,"
+_OFFER_SQL = ("SELECT id, name, vendor_code, price, available, url, sales_notes, params_json,"
               " nodes_min, qty_min, qty_max, qty_pricing, same_code_prices, price_ambiguous, "
               + ", ".join(DIMENSIONS) + " FROM offers WHERE product_id = ?")
 _FACET_LIMIT = 12
@@ -667,6 +667,15 @@ def _short(value, limit: int = _VALUE_LIMIT):
     return value
 
 
+def _platform(value: str) -> str:
+    """Платформа без повтора: из описания и из параметров фида приходит один список ОС через разные
+    разделители ("Windows 10/Windows 11; Windows 10, Windows 11"), второй раз он не нужен."""
+    parts: dict[str, str] = {}
+    for part in value.split("; "):
+        parts.setdefault(re.sub(r"\s*[/,]\s*", "|", part), part)
+    return "; ".join(parts.values())
+
+
 def _price_flags(row: sqlite3.Row) -> dict:
     """Пометки для артикула с несколькими ценами."""
     flags = {}
@@ -678,20 +687,116 @@ def _price_flags(row: sqlite3.Row) -> dict:
 
 
 def _offer_dict(row: sqlite3.Row) -> dict:
-    """Вариант для списка: пустые необязательные поля опускаются ради размера ответа."""
+    """Вариант для списка: пустые необязательные поля опускаются ради размера ответа. Российский ли вендор,
+    говорит продукт: у его вариантов вендор тот же."""
     item = {"offer_id": row["id"], "name": row["name"]}
     if row["vendor_code"]:
         item["vendor_code"] = row["vendor_code"]
     item.update(price=_money(row["price"]), available=bool(row["available"]), url=row["url"])
     for key in _OFFER_DIMS + _OFFER_EXTRA:
         if row[key] is not None:
-            item[key] = _short(row[key], 200 if key == "platform" else _VALUE_LIMIT)  # ОС нужны целиком
-    item["russian_vendor"] = bool(row["russian_vendor"])
+            value = _platform(row[key]) if key == "platform" else row[key]
+            item[key] = _short(value, 200 if key == "platform" else _VALUE_LIMIT)  # ОС нужны целиком
     item.update(_price_flags(row))
     price_for = _price_for(row)
     if price_for:
         item["price_for"] = price_for
     return item
+
+
+_NOT_DETAILS = ("Артикул", "Особенности доставки")  # артикул есть в vendor_code, срок поставки идет отдельным полем
+# Параметр фида -> поле варианта, из которого модель его уже знает
+_PARAM_FIELDS = {"Тип лицензии": "license_type", "Срок действия": "term_months", "Тип организации": "org_type",
+                 "Конечный пользователь": "user_type", "Пользователь": "user_type", "Версия": "version",
+                 "Операционная система": "platform", "Совместимая архитектура/платформа": "platform",
+                 "К-во пользователей": "users_max", "К-во пользователей до": "users_max", "К-во узлов": "nodes"}
+_DELIVERY = "Срок доставки"  # так срок поставки называется в карточке варианта
+
+
+def _param_text(values) -> str:
+    return _short(", ".join(str(v).strip("\ufeff ") for v in values), 80)
+
+
+def delivery_term(params: dict) -> str | None:
+    """Срок поставки из "Особенности доставки" коротко: "в электронном виде, от 1 раб.дн.",
+    "3‒5 раб.дн. после оплаты"."""
+    text = " ".join(params.get("Особенности доставки") or [])
+    text = re.sub(r"\s*По вопросам .*$", "", text)       # хвост про прошлые коробочные версии к сроку не относится
+    text = re.sub(r"\.?\s*Срок доставки:?\s*", ", ", text).strip(", ").replace("Поставка в", "в")
+    text = re.sub(r"рабоч\w+ (?:дня|дней)", "раб.дн.", text.replace(" Softline.", ""))
+    text = re.sub(r"(?:с момента поступления|после подтверждения) оплаты", "после оплаты", text)
+    # "по Москве от 5 раб.дн., по России от 10 раб.дн. после оплаты"
+    text = re.sub(r"(Москве|России): ", r"\1 ", text.replace(" после оплаты;", ","))
+    text = re.sub(r"(\d+)‒\1(?!\d)", r"\1", text)  # "5‒5 раб.дн." -> "5 раб.дн."
+    return re.sub(r"(?<!дн)(?<!нед)\.$", "", text) or None  # точка сокращения "раб.дн." остается
+
+
+def _differs(values) -> bool:
+    return len(set(values)) > 1
+
+
+def _split(values) -> tuple[int, ...]:
+    """Как значения делят группу вариантов: номер первого появления значения у каждого."""
+    first: dict = {}
+    return tuple(first.setdefault(v, len(first)) for v in values)
+
+
+def distinctions(params: list[dict], shown: list[dict] | None = None) -> list[dict]:
+    """Чем различаются варианты с одинаковым названием: каждому только параметры фида, значения которых
+    в группе разные. shown: варианты в том виде, в каком их уже видит читатель; параметр, который его поле
+    уже различает так же ("Срок действия" и term_months), не повторяется. Если поле из фида не разобрано,
+    разницы в нем не видно, и параметр остается."""
+    keys = list(dict.fromkeys(k for p in params for k in p if k not in _NOT_DETAILS))
+    texts = [{k: _param_text(p[k]) for k in keys if p.get(k)} for p in params]
+
+    def seen(key: str) -> bool:
+        return bool(shown) and key in _PARAM_FIELDS and _split(
+            t.get(key) for t in texts) == _split(o.get(_PARAM_FIELDS[key]) for o in shown)
+    keys = [k for k in keys if _differs(t.get(k) for t in texts) and not seen(k)]
+    return [{k: t[k] for k in keys if k in t} for t in texts]
+
+
+def _by_name(items: list, name) -> list[list[int]]:
+    """Номера элементов с одинаковым названием, группами от двух."""
+    groups: dict[str, list[int]] = {}
+    for i, item in enumerate(items):
+        groups.setdefault(name(item), []).append(i)
+    return [g for g in groups.values() if len(g) > 1]
+
+
+def _with_details(rows: list, offers: list[dict]) -> dict:
+    """Добавляет к показанным вариантам отличия и срок поставки.
+
+    details у варианта есть, только когда рядом показан вариант с тем же названием: в нем параметры, которыми
+    они различаются. Срок поставки, одинаковый у всех показанных, возвращается одним полем delivery на продукт,
+    разный пишется у каждого варианта.
+    """
+    rows = rows[:len(offers)]
+    params = [json.loads(r["params_json"] or "{}") for r in rows]
+    for group in _by_name(rows, lambda r: r["name"]):
+        found = distinctions([params[i] for i in group], [offers[i] for i in group])
+        for i, details in zip(group, found):
+            if details:
+                offers[i]["details"] = details
+    terms = [delivery_term(p) for p in params]
+    if terms and terms[0] and not _differs(terms):
+        return {"delivery": terms[0]}
+    for offer, term in zip(offers, terms):
+        if term:
+            offer["delivery"] = term
+    return {}
+
+
+def offer_details(offers: list[dict]) -> list[dict]:
+    """Отличия для карточек вариантов (ответы get_offer): у карточек с одинаковым названием параметры,
+    которыми они различаются, со сроком поставки, если он разный; у остальных пусто."""
+    found: list[dict] = [{} for _ in offers]
+    for group in _by_name(offers, lambda o: o["name"]):
+        params = [offers[i].get("params") or {} for i in group]
+        terms = [delivery_term(p) for p in params]
+        for i, details, term in zip(group, distinctions(params), terms):
+            found[i] = {**details, **({_DELIVERY: term} if term and _differs(terms) else {})}
+    return found
 
 
 def _price_for(row: sqlite3.Row) -> str | None:
@@ -939,6 +1044,7 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
         "clarify": _clarify_order(rows, full_facets, _asked_dimensions(filters)),
         "offers": [_offer_dict(r) for r in rows[:max(0, min(int(limit), 100))]],
     }
+    result.update(_with_details(rows, result["offers"]))
     optional = {
         "facets_more": facets_more,
         "tier_notes": notes,
@@ -980,12 +1086,13 @@ def _relaxed(all_rows: list, filters: dict, limit: int) -> dict:
         return {"note": "С такими фильтрами вариантов нет. В facets значения, которые есть у продукта без фильтров.",
                 "facets": _facets_for_output(facet_counts(all_rows))[0]}
     best_rows.sort(key=_offer_order(best_gaps))
+    offers = [_offer_dict(r) for r in best_rows[:max(0, min(int(limit), 100))]]
     return {"note": f"Вариантов с {best_key}={filters[best_key]} у продукта нет. Ниже варианты без этого условия: "
                     "скажите клиенту, что именно такого в каталоге нет, и предложите ближайшее.",
             "dropped_filter": best_key,
             **({"tier_notes": best_notes} if best_notes else {}),
             "facets": _facets_for_output(facet_counts(best_rows))[0],
-            "offers": [_offer_dict(r) for r in best_rows[:max(0, min(int(limit), 100))]]}
+            "offers": offers, **_with_details(best_rows, offers)}
 
 
 def get_offer(offer_id: int | str) -> dict:
