@@ -110,7 +110,7 @@ class _Tags(HTMLParser):
 
 def _card(**over):
     card = {"priority_name": "обычная", "sla_minutes": 5, "flags": [], "client": {"компания": "ООО <Ромашка>"},
-            "needs": {}, "offers": [], "quote": None, "calc_total": None, "last_message": ""}
+            "needs": {}, "offers": [], "quote": None, "calc_total": None, "last_message": "", "summary": "", "next": ""}
     return {**card, **over}
 
 
@@ -123,7 +123,7 @@ def _check(text):
 
 def test_long_card_is_cut_before_markup():
     h = {"id": 7, "status": "new", "reason": "скидка & условия", "summary": "Очень длинный запрос <b>" * 800}
-    text = notify.card_text(h, _card(last_message="длинное сообщение & " * 600,
+    text = notify.card_text(h, _card(last_message="длинное сообщение & " * 600, summary=h["summary"],
                                      needs={f"поле {i}": "значение " * 50 for i in range(40)}))
     _check(text)
     assert "&lt;b&gt;" in text and "…" in text

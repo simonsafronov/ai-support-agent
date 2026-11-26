@@ -186,7 +186,9 @@ def test_handoff_card_is_built_by_code_and_sorted_by_urgency(priced_offer):
     assert card["client"] == {"компания": "Школа 17", "тип организации": "образовательная",
                               "контакт": "zakupki@school.example"}
     assert card["needs"] == {"пользователей": "30"} and card["calc_total"] == round(priced_offer["price"] * priced_offer["qty"], 2)
-    assert card["turns"] == 1 and len(card["templates"]) == 3 and not card["overdue"]
+    assert card["turns"] == 1 and not card["overdue"]
+    # заготовки по пометкам обращения стоят перед общими: закупка, затем скидка
+    assert [t["title"] for t in card["templates"]][:2] == ["Условия закупки", "Скидка"] and len(card["templates"]) == 5
     # без ключа карточка видна, но контакт в ней скрыт
     demo = client.get("/api/admin/stats").json()["handoffs"][0]["card"]
     assert demo["client"]["контакт"] == "[email]"

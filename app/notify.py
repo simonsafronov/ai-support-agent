@@ -106,8 +106,8 @@ def card_text(h: dict, card: dict) -> str:
     if contact:
         lines.append(f"<b>Контакт:</b> {e(contact)}")
     lines.append(f"<b>Причина:</b> {e(h['reason'] or '')}")
-    if h.get("summary"):
-        lines.append(f"<b>Запрос:</b> {e(h['summary'], 1000)}")
+    if card["summary"]:
+        lines.append(f"<b>Запрос:</b> {e(card['summary'], 1000)}")
     for k, v in card["needs"].items():
         lines.append(f"{e(k[:1].upper() + k[1:], 60)}: {e(v, 200)}")
     if card["offers"]:
@@ -115,6 +115,8 @@ def card_text(h: dict, card: dict) -> str:
         for o in card["offers"][:MAX_OFFERS]:
             qty = f", {o['qty']} шт." if o.get("qty") else ""
             price = f", {_rub(o['price'])}" if o.get("price") else ", цена по запросу"
+            if o.get("list_price"):
+                price += f" (со скидкой {o['discount_percent']:g}%, по каталогу {_rub(o['list_price'])})"
             lines.append(f"- {e(o['name'], 150)}{qty}{price}")
         if len(card["offers"]) > MAX_OFFERS:
             lines.append(f"и еще {len(card['offers']) - MAX_OFFERS}")
@@ -122,6 +124,8 @@ def card_text(h: dict, card: dict) -> str:
         lines.append(f"<b>Черновик {e(card['quote']['number'], 60)}:</b> {_rub(card['quote']['total'])}")
     elif card["calc_total"]:
         lines.append(f"<b>Сумма по расчету:</b> {_rub(card['calc_total'])}")
+    if card["next"]:
+        lines.append(f"<b>Дальше:</b> {e(card['next'])}")
     if card["last_message"]:
         lines.append(f"<b>Последнее сообщение:</b> {e(card['last_message'], 800)}")
     tail = ["", HOWTO]

@@ -1,6 +1,7 @@
 """Веб-сервер стенда: чат покупателя, экран оператора, файлы КП."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import csv
 import datetime
@@ -12,16 +13,20 @@ import logging
 import queue
 import re
 import secrets
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Path as PathArg, Query, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import cases, config, economy, notify, store
 from app.agent import handoff_card, llm, loop, proof
@@ -77,6 +82,7 @@ def client_address(request) -> str:
 
 
 LIMITED = ("/api/chat", "/api/chat/handoff", "/api/proof")  # каждый такой запрос запускает ход агента
+MAX_BODY = 64_000  # байт в теле запроса: самое длинное сообщение в чат (4000 знаков) много меньше
 
 
 @app.middleware("http")
@@ -84,6 +90,9 @@ async def guard(request, call_next):
     """Лимит сообщений в чат, заголовки безопасности и перепроверка страниц стенда браузером."""
     if request.url.path in LIMITED and request.method == "POST" and too_often(client_address(request)):
         return JSONResponse({"detail": "слишком много сообщений подряд"}, status_code=429)
+    size = request.headers.get("content-length", "0")
+    if not size.isdigit() or int(size) > MAX_BODY:
+        return JSONResponse({"detail": "слишком большой запрос"}, status_code=413)
     response = await call_next(request)
     if not request.url.path.startswith(("/api/", "/quotes/", "/fonts/")):
         response.headers["Cache-Control"] = "no-cache"
@@ -94,6 +103,21 @@ async def guard(request, call_next):
         response.headers["Content-Security-Policy"] = ("default-src 'self'; style-src 'self' 'unsafe-inline'; "
                                                        "img-src 'self' data:; frame-ancestors 'none'")
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_request, exc: RequestValidationError):
+    """Ответ 422 называет поле и ошибку, но не повторяет присланное: длинное тело не уходит обратно клиенту."""
+    return JSONResponse({"detail": [{k: e[k] for k in ("type", "loc", "msg") if k in e} for e in exc.errors()]},
+                        status_code=422)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def not_found(request: Request, exc: StarletteHTTPException):
+    """Нет такой страницы: человеку страница со ссылками на экраны стенда, программам по адресам /api/ ответ JSON."""
+    if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+        return FileResponse(STATIC / "404.html", status_code=404)
+    return await http_exception_handler(request, exc)
 
 
 MSK = datetime.timezone(datetime.timedelta(hours=3))
@@ -155,14 +179,59 @@ def view(request: Request, payload: dict) -> dict:
     return {**_hide(json.loads(json.dumps(payload, ensure_ascii=False, default=str))), "role": "demo"}
 
 
-_REQUISITE = re.compile(r"(?<!\d)(?<!\d[.,])\d{9,12}(?!\d|[.,]\d)")  # ИНН, КПП, ОГРН и номера счетов в тексте
-_KEEP = {"id", "session_id", "number", "url"}  # служебные поля: по ним экран открывает диалог
+_MONEY_AFTER = r"(?![.,]\d)(?!\s*(?:руб|₽|р\.|тыс|млн|млрд|usd|eur|\$|€))"  # сумма, а не реквизит
+# ИНН, КПП, ОГРН (13 цифр), ОГРНИП (15) и номер счета (20) в тексте: ряд цифр подряд
+_REQUISITE = re.compile(r"(?<![\w.,/-])(?:\d{9,15}|\d{20})(?![\w/-])" + _MONEY_AFTER, re.I)
+# те же реквизиты с пробелами или дефисами внутри ("ИНН 7701 234 567"): только после названия реквизита
+_REQ_RUN = r"\d(?:[ \u00a0-]?\d){8,19}(?![\w/-])" + _MONEY_AFTER
+_REQ_LABEL = (r"(?<![а-яёa-z])(?:ИНН|КПП|ОГРНИП|ОГРН|БИК|ОКПО|реквизит\w*|р/с|к/с|расч[её]тн\w* сч[её]т\w*|"
+              r"корр\w* сч[её]т\w*|сч[её]т\w*)")
+_LABELED = re.compile(rf"({_REQ_LABEL}(?:\s*(?:/|,|и)\s*{_REQ_LABEL})*[\s:№#=—–-]*)({_REQ_RUN})"
+                      rf"(?:(\s*[/,;]\s*)({_REQ_RUN}))?", re.I)
+# ИНН группами цифр без названия: только с верными контрольными цифрами
+_SPACED = re.compile(r"(?<![\w.,/-])\d{2,4}(?:[ \u00a0-]\d{2,4}){1,4}(?![\w/-])" + _MONEY_AFTER, re.I)
+_NOT_REQUISITE = re.compile(r"(?:арт\w*|код\w*|sku|offer\w*|id)[\s.:№#-]*$", re.I)  # артикул и коды остаются
+_NAME_WORD = r"(?:[А-ЯЁA-Z][а-яёa-z]+(?:-[А-ЯЁA-Z][а-яёa-z]+)?|[А-ЯЁ]\.\s?(?:[А-ЯЁ]\.)?)"
+# имя после "контактное лицо", "меня зовут", "ФИО": до трех слов с заглавной буквы или инициалов
+_NAME = re.compile(rf"((?<![А-Яа-яЁёA-Za-z])(?i:контактн\w*\s+лиц\w*|меня\s+зовут|ФИО)[\s:—–-]*)"
+                   rf"{_NAME_WORD}(?:\s+{_NAME_WORD}){{0,2}}")
+# адреса в мессенджерах: @имя, ссылки t.me, vk.com, wa.me и "telegram: имя"
+_MESSENGER = re.compile(
+    r"(?i)(?:https?://)?(?:www\.|m\.)?(?:t\.me|telegram\.me|telegram\.dog|vk\.com|vk\.ru|wa\.me|"
+    r"api\.whatsapp\.com|chat\.whatsapp\.com)/[^\s,;()]+"
+    r"|(?<![\w.@])@[a-z][\w.]{3,31}"
+    r"|(?<![а-яёa-z])(?:telegram|телеграм\w*|tg|тг|whatsapp|ватсап\w*|вотсап\w*|vk|вк|skype|скайп\w*)\s*:\s*"
+    r"[a-z][\w.]{3,31}")
+
+
+def hide_personal(text: str) -> str:
+    """Текст без данных клиента для режима просмотра и набора: контакты, имя, мессенджеры, реквизиты, карта, паспорт.
+
+    Суммы (число перед "руб" или "₽", число с копейками) и артикулы (после "арт.", "код") остаются.
+    """
+    def labeled(m):
+        return m.group(1) + "[реквизит]" + (m.group(3) + "[реквизит]" if m.group(4) else "")
+
+    def bare(rx_check):
+        def repl(m):
+            if _NOT_REQUISITE.search(m.string[max(0, m.start() - 24):m.start()]) or not rx_check(m.group(0)):
+                return m.group(0)
+            return "[реквизит]"
+        return repl
+
+    text = _MESSENGER.sub("[контакт]", loop.mask_contacts(text)[0])
+    text = _NAME.sub(lambda m: m.group(1) + "[имя]", _LABELED.sub(labeled, text))
+    text = _SPACED.sub(bare(lambda v: len(d := re.sub(r"\D", "", v)) in (10, 12) and loop.inn_valid(d)), text)
+    return _REQUISITE.sub(bare(lambda v: True), text)
+
+
+_KEEP = {"id", "session_id", "number", "url", "vendor_code"}  # служебные поля: по ним экран открывает диалог
 _OPERATOR_ONLY = {"client_id", "file"}  # по client_id чат отдает клиенту его переписку; file это путь на сервере
 _QUOTE_URL = re.compile(r"/quotes/([^/?#\s]+\.pdf)")
 
 
 def _hide(obj, key: str = ""):
-    """Режим просмотра: почта, телефоны и реквизиты клиентов заменяются метками, ссылок на файлы КП нет."""
+    """Режим просмотра: данные клиентов заменяются метками (см. hide_personal), ссылок на файлы КП нет."""
     if isinstance(obj, dict):
         return {k: _hide(v, k) for k, v in obj.items() if k not in _OPERATOR_ONLY}
     if isinstance(obj, list):
@@ -170,7 +239,7 @@ def _hide(obj, key: str = ""):
     if isinstance(obj, str) and key == "url" and _QUOTE_URL.fullmatch(obj):
         return ""  # в КП реквизиты клиента: файл открывается только оператору
     if isinstance(obj, str) and key not in _KEEP:
-        return _REQUISITE.sub("[реквизит]", loop.mask_contacts(obj)[0])
+        return hide_personal(obj)
     return obj
 
 
@@ -212,7 +281,10 @@ def sign_links(obj, key: str = ""):
 
 def _for_knowledge(text: str) -> str:
     """Текст для общих знаний агента: без контактов, реквизитов и меток, как сообщение клиента для модели."""
-    return _REQUISITE.sub("[реквизит]", loop.for_model(text))
+    return hide_personal(loop.for_model(text))
+
+
+_HELP_URL = re.compile(r"https://(?:store\.softline\.ru|docs\.softline\.com)/[^\s\"'<>]*")
 
 
 def _brief(name: str, out) -> dict:
@@ -232,8 +304,9 @@ def _brief(name: str, out) -> dict:
                 "clarify": (out.get("clarify") or [])[:3]}
     if name == "browse_categories":
         return {"categories": [{"name": c.get("name")} for c in (out.get("categories") or [])[:4]]}
-    if name == "kb_search":
-        return {"results": [{"title": r.get("title"), "heading": r.get("heading")}
+    if name == "kb_search":  # адрес страницы справки только с сайтов магазина: чат показывает его ссылкой
+        return {"results": [{"title": r.get("title"), "heading": r.get("heading"),
+                             **({"url": r["url"]} if _HELP_URL.match(str(r.get("url") or "")) else {})}
                             for r in (out.get("results") or [])[:2]]}
     if name == "note_facts":
         return {"saved": out.get("saved") or {}}
@@ -244,11 +317,15 @@ FAILED = {"llm": "модель не ответила", "deadline": "ход за�
 
 
 def public_trace(trace: list[dict]) -> list[dict]:
-    """След хода в том виде, в каком его получает браузер клиента. Полный след видит оператор на своем экране."""
+    """След хода в том виде, в каком его получает браузер клиента. Полный след видит оператор на своем экране.
+
+    Шаг инструмента с полем args (след из журнала, см. steps_trace) отдается с аргументами вызова.
+    """
     out = []
     for t in trace:
         if t["kind"] == "tool":
-            out.append({"kind": "tool", "name": t["name"], "output": _brief(t["name"], t.get("output"))})
+            out.append({"kind": "tool", "name": t["name"], **({"args": t["args"]} if "args" in t else {}),
+                        "output": _brief(t["name"], t.get("output"))})
         elif t["kind"] == "guard":
             out.append({"kind": "guard", "name": t["name"], "output": t.get("output") if t["name"] == "price" else []})
         else:  # текст ошибки остается в журнале шагов: в нем бывают пути и внутренние имена
@@ -256,9 +333,39 @@ def public_trace(trace: list[dict]) -> list[dict]:
     return out
 
 
+def steps_trace(steps: list[dict]) -> list[dict]:
+    """След хода из журнала шагов: те же шаги, что в событии reply, у вызова инструмента еще и его аргументы."""
+    trace, guards = [], set()
+    for st in steps:
+        if st["kind"] == "tool":
+            trace.append({"kind": "tool", "name": st["name"], "args": st["input"], "output": st["output"]})
+        elif st["kind"] == "guard" and st["name"] not in guards:  # замечание и вырезка кодом это одна проверка
+            guards.add(st["name"])
+            trace.append({"kind": "guard", "name": st["name"],
+                          "output": st["output"].get("unknown") or st["output"].get("cut_by_code") or []})
+        elif st["kind"] == "error":
+            trace.append({"kind": "error", "name": st["name"]})
+    return public_trace(trace)
+
+
+def public_events(events: list[dict]) -> list[dict]:
+    """События хода для браузера: ссылки на КП подписаны, у передачи менеджеру срок его реакции в минутах.
+
+    Срок считает та же логика срочности, что карточка обращения на экране оператора.
+    """
+    out = []
+    for e in sign_links(events):
+        if e.get("type") == "handoff":
+            h = store.db().execute("SELECT * FROM handoffs WHERE id=?", (e.get("id"),)).fetchone()
+            if h is not None:
+                e = {**e, "sla_minutes": handoff_card.sla_minutes(dict(h))}
+        out.append(e)
+    return out
+
+
 def public_reply(res: dict) -> dict:
     """Ответ хода для браузера: ссылки на КП подписаны, след шагов сокращен."""
-    return {**res, "events": sign_links(res.get("events", [])), "trace": public_trace(res.get("trace", []))}
+    return {**res, "events": public_events(res.get("events", [])), "trace": public_trace(res.get("trace", []))}
 
 
 def own_session(session_id: str | None, client_id: str) -> str | None:
@@ -282,7 +389,7 @@ def session_lock(key: str) -> threading.Lock:
 
 
 class ChatIn(BaseModel):
-    message: str = Field(min_length=1, max_length=4000)
+    message: str = Field(min_length=1, max_length=4000, pattern=r"\S")  # из одних пробелов ход не запускается
     session_id: str | None = Field(default=None, max_length=64)
     client_id: str = Field(default="", max_length=64)
     page_url: str = Field(default="", max_length=500)
@@ -294,6 +401,9 @@ def health():
     return {"ok": True, "offers": c["offers"], "products": c["products"], "feed_date": c.get("feed_date"),
             "kb_chunks": kb.stats()["chunks"], "model": config.LLM_MODEL, "provider": config.LLM_PROVIDER,
             "label": config.LLM_LABEL, "online": llm.model_online()}
+
+
+STREAM_POLL, STREAM_WAIT = 0.1, 20  # секунд: как часто поток ответа смотрит в очередь; молчание до строки "wait"
 
 
 @app.post("/api/chat")
@@ -319,15 +429,22 @@ def chat(body: ChatIn):
 
     threading.Thread(target=work, daemon=True).start()
 
-    def stream():
+    async def stream():
+        # ожидание без потока из общего пула сервера: десятки открытых чатов не задерживают остальные запросы
+        yield json.dumps({"type": "session", "session_id": sid}) + "\n"  # чат запоминает диалог до ответа
+        quiet = time.monotonic()
         while True:
             try:
-                ev = q.get(timeout=20)
+                ev = q.get_nowait()
             except queue.Empty:
-                yield json.dumps({"type": "wait"}) + "\n"
+                await asyncio.sleep(STREAM_POLL)
+                if time.monotonic() - quiet >= STREAM_WAIT:
+                    quiet = time.monotonic()
+                    yield json.dumps({"type": "wait"}) + "\n"
                 continue
             if ev is None:
                 return
+            quiet = time.monotonic()
             yield json.dumps(ev, ensure_ascii=False, default=str) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson",
@@ -380,7 +497,7 @@ def call_manager(body: CallIn):
         reply = CALLED + ("" if s["facts"].get("контакт") else " Оставьте, пожалуйста, почту или телефон для связи.")
         events = [{"type": "handoff", "id": hid, "reason": "клиент позвал менеджера кнопкой"}] if created else []
         store.add_message(sid, "assistant", reply, {"cards": [], "choices": [], "events": events})
-    return {"session_id": sid, "reply": reply, "cards": [], "choices": [], "events": events}
+    return {"session_id": sid, "reply": reply, "cards": [], "choices": [], "events": public_events(events)}
 
 
 @app.get("/api/session/{session_id}")
@@ -389,11 +506,22 @@ def session(session_id: str, client_id: str = Query("", max_length=64)):
     s = store.find_session(own_session(session_id, client_id))
     if s is None:
         raise HTTPException(404, "нет такого диалога")
-    return {"session_id": s["id"], "status": s["status"],
-            "messages": [{"id": m["id"], "role": m["role"], "content": m["content"], "from": m["meta"].get("from", ""),
-                          "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
-                          "events": sign_links(m["meta"].get("events", []))}
-                         for m in store.messages(session_id)]}
+    turns: dict[int, list[dict]] = {}
+    for st in store.steps(session_id):
+        turns.setdefault(st["turn"], []).append(st)
+    messages, turn, traced = [], 0, True
+    for m in store.messages(session_id):
+        msg = {"id": m["id"], "role": m["role"], "content": m["content"], "from": m["meta"].get("from", ""),
+               "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
+               "events": public_events(m["meta"].get("events", []))}
+        if m["role"] == "user":
+            turn, traced = turn + 1, False
+        elif not traced and msg["from"] != "manager":  # ответ агента на реплику клиента несет шаги своего хода
+            msg["trace"], traced = steps_trace(turns.get(turn, [])), True
+        messages.append(msg)
+    usage = {k: s[k] for k in ("llm_calls", "tool_calls", "prompt_tokens", "completion_tokens")}
+    return {"session_id": s["id"], "status": s["status"], "messages": messages,
+            "usage": {**usage, "cost_rub": loop.cost_rub(s["prompt_tokens"], s["completion_tokens"])}}
 
 
 @app.get("/api/session/{session_id}/answers")
@@ -412,17 +540,46 @@ FEATURED = ("Kaspersky Endpoint Security для бизнеса", "Astra Linux Sp
 
 
 @app.get("/api/products")
-def products(q: str = "", limit: int = 12):
+def products(q: str = "", limit: int = Query(12, ge=1, le=24)):
     """Поиск по каталогу для витрины стенда."""
     if q.strip():
-        return catalog.search_products(q, limit=min(limit, 24))
+        res = catalog.search_products(q, limit=limit)
+        return {**res, "products": new_license_prices(res.get("products") or [])}
     found, seen = [], set()
     for name in FEATURED:
         for p in catalog.search_products(name, limit=1).get("products", []):
             if p["product_id"] not in seen:
                 seen.add(p["product_id"])
                 found.append(p)
-    return {"query": "", "total": len(found), "products": found}
+    return {"query": "", "total": len(found), "products": new_license_prices(found)}
+
+
+_NOT_NEW = re.compile(r"продл|обновл|миграц|техподдерж|техническ\w* поддерж|расширени|дистрибутив|инсталляц", re.I)
+_NOT_COMMERCIAL = re.compile(r"образоват|академ|учебн|школ|студент|вуз", re.I)
+_FOR_BUYER = re.compile(r"(?<![а-яё])коммерческ|для дома", re.I)  # тип покупателя: компания или частное лицо
+
+
+def new_license_prices(found: list[dict]) -> list[dict]:
+    """Цены витрины только по новым коммерческим лицензиям.
+
+    Самая низкая цена продукта часто у продления, обновления или лицензии для школ и госзаказчиков: подпись
+    "от 295 ₽" рядом с ответом агента "цена по запросу" вводила бы в заблуждение. Нет новой коммерческой лицензии
+    с ценой: на витрине "цена по запросу".
+    """
+    if not found:
+        return found
+    ids = [p["product_id"] for p in found]
+    prices: dict[str, list[float]] = {}
+    with contextlib.closing(sqlite3.connect(f"{config.CATALOG_DB.resolve().as_uri()}?mode=ro", uri=True)) as con:
+        for pid, price, name, kind, org in con.execute(
+                f"SELECT product_id, price, name, license_type, org_type FROM offers WHERE price IS NOT NULL "
+                f"AND product_id IN ({','.join('?' * len(ids))})", ids):
+            if not (_NOT_NEW.search(f"{kind or ''} {name}") or _NOT_COMMERCIAL.search(name)
+                    or (org and not _FOR_BUYER.search(org))):
+                prices.setdefault(pid, []).append(price)
+    return [{**p, "price_min": min(prices[p["product_id"]]) if p["product_id"] in prices else None,
+             "price_max": max(prices[p["product_id"]]) if p["product_id"] in prices else None,
+             "price_on_request": p["product_id"] not in prices} for p in found]
 
 
 # --- экран оператора ---
@@ -434,7 +591,7 @@ def _session_row(r) -> dict:
 
 
 @app.get("/api/admin/sessions")
-def admin_sessions(request: Request, limit: int = 100):
+def admin_sessions(request: Request, limit: int = Query(100, ge=1, le=500)):
     con = store.db()
     rows = con.execute(
         "SELECT s.id, s.created_at, s.updated_at, s.status, s.page_url, s.prompt_tokens, s.completion_tokens, "
@@ -442,7 +599,7 @@ def admin_sessions(request: Request, limit: int = 100):
         "(SELECT content FROM messages m WHERE m.session_id=s.id AND m.role='user' ORDER BY m.id LIMIT 1) AS first, "
         "(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.role='user') AS turns, "
         "(SELECT COUNT(*) FROM quotes q WHERE q.session_id=s.id) AS quotes "
-        "FROM sessions s ORDER BY s.updated_at DESC LIMIT ?", (min(limit, 500),)).fetchall()
+        "FROM sessions s ORDER BY s.updated_at DESC LIMIT ?", (limit,)).fetchall()
     return view(request, {"sessions": [_session_row(r) for r in rows]})
 
 
@@ -483,6 +640,7 @@ def _handoffs(where: str = "", args: tuple = (), limit: int = 50) -> list[dict]:
     now, order = time.time(), {"high": 0, "normal": 1, "low": 2}
     for h in rows:
         h["card"] = handoff_card.build(h, now)
+        h["summary"] = h["card"]["summary"]  # сводка модели, согласованная с последним КП: экран показывает ее
         h["from_run"] = h["session_id"] in run  # диалог проверочного прогона: менеджер на него не отвечает
     return sorted(rows, key=lambda h: (h["status"] in ("answered", "returned"), h["from_run"],
                                        order[h["card"]["priority"]], h["card"]["sla_due"]))
@@ -500,18 +658,21 @@ def _queue(now: float) -> dict:
                        + sum(handoff_card.build(dict(h), now)["overdue"] for h in recent)}
 
 
+HANDOFF_ID = PathArg(ge=1, le=2**63 - 1)  # номер обращения в пределах целого SQLite: больше него обращений нет
+
+
 class TakeIn(BaseModel):
     who: str = Field(default="менеджер", max_length=60)
 
 
 @app.post("/api/admin/handoff/{handoff_id}/take", dependencies=[Depends(admin)])
-def admin_take(handoff_id: int, body: TakeIn):
+def admin_take(body: TakeIn, handoff_id: int = HANDOFF_ID):
     """Менеджер берет обращение в работу."""
     return {"ok": store.take_handoff(handoff_id, body.who.strip() or "менеджер")}
 
 
 @app.post("/api/admin/handoff/{handoff_id}/return", dependencies=[Depends(admin)])
-def admin_return(handoff_id: int):
+def admin_return(handoff_id: int = HANDOFF_ID):
     """Менеджер возвращает диалог агенту: человек здесь не нужен."""
     return {"ok": store.return_handoff(handoff_id)}
 
@@ -525,7 +686,8 @@ class CaseIn(BaseModel):
 @app.post("/api/admin/session/{session_id}/case", dependencies=[Depends(admin)])
 def admin_case(session_id: str, body: CaseIn):
     """Диалог, где агент ошибся, становится кейсом проверочного набора: следующий прогон его проиграет."""
-    case = cases.from_session(session_id, "any" if body.handoff is None else body.handoff, body.quote, body.note)
+    case = cases.from_session(session_id, "any" if body.handoff is None else body.handoff, body.quote,
+                              hide_personal(body.note), hide=hide_personal)
     if case is None:
         raise HTTPException(404, "в диалоге нет реплик клиента")
     return {"ok": True, "case_id": case["id"], "added_cases": cases.add(case)}
@@ -538,7 +700,7 @@ def proof_run():
 
 
 class AnswerIn(BaseModel):
-    answer: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1, max_length=4000, pattern=r"\S")
     teach: bool = False
 
 
@@ -575,7 +737,7 @@ def _manager_answer(handoff_id: int, answer: str, teach: bool) -> dict | None:
 
 
 @app.post("/api/admin/handoff/{handoff_id}/answer", dependencies=[Depends(admin)])
-def admin_answer(handoff_id: int, body: AnswerIn):
+def admin_answer(body: AnswerIn, handoff_id: int = HANDOFF_ID):
     """Ответ менеджера на обращение с экрана оператора."""
     done = manager_answer(handoff_id, body.answer.strip(), body.teach)
     if done is None:
@@ -662,7 +824,9 @@ def quote_file(request: Request, name: str, k: str = Query("", max_length=64)):
             store.db().execute("SELECT 1 FROM quotes WHERE number=?", (f.stem,)).fetchone() is None:
         # без подписи ответ тот же, что и для несуществующего номера; файл без записи КП (диалог удален) не отдается
         raise HTTPException(404, "нет такого файла")
-    return FileResponse(f, media_type="application/pdf", filename=name)
+    # открывается во вкладке встроенным просмотрщиком; в файле реквизиты клиента, поэтому прокси его не кэширует
+    return FileResponse(f, media_type="application/pdf", filename=name, content_disposition_type="inline",
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @app.get("/admin")
@@ -673,6 +837,12 @@ def admin_page():
 @app.get("/proof")
 def proof_page():
     return FileResponse(STATIC / "proof.html")
+
+
+@app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
+def api_not_found(rest: str):
+    """Неизвестный адрес /api/ отвечает JSON: иначе его забрала бы статика и отдала страницу 404 для людей."""
+    raise HTTPException(404, "Not Found")
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
