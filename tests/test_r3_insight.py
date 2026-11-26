@@ -270,7 +270,7 @@ def test_before_after_numbers_come_from_economy_and_carry_their_source():
     rows = insights.before_after(eco, 0.6, 6, 10)
     cat, first, share, hours = rows
     assert cat["before"]["value"] == "около 30 мин" and cat["before"]["who"] == "оценка заказчика"
-    assert cat["after"] == {"value": f"{insights.ANSWER_MEDIAN_SEC:.1f} с".replace(".", ","), "note": cat["after"]["note"], "who": "замер стенда"} and "раздел 9" in cat["after"]["note"]
+    assert cat["after"] == {"value": f"{insights.ANSWER_MEDIAN_SEC:.1f} с".replace(".", ","), "note": cat["after"]["note"], "who": "замер стенда"} and "живых ответов" in cat["after"]["note"]
     assert (first["before"]["value"], first["before"]["who"]) == ("2 мин", "замер заказчика")
     assert (first["after"]["value"], first["after"]["who"]) == ("около 3 с", "замер стенда")
     assert (share["after"]["value"], share["before"]["value"]) == ("60%", "0%") and "6 из 10" in share["after"]["note"]
