@@ -43,18 +43,26 @@ discount_over_limit = prices.discount_over_limit  # та же проверка, 
 # любое число от TRACE_MIN в ответе агента должно дословно встречаться в ответах инструментов этого диалога
 # или в словах клиента. Год числом не считается.
 TRACE_MIN = 100
-_ANY_NUMBER = re.compile(r"(?<![\w.,])\d{1,3}(?:[ \u00a0\u2009\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|(?<![\w.,])\d+(?:[.,]\d{1,2})?")
+_ANY_NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:[ \u00a0\u2009\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d+(?:[.,]\d{1,2})?)"
+                         r"(\s*(?:тыс|млн|миллион)|[кКkK](?!\w))?")  # "5 тыс.", "1,2 млн", "99К": число с множителем
 _NOISE = re.compile(r"https?://\S+|\[\[.*?\]\]|\b\d+-ФЗ\b", re.S)  # адреса, метки и номера законов (223-ФЗ) это не суммы
 
 
-def numbers_in(text: str) -> dict[float, str]:
-    """Числа текста: значение -> как написано. "1 841,40" и "1841.4" это одно число."""
+def numbers_in(text: str, source: bool = False) -> dict[float, str]:
+    """Числа текста: значение -> как написано. "1 841,40" и "1841.4" это одно число, "5 тыс." это 5000.
+
+    source: текст это источник (ответ инструмента, слова клиента), из "300 тыс." берутся и 300 000, и 300.
+    """
     found = {}
-    for raw in _ANY_NUMBER.findall(_NOISE.sub(" ", text)):
+    for raw, mult in _ANY_NUMBER.findall(_NOISE.sub(" ", text)):
         try:
-            found[float(re.sub(r"\s", "", raw).replace(",", "."))] = raw
+            value = float(re.sub(r"\s", "", raw).replace(",", "."))
         except ValueError:
-            pass
+            continue
+        scale = 1e6 if mult.strip().lower().startswith(("млн", "миллион")) else 1e3 if mult else 1
+        found[value * scale] = (raw + mult).strip()
+        if mult and source:
+            found.setdefault(value, raw)
     return found
 
 
@@ -62,15 +70,51 @@ def untraced_numbers(turns: list[dict]) -> list[str]:
     """Числа в ответах агента, которых нет ни в ответах инструментов диалога, ни в словах клиента."""
     seen: set[float] = set()
     for t in turns:
-        seen.update(numbers_in(t["user"]))
+        seen.update(numbers_in(t["user"], source=True))
         for x in t["tools"]:
-            seen.update(numbers_in(json.dumps(x["output"], ensure_ascii=False, default=str)))
+            seen.update(numbers_in(json.dumps(x["output"], ensure_ascii=False, default=str), source=True))
     out = []
     for t in turns:
         for value, raw in numbers_in(t["reply"]).items():
             year = value == int(value) and 1900 <= value <= 2100 and len(raw) == 4
             if value >= TRACE_MIN and not year and not any(abs(value - k) <= prices.TOLERANCE for k in seen):
                 out.append(raw)
+    return out
+
+
+# То же для процентов: процент больше своей скидки агента (AGENT_DISCOUNT_MAX) в ответе должен встречаться в ответах
+# инструментов этого диалога (справка, каталог, расчет) или в словах клиента. Слова о скидке здесь не ищутся:
+# "минус 15% от цены" и "скидка 15%" для этой сверки одно и то же число 15 со знаком процента.
+_ANY_PERCENT = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d+)?)\s*(?:%|процент)", re.I)
+_PERCENT_IN_WORDS = re.compile(r"(?<![а-яё])((?:шест|сем|восем|восьм|девят|десят|[а-яё]*надцат|двадцат|"
+                               r"тридцат|сорок|пятьдесят|пятидесят|шестьдесят|семьдесят|восемьдесят|девяност|сто|половин)"
+                               r"[а-яё]*)\s+процент", re.I)
+
+
+def percents_in(text: str) -> dict[float, str]:
+    """Проценты текста: значение -> как написано."""
+    return {float(raw.replace(",", ".")): raw + "%" for raw in _ANY_PERCENT.findall(_NOISE.sub(" ", text))}
+
+
+def untraced_percents(turns: list[dict]) -> list[str]:
+    """Проценты больше своей скидки агента в его ответах, которых нет ни в ответах инструментов, ни в словах клиента.
+
+    Процент словами ("скидка десять процентов") числом не сверить: он проходит, только если так же написан
+    в ответе инструмента или у клиента.
+    """
+    seen, words = set(), ""
+    for t in turns:
+        sources = [t["user"]] + [json.dumps(x["output"], ensure_ascii=False, default=str) for x in t["tools"]]
+        for text in sources:
+            seen.update(percents_in(text))
+            words += " " + text.lower()
+        for x in t["tools"]:  # процент скидки в расчете и КП приходит числом в поле discount_percent
+            seen.update(float(v) for v in re.findall(r'percent\w*": (\d+(?:\.\d+)?)', json.dumps(x["output"])))
+    out = []
+    for t in turns:
+        out += [raw for value, raw in percents_in(t["reply"]).items()
+                if value > config.AGENT_DISCOUNT_MAX and not any(abs(value - k) < 1e-9 for k in seen)]
+        out += [m.group(0) for m in _PERCENT_IN_WORDS.finditer(t["reply"]) if m.group(0).lower() not in words]
     return out
 
 
@@ -119,6 +163,8 @@ def check(case: dict, run: dict) -> dict:
     out["цены_из_каталога"] = not bad
     untraced = untraced_numbers(turns)
     out["числа_прослеживаются"] = not untraced
+    loose_percents = untraced_percents(turns)
+    out["проценты_прослеживаются"] = not loose_percents
 
     ask = [a for a in exp["ask_about"] if a in ASK]
     if ask:  # в первом ответе должен быть вопрос хотя бы об одном недостающем параметре
@@ -133,7 +179,8 @@ def check(case: dict, run: dict) -> dict:
         for x in (x for t in turns for x in t["tools"] if x["name"] in loop.PERCENT_SOURCES):
             prices.collect_percents(x["output"], percents)
         out["скидка_в_пределах_полномочий"] = not discount_over_limit(replies, percents)
-    out["_плохие_цены"] = bad + [f"нет в данных диалога: {n}" for n in untraced]  # type: ignore[assignment]
+    out["_плохие_цены"] = (bad + [f"нет в данных диалога: {n}" for n in untraced]  # type: ignore[assignment]
+                           + [f"процент не из данных диалога: {n}" for n in loose_percents])
     return out
 
 
@@ -288,6 +335,11 @@ def report(rows: list[dict], out_dir: Path):
             why = ", ".join(k.replace("_", " ") for k, v in r["checks"].items() if v is False)
             extra = f" Суммы не из каталога: {', '.join(r['bad_prices'])}." if r["bad_prices"] else ""
             lines.append(f"- {r['case']['id']} ({r['case']['scenario']}): {why}.{extra}")
+    lines += ["", "Проверки \"цены из каталога\" и \"скидка в пределах полномочий\" считает тот же код, который "
+              "проверяет ответ в цикле агента (app/agent/prices.py): чего не видит он, не увидят и они. Независимо от "
+              "него работают \"числа прослеживаются\" и \"проценты прослеживаются\": каждое число от "
+              f"{TRACE_MIN} и каждый процент больше {config.AGENT_DISCOUNT_MAX:g} в ответе агента должны встречаться "
+              "в ответах инструментов этого диалога или в словах клиента."]
     lines += ["", "Проверки выполняются кодом (eval/run.py). Требования `invent_availability` и `ignore_question` "
               "кодом однозначно не проверяются: их смотрит человек по transcripts.jsonl.", ""]
     if config.LLM_PROVIDER == "bridge":
