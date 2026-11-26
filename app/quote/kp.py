@@ -21,8 +21,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (BaseDocTemplate, Frame, HRFlowable, KeepTogether, NextPageTemplate, PageTemplate,
-                                Paragraph, Spacer, Table)
+from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, HRFlowable, KeepTogether, NextPageTemplate,
+                                PageTemplate, Paragraph, Spacer, Table)
 from reportlab.platypus.doctemplate import LayoutError
 
 from app import config, store
@@ -56,6 +56,7 @@ MSK = timezone(timedelta(hours=3))  # дата КП по московскому 
 _NUMBER_LOCK = threading.Lock()
 CENT = Decimal("0.01")
 NBSP = " "
+GROUP = "\u202f"  # узкий неразрывный пробел между разрядами числа
 
 # --- Оформление ----------------------------------------------------------------------------------------------------
 ASSETS = Path(__file__).parent / "assets"
@@ -163,8 +164,12 @@ def _percent(value: Decimal) -> str:
 
 
 def _fmt(value: Decimal) -> str:
-    """1054.17 -> «1 054,17»."""
-    return f"{value:,.2f}".replace(",", NBSP).replace(".", ",")
+    """1054.17 -> «1 054,17»: разряды разделяет узкий неразрывный пробел.
+
+    В тексте PDF он остается своим знаком, а колонки разделяет обычный пробел: при копировании строки
+    таблицы количество не сливается с ценой.
+    """
+    return f"{value:,.2f}".replace(",", GROUP).replace(".", ",")
 
 
 def _num(value: Decimal | None) -> float | None:
@@ -324,14 +329,37 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
 
 
 # --- PDF -------------------------------------------------------------------------------------------------------------
-def _fit(text: str, width: float, style: ParagraphStyle) -> Paragraph:
+class _Line(Flowable):
+    """Одна строка в ячейке, без переноса. Текст уходит в PDF знак в знак: абзац reportlab заменил бы узкий
+    пробел между разрядами обычным, и при копировании таблицы числа сливались бы с соседней колонкой."""
+
+    def __init__(self, text: str, style: ParagraphStyle, width: float):
+        super().__init__()
+        self.text, self.style, self.width, self.height = text, style, width, style.leading
+
+    def wrap(self, avail_width, avail_height):
+        return self.width, self.height
+
+    def draw(self):
+        st, canv = self.style, self.canv
+        canv.setFont(st.fontName, st.fontSize)
+        canv.setFillColor(st.textColor)
+        y = self.height - pdfmetrics.getAscent(st.fontName, st.fontSize)
+        if st.alignment == TA_RIGHT:
+            canv.drawRightString(self.width, y, self.text)
+        elif st.alignment == TA_CENTER:
+            canv.drawCentredString(self.width / 2, y, self.text)
+        else:
+            canv.drawString(0, y, self.text)
+
+
+def _fit(text: str, width: float, style: ParagraphStyle) -> _Line:
     """Значение в ячейку одной строкой: если не помещается по ширине, шрифт уменьшается."""
-    text = text.replace(" ", NBSP)
     need = pdfmetrics.stringWidth(text, style.fontName, style.fontSize)
     if need > width:
         size = style.fontSize * width / need * 0.99
         style = ParagraphStyle(style.name + "-fit", parent=style, fontSize=size, leading=size * 1.25)
-    return Paragraph(escape(text), style)
+    return _Line(text, style, width)
 
 
 def _wrap_code(code: str, width: float, style: ParagraphStyle) -> Paragraph:

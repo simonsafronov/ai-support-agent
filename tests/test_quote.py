@@ -415,7 +415,7 @@ def test_stand_quote_is_rebuilt_with_the_discount_given_in_the_dialog(monkeypatc
 
 def number(text: str) -> Decimal:
     """Число из ячейки PDF: «−1 054,17» -> Decimal("-1054.17")."""
-    return Decimal(text.replace(kp.MINUS, "-").replace(kp.NBSP, "").replace(",", "."))
+    return Decimal(text.replace(kp.MINUS, "-").replace(kp.GROUP, "").replace(",", "."))
 
 
 @pytest.fixture
@@ -474,6 +474,24 @@ def test_long_sums_are_printed_in_full_in_one_line(monkeypatch, printed):
         for key in ("qty", "price", "sum", "vat"):
             if cell.get(key):
                 room = widths[key] - 2 * kp.PAD
-                para = kp._fit(cell[key], room, kp.S_NUM_BOLD)
-                para.wrap(room, 1000)
-                assert len(para.blPara.lines) == 1 and para.getActualLineWidths0()[0] <= room + 0.01, cell
+                line = kp._fit(cell[key], room, kp.S_NUM_BOLD)
+                assert pdfmetrics.stringWidth(line.text, line.style.fontName, line.style.fontSize) <= room, cell
+                assert line.wrap(room, 1000) == (room, line.style.leading)  # одна строка во всю ширину ячейки
+
+
+
+def test_copied_table_row_keeps_quantity_and_price_apart(monkeypatch):
+    """Текст PDF, каким его отдает копирование: разряды числа держит узкий пробел, колонки обычный.
+
+    Иначе строка «25 6 150,00 153 750,00» читается как цена 25 150,00 без количества.
+    """
+    fake_catalog(monkeypatch, {1: {"offer_id": 1, "name": "Лицензия А", "vendor_code": "A-1", "price": 6150,
+                                   "registry_no": None}})
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 25}], discount_percent=5)
+    page = PdfReader(res["file"]).pages[0]
+    tokens = re.split(r"[ \n]+", page.extract_text())  # делим только по обычному пробелу и переводу строки
+    for token in ("25", "6\u202f150,00", "153\u202f750,00", "27\u202f725,41", "\u22127\u202f687,50", "146\u202f062,50"):
+        assert token in tokens, (token, tokens)
+    (row,) = [ln for ln in page.extract_text(extraction_mode="layout").splitlines() if "Лицензия А" in ln]
+    assert re.split(r" {2,}", row.strip()) == ["A-1", "Лицензия А", "25", "6\u202f150,00", "153\u202f750,00",
+                                               "27\u202f725,41"]
