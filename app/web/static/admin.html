@@ -15,7 +15,7 @@ h2{margin-bottom:var(--s16)}
 table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:var(--s8) var(--s16) var(--s8) 0;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-weight:500;font-size:var(--f12);color:var(--muted)}
-td.num,th.num{text-align:right;padding-right:0;white-space:nowrap}
+td.num,th.num{text-align:right;padding-right:0;padding-left:var(--s16);white-space:nowrap}
 tbody tr{cursor:pointer}
 tbody tr:hover td,tbody tr.on td{background:var(--rose)}
 .tag{display:inline-block;padding:0 var(--s8);border-radius:var(--r);font-size:var(--f12);background:var(--panel);color:var(--navy);white-space:nowrap}
@@ -47,7 +47,7 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const rub = (v) => v == null ? "нет данных" : Number(v).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽";
+const rub = (v) => { if (v == null) return "нет данных"; const n = Number(v); return n.toLocaleString("ru-RU", { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 }) + " ₽"; };
 const dt = (t) => new Date(t * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 const get = async (u) => (await fetch(u)).json();
 
@@ -57,7 +57,7 @@ async function load() {
   $("kpi").innerHTML = [
     [st.dialogs, "диалогов"], [pct, "закрыто без менеджера"], [st.quotes, "черновиков КП"],
     [rub(st.cost_rub_per_turn), "стоимость одного запроса"], [rub(st.cost_rub_per_dialog), "стоимость диалога"],
-    [st.avg_model_seconds_per_turn == null ? "нет данных" : st.avg_model_seconds_per_turn + " с", "модель думает на запрос"],
+    [st.avg_model_seconds_per_turn == null ? "нет данных" : String(st.avg_model_seconds_per_turn).replace(".", ",") + " с", "модель думает на запрос"],
   ].map(([b, s]) => `<div><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join("");
   $("hand").innerHTML = st.handoffs.map((h) => `<tr data-id="${esc(h.session_id)}"><td>№ ${h.id}<br><span class="tag">${dt(h.ts)}</span></td><td>${esc(h.reason)}</td><td>${esc(h.summary)}</td><td>${esc(h.contact || "не оставил")}</td></tr>`).join("")
     || '<tr><td colspan="4" class="empty">Передач менеджеру пока нет.</td></tr>';
@@ -81,7 +81,7 @@ async function open(id) {
       for (const s of d.steps.filter((x) => x.turn === turn)) {
         if (s.kind === "llm") {
           const tc = s.output.tool_call;
-          html += `<div class="st"><b>Модель</b> ${esc(s.name)} · ${s.prompt_tokens}+${s.completion_tokens} токенов · ${s.seconds.toFixed(1)} с${tc ? " → вызывает " + esc(tc.name) : " → отвечает клиенту"}</div>`;
+          html += `<div class="st"><b>Модель</b> ${esc(s.name)} · ${s.prompt_tokens}+${s.completion_tokens} токенов · ${s.seconds.toFixed(1).replace(".", ",")} с${tc ? " → вызывает " + esc(tc.name) : " → отвечает клиенту"}</div>`;
         } else {
           html += `<div class="st ${esc(s.kind)}"><b>${esc(s.name)}</b> ${esc(JSON.stringify(s.input))}<pre>${esc(JSON.stringify(s.output).slice(0, 1500))}</pre></div>`;
         }

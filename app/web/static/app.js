@@ -1,7 +1,7 @@
 // Чат покупателя: отправка сообщения, поток шагов агента, карточки товаров, кнопки выбора.
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const rub = (v) => Number(v).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽";
+const rub = (v) => { const n = Number(v); return n.toLocaleString("ru-RU", { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 }) + " ₽"; };
 const rid = () => Math.random().toString(16).slice(2, 10) + Date.now().toString(16);
 
 const state = {
@@ -12,12 +12,14 @@ const state = {
 
 const TOOL = {
   search_products: "Поиск в каталоге", get_product: "Варианты лицензий", browse_categories: "Категории каталога",
-  find_analogs: "Аналоги", kb_search: "База знаний", note_facts: "Память о клиенте", make_quote: "Черновик КП",
+  find_analogs: "Аналоги", kb_search: "База знаний", note_facts: "Память о клиенте", calc_total: "Расчет суммы",
+  make_quote: "Черновик КП",
   handoff_to_manager: "Передача менеджеру",
 };
 const WAIT = {
   search_products: "Ищу в каталоге", get_product: "Сверяю варианты лицензий", browse_categories: "Смотрю категории",
   find_analogs: "Подбираю аналоги", kb_search: "Смотрю базу знаний", note_facts: "Записываю детали",
+  calc_total: "Считаю сумму",
   make_quote: "Готовлю КП", handoff_to_manager: "Передаю менеджеру",
 };
 
@@ -73,6 +75,7 @@ function summary(name, out) {
   if (name === "browse_categories") return (out.categories || []).slice(0, 4).map((x) => x.name).join("; ") || "Категорий не найдено";
   if (name === "kb_search") return (out.results || []).slice(0, 2).map((x) => x.title || x.heading).join("; ") || "В базе знаний нет ответа";
   if (name === "note_facts") return Object.entries(out.saved || {}).map(([k, v]) => `${k}: ${v}`).join("; ");
+  if (name === "calc_total") return out.total ? `Итого ${rub(out.total)}` : "";
   if (name === "make_quote") return out.ok ? `${out.number}, итого ${rub(out.total)}` : out.error || "";
   if (name === "handoff_to_manager") return `Обращение ${out.ticket}`;
   return "";

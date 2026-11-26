@@ -19,6 +19,17 @@ from app.kb import search as kb
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="ИИ-консультант Softline Store", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """Страницы и скрипты стенда браузер перепроверяет при каждом заходе: правки видны сразу."""
+    response = await call_next(request)
+    if not request.url.path.startswith(("/api/", "/quotes/", "/fonts/")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 _turn_lock = threading.Lock()  # GigaChat для физлиц работает в один поток: ходы идут по очереди
 
 
@@ -79,10 +90,23 @@ def session(session_id: str):
                          for m in store.messages(session_id)]}
 
 
+# Витрина без запроса: продукты, о которых чаще всего спрашивают в обращениях (docs/chat_analysis.md)
+FEATURED = ("Kaspersky Endpoint Security для бизнеса", "Astra Linux Special Edition", "КриптоПро CSP",
+            "Microsoft 365", "Dr.Web Security Space", "МойОфис Стандартный", "Windows 11 Pro", "РЕД ОС")
+
+
 @app.get("/api/products")
 def products(q: str = "", limit: int = 12):
     """Поиск по каталогу для витрины стенда."""
-    return catalog.search_products(q or "антивирус", only_available=True, limit=min(limit, 24))
+    if q.strip():
+        return catalog.search_products(q, limit=min(limit, 24))
+    found, seen = [], set()
+    for name in FEATURED:
+        for p in catalog.search_products(name, limit=1).get("products", []):
+            if p["product_id"] not in seen:
+                seen.add(p["product_id"])
+                found.append(p)
+    return {"query": "", "total": len(found), "products": found}
 
 
 # --- экран оператора: только чтение ---

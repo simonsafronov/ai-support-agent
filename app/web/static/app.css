@@ -9,6 +9,7 @@
   --s4:4px;--s8:8px;--s16:16px;--s24:24px;--s32:32px;--s48:48px;--r:8px;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;height:100%}
 body{font:400 var(--f14)/1.5 Inter,Arial,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
 a{color:var(--crimson)}
@@ -50,7 +51,7 @@ h2{font-size:var(--f18);font-weight:600}
 .chat-head{display:flex;align-items:center;justify-content:space-between;padding:var(--s16);background:var(--crimson);color:#fff}
 .chat-head b{font-weight:600;font-size:var(--f18)}
 .chat-head small{display:block;font-size:var(--f12);opacity:.85}
-.chat-head button{border:1px solid rgba(255,255,255,.6);background:none;color:#fff;border-radius:var(--r);padding:var(--s4) var(--s8);font-size:var(--f12)}
+.chat-head button{border:1px solid rgba(255,255,255,.6);background:none;color:#fff;border-radius:var(--r);padding:var(--s4) var(--s8);font-size:var(--f12);white-space:nowrap}
 .log{flex:1;overflow:auto;padding:var(--s16);display:flex;flex-direction:column;gap:var(--s16);background:var(--bg)}
 .msg{max-width:88%;padding:var(--s8) var(--s16);border-radius:var(--r);white-space:pre-wrap;overflow-wrap:anywhere}
 .msg.user{align-self:flex-end;background:var(--navy);color:#fff}
