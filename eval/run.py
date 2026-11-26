@@ -1,6 +1,8 @@
 """Прогон проверочных диалогов через агента и отчет с метриками.
 
 Запуск:  python -m eval.run [--only c01,c19] [--limit 10] [--out eval/runs]
+Сводка:  python -m eval.run --merge eval/runs/a eval/runs/b   (общий отчет по нескольким прогонам,
+         проверки пересчитываются по сохраненной переписке)
 
 Каждый кейс из cases.jsonl проигрывается как отдельный диалог: реплики клиента идут по порядку,
 ответы агента и след шагов сохраняются. Проверки ниже выполняются кодом, без участия модели:
@@ -95,9 +97,12 @@ def main():
     ap.add_argument("--only", default="", help="id кейсов через запятую")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=str(ROOT / "runs"))
+    ap.add_argument("--merge", nargs="+", default=[], help="каталоги прогонов: собрать общий отчет")
     args = ap.parse_args()
 
     cases = [json.loads(line) for line in (ROOT / "cases.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    if args.merge:
+        return merge(cases, args.merge, Path(args.out))
     if args.only:
         cases = [c for c in cases if c["id"] in set(args.only.split(","))]
     if args.limit:
@@ -111,19 +116,48 @@ def main():
     store._local.con = None
 
     rows = []
-    with (out_dir / "transcripts.jsonl").open("w", encoding="utf-8") as f:
-        for i, case in enumerate(cases, 1):
-            run = play(case)
-            res = check(case, run)
-            bad = res.pop("_плохие_цены")
-            passed = all(v for v in res.values() if v is not None)
-            rows.append({"case": case, "run": run, "checks": res, "passed": passed, "bad_prices": bad})
-            f.write(json.dumps({"id": case["id"], "scenario": case["scenario"], "passed": passed, "checks": res,
-                                "bad_prices": bad, **run, "note": case["note"]}, ensure_ascii=False) + "\n")
-            f.flush()
-            print(f"[{i}/{len(cases)}] {case['id']} {case['scenario']}: {'ok' if passed else 'FAIL'} "
-                  f"{[k for k, v in res.items() if v is False]}", flush=True)
+    try:
+        with (out_dir / "transcripts.jsonl").open("w", encoding="utf-8") as f:
+            for i, case in enumerate(cases, 1):
+                row = judge(case, play(case))
+                rows.append(row)
+                f.write(line(row) + "\n")
+                f.flush()
+                print(f"[{i}/{len(cases)}] {case['id']} {case['scenario']}: {'ok' if row['passed'] else 'FAIL'} "
+                      f"{[k for k, v in row['checks'].items() if v is False]}", flush=True)
+    finally:
+        if config.LLM_PROVIDER == "bridge":  # исполнителю на другом конце моста: запросов больше не будет
+            (Path(config.BRIDGE_DIR) / "DONE").touch()
 
+    report(rows, out_dir)
+    print("Отчет:", out_dir / "report.md")
+
+
+def judge(case: dict, run: dict) -> dict:
+    res = check(case, run)
+    bad = res.pop("_плохие_цены")
+    return {"case": case, "run": run, "checks": res, "passed": all(v for v in res.values() if v is not None),
+            "bad_prices": bad}
+
+
+def line(row: dict) -> str:
+    case = row["case"]
+    return json.dumps({"scenario": case["scenario"], "passed": row["passed"], "checks": row["checks"],
+                       "bad_prices": row["bad_prices"], **row["run"], "note": case["note"]}, ensure_ascii=False)
+
+
+def merge(cases: list[dict], dirs: list[str], out: Path):
+    """Общий отчет по нескольким прогонам; у повторно прогнанного кейса берется последний результат."""
+    by_id, runs = {c["id"]: c for c in cases}, {}
+    for d in dirs:
+        for f in sorted(Path(d).rglob("transcripts.jsonl")):
+            for raw in f.read_text(encoding="utf-8").splitlines():
+                run = json.loads(raw)
+                runs[run["id"]] = {k: run[k] for k in ("id", "session_id", "turns", "model_seconds", "wall_seconds")}
+    rows = [judge(by_id[i], runs[i]) for i in sorted(runs)]
+    out_dir = out / time.strftime("%Y%m%d-%H%M%S")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "transcripts.jsonl").write_text("\n".join(line(r) for r in rows) + "\n", encoding="utf-8")
     report(rows, out_dir)
     print("Отчет:", out_dir / "report.md")
 
@@ -152,7 +186,8 @@ def report(rows: list[dict], out_dir: Path):
              f"{statistics.median(per_turn_tokens):.0f} |",
              f"| Стоимость реплики (запроса) | {cost / len(turns):.2f} руб. |",
              f"| Стоимость диалога | {cost / n:.2f} руб. |",
-             f"| Время модели на реплику, медиана | {statistics.median(secs):.1f} с |",
+             "| Время модели на реплику, медиана | " + ("не измерялось |" if config.LLM_PROVIDER == "bridge"
+                                                       else f"{statistics.median(secs):.1f} с |"),
              f"| Срабатываний проверки цен | {sum(1 for t in turns for g in t['guards'] if g['kind'] == 'guard')} |",
              "", "## По проверкам", "", "| Проверка | Прошло | Не прошло | Не относится |", "|---|---|---|---|"]
     names = list(dict.fromkeys(k for r in rows for k in r["checks"]))
@@ -172,6 +207,9 @@ def report(rows: list[dict], out_dir: Path):
             lines.append(f"- {r['case']['id']} ({r['case']['scenario']}): {why}.{extra}")
     lines += ["", "Проверки выполняются кодом (eval/run.py). Требования `invent_availability` и `ignore_question` "
               "кодом однозначно не проверяются: их смотрит человек по transcripts.jsonl.", ""]
+    if config.LLM_PROVIDER == "bridge":
+        lines += ["Прогон шел через мост разработки (LLM_PROVIDER=bridge): токены и стоимость посчитаны оценкой, "
+                  "3 знака на токен, по цене из PRICE_IN_PER_1K и PRICE_OUT_PER_1K; время модели не измерялось.", ""]
     (out_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 

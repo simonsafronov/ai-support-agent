@@ -28,13 +28,16 @@ KB_DB = Path(env("KB_DB", str(ROOT / "data/db/kb.sqlite")))
 APP_DB = Path(env("APP_DB", str(ROOT / "data/db/app.sqlite")))
 QUOTES_DIR = Path(env("QUOTES_DIR", str(ROOT / "data/quotes")))
 
-# Модель: gigachat | openai (любой OpenAI-совместимый сервис, в том числе on-prem через vLLM) | mock
+# Модель: gigachat | openai (любой OpenAI-совместимый сервис, в том числе on-prem через vLLM) |
+# bridge (разработка без ключа: запросы к модели идут файлами через BRIDGE_DIR, см. app/agent/bridge.py)
 LLM_PROVIDER = env("LLM_PROVIDER", "gigachat")
 LLM_MODEL = env("LLM_MODEL", "GigaChat-2-Max")
 LLM_BASE_URL = env("LLM_BASE_URL", "")
 LLM_API_KEY = env("LLM_API_KEY", "")
 GIGACHAT_AUTH_KEY = env("GIGACHAT_AUTH_KEY", "")
 GIGACHAT_SCOPE = env("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+BRIDGE_DIR = env("BRIDGE_DIR", "")
+BRIDGE_TIMEOUT = float(env("BRIDGE_TIMEOUT", "1800"))  # сколько секунд ждать ответа исполнителя
 
 # Цена модели в рублях за 1000 токенов (вход, выход): из нее считается стоимость запроса
 PRICE_IN_PER_1K = float(env("PRICE_IN_PER_1K", "0.65"))

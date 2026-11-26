@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
@@ -186,6 +187,47 @@ class Scripted:
         return LLMResult(text=step, prompt_tokens=100, completion_tokens=20, model="scripted")
 
 
+class Bridge:
+    """Режим разработки без ключа модели: запрос кладется файлом в каталог, ответ ждем файлом оттуда же.
+
+    Отвечает внешний исполнитель через `python -m app.agent.bridge` (человек или модель, у которой нет
+    HTTP-интерфейса). Токены считаются оценкой по числу знаков; время ответа скорость модели не показывает.
+    """
+
+    CHARS_PER_TOKEN = 3.0
+
+    def __init__(self, directory: str, model: str, timeout: float = 1800):
+        if not directory:
+            raise LLMError("не задан BRIDGE_DIR")
+        self.dir, self.model, self.timeout = Path(directory), model, timeout
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.n = len(list(self.dir.glob("req-*.json")))
+
+    @classmethod
+    def tokens(cls, text: str) -> int:
+        return int(len(text) / cls.CHARS_PER_TOKEN) + 1
+
+    def chat(self, messages: list[dict], tools: list[dict], **_) -> LLMResult:
+        self.n += 1
+        req, res = self.dir / f"req-{self.n:05d}.json", self.dir / f"res-{self.n:05d}.json"
+        body = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False)
+        tmp = req.with_suffix(".tmp")
+        tmp.write_text(body, encoding="utf-8")
+        tmp.rename(req)
+        t0 = time.time()
+        while not res.exists():
+            if time.time() - t0 > self.timeout:
+                raise LLMError(f"мост: нет ответа на {req.name} за {self.timeout:.0f} с")
+            time.sleep(0.2)
+        ans = json.loads(res.read_text(encoding="utf-8"))
+        out = LLMResult(text=(ans.get("text") or "").strip(), model=self.model, seconds=time.time() - t0,
+                        prompt_tokens=self.tokens(body),
+                        completion_tokens=self.tokens(json.dumps(ans, ensure_ascii=False)))
+        if ans.get("tool_call"):
+            out.tool_call = {"name": ans["tool_call"]["name"], "args": ans["tool_call"].get("args") or {}}
+        return out
+
+
 _llm = None
 
 
@@ -197,6 +239,8 @@ def get_llm():
             _llm = GigaChat(config.GIGACHAT_AUTH_KEY, config.LLM_MODEL, config.GIGACHAT_SCOPE)
         elif config.LLM_PROVIDER == "openai":
             _llm = OpenAICompat(config.LLM_BASE_URL, config.LLM_API_KEY, config.LLM_MODEL)
+        elif config.LLM_PROVIDER == "bridge":
+            _llm = Bridge(config.BRIDGE_DIR, config.LLM_MODEL, config.BRIDGE_TIMEOUT)
         else:
             raise LLMError(f"неизвестный LLM_PROVIDER: {config.LLM_PROVIDER}")
     return _llm
