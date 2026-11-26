@@ -219,3 +219,28 @@ def test_card_drops_checked_row_once_it_is_in_quote():
     hid = store.open_handoff(res["session_id"])["id"]
     needs = handoff_card.build(dict(store.db().execute("SELECT * FROM handoffs WHERE id=?", (hid,)).fetchone()))["needs"]
     assert needs[spec.CHECK].startswith("Astra Linux SE 1.8 сервер") and "KL4863" not in needs[spec.CHECK]
+
+
+def test_get_product_takes_the_quantity_under_the_name_the_catalog_used_in_clarify():
+    """Каталог в clarify предлагает сузить по nodes или users: такой фильтр работает как quantity, а не теряется."""
+    from app.agent import tools as agent_tools
+    ctx = agent_tools.ToolContext(session_id="t-alias")
+    seen = {}
+
+    def handler(ctx, product_id, quantity=None, **filters):
+        seen.update(product_id=product_id, quantity=quantity, **filters)
+        return {"ok": True}
+
+    tool = {**agent_tools.BY_NAME["get_product"], "handler": handler}
+    original = agent_tools.BY_NAME["get_product"]
+    agent_tools.BY_NAME["get_product"] = tool
+    try:
+        assert agent_tools.call(ctx, "get_product", {"product_id": "3953", "nodes": 14}) == {"ok": True}
+        assert seen["quantity"] == 14
+        seen.clear()
+        agent_tools.call(ctx, "get_product", {"product_id": "3953", "users": 25, "quantity": 30})
+        assert seen["quantity"] == 30  # явное quantity главнее
+        got = agent_tools.call(ctx, "get_product", {"product_id": "3953", "color": "red"})
+        assert got["ignored_args"] == ["color"]  # неизвестный фильтр модель видит, а не принимает за примененный
+    finally:
+        agent_tools.BY_NAME["get_product"] = original

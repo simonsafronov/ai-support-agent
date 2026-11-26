@@ -436,14 +436,26 @@ def specs() -> list[dict]:
             for t in TOOLS]
 
 
+# Каталог называет количество в facets и clarify по виду ступени (users, nodes, qty), а у get_product это одно
+# поле quantity: фильтр, названный так, как его назвал сам каталог, не должен теряться.
+ALIASES = {"get_product": {"users": "quantity", "nodes": "quantity", "qty": "quantity"}}
+
+
 def call(ctx: ToolContext, name: str, args: dict) -> dict:
     """Исполняет инструмент; ошибку возвращает модели текстом, чтобы она могла исправиться."""
     tool = BY_NAME.get(name)
     if tool is None:
         return {"error": f"нет инструмента {name}", "available": list(BY_NAME)}
-    allowed = tool["parameters"]["properties"]
+    allowed, args = tool["parameters"]["properties"], dict(args or {})
+    for alias, to in ALIASES.get(name, {}).items():  # имя измерения из facets и clarify самого ответа каталога
+        if alias in args and to not in args:
+            args[to] = args[alias]
+    ignored = sorted(k for k in args if k not in allowed and k not in ALIASES.get(name, {}))
     try:
-        return tool["handler"](ctx, **{k: v for k, v in (args or {}).items() if k in allowed})
+        res = tool["handler"](ctx, **{k: v for k, v in args.items() if k in allowed})
+        if ignored and isinstance(res, dict):  # молча выброшенный фильтр модель приняла бы за примененный
+            res["ignored_args"] = ignored
+        return res
     except TypeError as e:
         return {"error": f"неверные аргументы: {e}"}
     except Exception as e:  # сбой инструмента не должен ронять диалог
