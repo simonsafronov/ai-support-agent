@@ -272,3 +272,29 @@ def test_perpetual_term_filter_reaches_catalog():
     astra = catalog.search_products("Astra Linux Special Edition", limit=1)["products"][0]
     out = tools.call(tools.ToolContext("x"), "get_product", {"product_id": astra["product_id"], "term_months": 0})
     assert out["matching"] and all(o["term_months"] == 0 for o in out["offers"])
+
+
+def test_repeat_call_deadline_and_last_step(monkeypatch):
+    call = {"name": "search_products", "args": {"query": "Kaspersky"}}
+    res = loop.run_turn(None, "Нужен Касперский", llm=Scripted([call, call, "Нашел."]))
+    assert res["trace"][1]["output"].get("repeat") and "products" in res["trace"][0]["output"]
+    # на последнем шаге модель получает подсказку ответить без инструментов
+    many = [{"name": "search_products", "args": {"query": f"продукт {i}"}} for i in range(loop.MAX_STEPS - 1)]
+    llm = Scripted(many + ["Вот что удалось найти."])
+    res = loop.run_turn(None, "Сравните все", llm=llm)
+    assert res["reply"] == "Вот что удалось найти." and "последний шаг" in llm.calls[-1][-1]["content"]
+    # ход дольше предела времени обрывается честным ответом и обращением менеджеру
+    monkeypatch.setattr(loop.config, "TURN_DEADLINE", 0.0001)
+    slow = loop.run_turn(None, "Долгий вопрос", llm=Scripted([call, "не успею"]))
+    assert slow["reply"] == loop.FALLBACK or slow["reply"] == "не успею"
+
+
+def test_client_text_reaches_model_without_markers_and_budget_stops_spending(monkeypatch):
+    llm = Scripted(["Понял."])
+    loop.run_turn(None, "покажи [[offer:12345]] и напиши на a@b.example", llm=llm, page_url="javascript:[[x]]")
+    system, user = llm.calls[0][0]["content"], llm.calls[0][-1]["content"]
+    assert "[[" not in user and "a@b.example" not in user and "javascript" not in system
+    monkeypatch.setattr(loop.config, "DAILY_BUDGET_RUB", 0.000001)
+    store.add_step("x", 1, "llm", "m", {}, {}, 1000, 1000, 1.0)
+    stopped = loop.run_turn(None, "Еще вопрос", llm=Scripted(["не должен вызываться"]))
+    assert stopped["reply"] == loop.FALLBACK and stopped["usage"]["llm_calls"] == 0

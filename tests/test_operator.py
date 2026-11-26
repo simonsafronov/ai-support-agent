@@ -2,6 +2,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app import store
@@ -12,6 +14,13 @@ from app.kb import answers
 from app.web import server
 
 client = TestClient(server.app)
+KEY = {"X-Admin-Token": "secret"}
+
+
+@pytest.fixture(autouse=True)
+def operator_key(monkeypatch):
+    monkeypatch.setattr(server.config, "ADMIN_TOKEN", "secret")
+    monkeypatch.setattr(server.config, "CHAT_RATE_PER_MIN", 0)
 
 
 def _handoff_dialog() -> tuple[str, int]:
@@ -23,7 +32,7 @@ def _handoff_dialog() -> tuple[str, int]:
 
 def test_manager_answer_reaches_client_and_teaches_agent():
     sid, hid = _handoff_dialog()
-    r = client.post(f"/api/admin/handoff/{hid}/answer", json={
+    r = client.post(f"/api/admin/handoff/{hid}/answer", headers=KEY, json={
         "answer": "Articulate 360 не поставляем. Для разработки курсов предлагаем iSpring Suite.", "teach": True})
     assert r.status_code == 200 and r.json()["teach"]
     # клиент видит ответ в своем чате, обращение закрыто, агент снова ведет диалог сам
@@ -39,24 +48,44 @@ def test_manager_answer_reaches_client_and_teaches_agent():
 
 def test_private_answer_is_not_used_for_other_clients():
     _, hid = _handoff_dialog()
-    client.post(f"/api/admin/handoff/{hid}/answer", json={"answer": "Вам дадим скидку 10%.", "teach": False})
+    client.post(f"/api/admin/handoff/{hid}/answer", headers=KEY, json={"answer": "Вам дадим скидку 10%.", "teach": False})
     assert answers.find("Articulate 360") == [] and answers.count() == 0
 
 
 def test_export_has_every_message_with_tools_and_handoff_flag():
     sid, _ = _handoff_dialog()
-    text = client.get("/api/admin/export.csv").content.decode("utf-8-sig")
+    text = client.get("/api/admin/export.csv", headers=KEY).content.decode("utf-8-sig")
     rows = [line.split(";") for line in text.strip().splitlines()]
     assert rows[0][:3] == ["время (МСК)", "диалог", "кто"] and len(rows) == 3
     assert rows[1][1:3] == [sid, "клиент"] and rows[2][2] == "агент"
     assert rows[2][4] == "handoff_to_manager" and rows[2][5] == "да"
 
 
-def test_admin_token_closes_operator_api(monkeypatch):
-    monkeypatch.setattr(server.config, "ADMIN_TOKEN", "secret")
-    assert client.get("/api/admin/stats").status_code == 403
-    assert client.get("/api/admin/stats", headers={"X-Admin-Token": "secret"}).status_code == 200
-    assert client.get("/api/admin/export.csv?token=secret").status_code == 200
+def test_without_key_operator_screen_is_read_only_and_hides_contacts(monkeypatch):
+    sid, hid = _handoff_dialog()
+    demo = client.get(f"/api/admin/session/{sid}").json()
+    assert demo["role"] == "demo" and "ivanov@" not in json.dumps(demo, ensure_ascii=False)
+    assert "[email]" in demo["messages"][0]["content"]
+    full = client.get(f"/api/admin/session/{sid}", headers=KEY).json()
+    assert full["role"] == "operator" and "ivanov@romashka.example" in full["messages"][0]["content"]
+    assert client.get("/api/admin/export.csv").status_code == 403
+    assert client.post(f"/api/admin/handoff/{hid}/answer", json={"answer": "x"}).status_code == 403
+    assert client.post("/api/admin/catalog/update").status_code == 403
+    monkeypatch.setattr(server.config, "ADMIN_TOKEN", "")  # ключ не задан: полного доступа нет ни у кого
+    assert client.get("/api/admin/export.csv", headers=KEY).status_code == 403
+
+
+def test_chat_stream_limits_and_headers(monkeypatch):
+    monkeypatch.setattr(server.loop, "get_llm", lambda: Scripted(["Здравствуйте. Чем помочь?"]))
+    monkeypatch.setattr(server.config, "CHAT_RATE_PER_MIN", 2)
+    server._recent.clear()
+    r = client.post("/api/chat", json={"message": "Добрый день", "client_id": "t1"})
+    last = json.loads(r.text.strip().splitlines()[-1])
+    assert r.status_code == 200 and last["type"] == "reply" and last["reply"] == "Здравствуйте. Чем помочь?"
+    assert r.headers["x-content-type-options"] == "nosniff" and "default-src 'self'" in r.headers["content-security-policy"]
+    assert client.post("/api/chat", json={"message": "еще"}).status_code == 200
+    assert client.post("/api/chat", json={"message": "и еще"}).status_code == 429  # третье сообщение за минуту
+    assert client.get("/quotes/../app.sqlite.pdf").status_code == 404 and client.get("/quotes/нет.pdf").status_code == 404
 
 
 def _tiny_catalog(path, prices: dict):

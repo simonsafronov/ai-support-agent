@@ -7,6 +7,7 @@ import datetime
 import io
 import json
 import queue
+import secrets
 import subprocess
 import sys
 import threading
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -36,12 +37,42 @@ async def lifespan(_app):
 app = FastAPI(title="ИИ-консультант Softline Store", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
+_recent: dict[str, list[float]] = {}  # адрес клиента -> время его последних сообщений в чат
+_recent_lock = threading.Lock()
+
+
+def too_often(key: str) -> bool:
+    """Больше CHAT_RATE_PER_MIN сообщений в минуту с одного адреса: защита расхода на модель."""
+    if not config.CHAT_RATE_PER_MIN:
+        return False
+    now = time.time()
+    with _recent_lock:
+        if len(_recent) > 5000:  # старые адреса не копятся
+            for k in [k for k, v in _recent.items() if not v or now - v[-1] > 60]:
+                del _recent[k]
+        times = _recent[key] = [t for t in _recent.get(key, []) if now - t < 60]
+        if len(times) >= config.CHAT_RATE_PER_MIN:
+            return True
+        times.append(now)
+        return False
+
+
 @app.middleware("http")
-async def revalidate_static(request, call_next):
-    """Страницы и скрипты стенда браузер перепроверяет при каждом заходе: правки видны сразу."""
+async def guard(request, call_next):
+    """Лимит сообщений в чат, заголовки безопасности и перепроверка страниц стенда браузером."""
+    if request.url.path == "/api/chat" and request.method == "POST":
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if too_often(forwarded or (request.client.host if request.client else "?")):
+            return JSONResponse({"detail": "слишком много сообщений подряд"}, status_code=429)
     response = await call_next(request)
     if not request.url.path.startswith(("/api/", "/quotes/", "/fonts/")):
         response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    if not request.url.path.startswith("/quotes/"):  # PDF открывает встроенный просмотрщик браузера
+        response.headers["Content-Security-Policy"] = ("default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                                       "img-src 'self' data:; frame-ancestors 'none'")
     return response
 
 
@@ -69,17 +100,42 @@ def _daily_update():
         now = datetime.datetime.now(MSK)
         run_at = now.replace(hour=config.FEED_UPDATE_HOUR, minute=0, second=0, microsecond=0)
         time.sleep(((run_at - now).total_seconds() - 1) % 86400 + 1)
+        store.purge(config.RETENTION_DAYS)  # диалоги с контактами клиентов не хранятся дольше срока
         update_catalog()
 
 
+def is_operator(request: Request) -> bool:
+    given = request.headers.get("x-admin-token") or request.query_params.get("token") or ""
+    return bool(config.ADMIN_TOKEN) and secrets.compare_digest(given.encode(), config.ADMIN_TOKEN.encode())
+
+
 def admin(request: Request):
-    """Экран оператора: если задан ADMIN_TOKEN, нужен он же в заголовке или адресе."""
-    if config.ADMIN_TOKEN and config.ADMIN_TOKEN not in (request.headers.get("x-admin-token"),
-                                                         request.query_params.get("token")):
-        raise HTTPException(403, "нужен ключ оператора")
+    """Действия оператора и данные клиентов целиком: только с ключом ADMIN_TOKEN."""
+    if not is_operator(request):
+        raise HTTPException(403, "нужен ключ оператора: откройте экран по адресу /admin?token=..." if config.ADMIN_TOKEN
+                            else "ключ оператора не задан: укажите ADMIN_TOKEN в .env")
 
 
-_turn_lock = threading.Lock()  # GigaChat для физлиц работает в один поток: ходы идут по очереди
+def view(request: Request, payload: dict) -> dict:
+    """Экран оператора без ключа открыт только на чтение, почта и телефоны клиентов в нем скрыты."""
+    if is_operator(request):
+        return {**payload, "role": "operator"}
+    masked = json.loads(loop.mask_contacts(json.dumps(payload, ensure_ascii=False, default=str))[0])
+    return {**masked, "role": "demo"}
+
+
+_slots = threading.BoundedSemaphore(max(1, config.MAX_PARALLEL_TURNS))  # столько ходов модель обслуживает разом
+_session_locks: dict[str, threading.Lock] = {}
+_session_guard = threading.Lock()
+
+
+def session_lock(key: str) -> threading.Lock:
+    """Ходы одного диалога идут по очереди, разные диалоги друг друга не ждут."""
+    with _session_guard:
+        if len(_session_locks) > 5000:
+            for k in [k for k, lock in _session_locks.items() if not lock.locked()]:
+                del _session_locks[k]
+        return _session_locks.setdefault(key, threading.Lock())  # GigaChat для физлиц работает в один поток: ходы идут по очереди
 
 
 class ChatIn(BaseModel):
@@ -103,7 +159,7 @@ def chat(body: ChatIn):
 
     def work():
         try:
-            with _turn_lock:
+            with session_lock(body.session_id or body.client_id or "new"), _slots:
                 res = loop.run_turn(body.session_id, body.message.strip(), client_id=body.client_id,
                                     page_url=body.page_url, on_event=q.put)
             q.put({"type": "reply", **res})
@@ -166,8 +222,8 @@ def _session_row(r) -> dict:
     return d
 
 
-@app.get("/api/admin/sessions", dependencies=[Depends(admin)])
-def admin_sessions(limit: int = 100):
+@app.get("/api/admin/sessions")
+def admin_sessions(request: Request, limit: int = 100):
     con = store.db()
     rows = con.execute(
         "SELECT s.id, s.created_at, s.updated_at, s.status, s.page_url, s.prompt_tokens, s.completion_tokens, "
@@ -176,20 +232,21 @@ def admin_sessions(limit: int = 100):
         "(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.role='user') AS turns, "
         "(SELECT COUNT(*) FROM quotes q WHERE q.session_id=s.id) AS quotes "
         "FROM sessions s ORDER BY s.updated_at DESC LIMIT ?", (min(limit, 500),)).fetchall()
-    return {"sessions": [_session_row(r) for r in rows]}
+    return view(request, {"sessions": [_session_row(r) for r in rows]})
 
 
-@app.get("/api/admin/session/{session_id}", dependencies=[Depends(admin)])
-def admin_session(session_id: str):
+@app.get("/api/admin/session/{session_id}")
+def admin_session(request: Request, session_id: str):
     con = store.db()
     row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "нет такого диалога")
     s = _session_row(row)
     s["facts"], s["items"] = json.loads(s.pop("facts_json")), json.loads(s.pop("items_json"))
-    return {"session": s, "messages": store.messages(session_id), "steps": store.steps(session_id),
-            "handoffs": [dict(r) for r in con.execute("SELECT * FROM handoffs WHERE session_id=?", (session_id,))],
-            "quotes": [dict(r) for r in con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,))]}
+    return view(request, {
+        "session": s, "messages": store.messages(session_id), "steps": store.steps(session_id),
+        "handoffs": [dict(r) for r in con.execute("SELECT * FROM handoffs WHERE session_id=?", (session_id,))],
+        "quotes": [dict(r) for r in con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,))]})
 
 
 class AnswerIn(BaseModel):
@@ -233,7 +290,7 @@ def admin_export():
                     headers={"Content-Disposition": 'attachment; filename="dialogs.csv"'})
 
 
-@app.get("/api/admin/catalog", dependencies=[Depends(admin)])
+@app.get("/api/admin/catalog")
 def admin_catalog():
     c = catalog.stats()
     return {"offers": c["offers"], "products": c["products"], "feed_date": c.get("feed_date"),
@@ -246,8 +303,8 @@ def admin_catalog_update():
     return {"started": update_catalog()}
 
 
-@app.get("/api/admin/stats", dependencies=[Depends(admin)])
-def admin_stats():
+@app.get("/api/admin/stats")
+def admin_stats(request: Request):
     con = store.db()
     one = lambda sql: con.execute(sql).fetchone()[0] or 0
     dialogs = one("SELECT COUNT(*) FROM sessions WHERE llm_calls>0")
@@ -256,7 +313,7 @@ def admin_stats():
     handoff = one("SELECT COUNT(DISTINCT session_id) FROM handoffs")
     lat = one("SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' GROUP BY session_id, turn)")
     total = loop.cost_rub(pt, ct)
-    return {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff,
+    return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff,
             "without_human_share": round(1 - handoff / dialogs, 3) if dialogs else None,
             "quotes": one("SELECT COUNT(*) FROM quotes"), "learned_answers": answers.count(),
             "prompt_tokens": pt, "completion_tokens": ct,
@@ -264,7 +321,7 @@ def admin_stats():
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
             "handoffs": [dict(r) for r in con.execute("SELECT * FROM handoffs ORDER BY id DESC LIMIT 50")],
-            "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": time.time()}
+            "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": time.time()})
 
 
 @app.get("/quotes/{name}")
