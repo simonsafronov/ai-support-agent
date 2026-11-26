@@ -45,8 +45,21 @@ def db() -> sqlite3.Connection:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA journal_mode=WAL")
         con.executescript(_SCHEMA)
+        _migrate(con)
         _local.con = con
     return con
+
+
+_COLUMNS = (  # колонки, которых не было в первых версиях базы: добавляются на месте, данные остаются
+    ("handoffs", "assignee", "TEXT DEFAULT ''"), ("handoffs", "taken_at", "REAL"),
+)
+
+
+def _migrate(con: sqlite3.Connection):
+    for table, column, kind in _COLUMNS:
+        if column not in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    con.commit()
 
 
 def _j(v) -> str:
@@ -121,14 +134,53 @@ def add_handoff(session_id: str, reason: str, summary: str, contact: str) -> int
 
 
 def open_handoff(session_id: str) -> dict | None:
-    row = db().execute("SELECT id, reason, summary, contact FROM handoffs WHERE session_id=? AND status='new' "
-                       "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+    row = db().execute("SELECT id, reason, summary, contact FROM handoffs WHERE session_id=? "
+                       "AND status IN ('new', 'taken') ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
     return dict(row) if row else None
 
 
 def update_handoff(handoff_id: int, summary: str, contact: str):
     db().execute("UPDATE handoffs SET summary=?, contact=? WHERE id=?", (summary, contact, handoff_id))
     db().commit()
+
+
+def take_handoff(handoff_id: int, who: str) -> bool:
+    """Менеджер берет обращение в работу: остальные видят, что оно занято."""
+    cur = db().execute("UPDATE handoffs SET status='taken', assignee=?, taken_at=? WHERE id=? AND status='new'",
+                       (who[:60], time.time(), handoff_id))
+    db().commit()
+    return cur.rowcount == 1
+
+
+def return_handoff(handoff_id: int) -> bool:
+    """Менеджер возвращает диалог агенту: вопрос решается без человека."""
+    con = db()
+    row = con.execute("SELECT session_id FROM handoffs WHERE id=? AND status IN ('new', 'taken')",
+                      (handoff_id,)).fetchone()
+    if row is None:
+        return False
+    con.execute("UPDATE handoffs SET status='returned' WHERE id=?", (handoff_id,))
+    con.execute("UPDATE sessions SET status='bot' WHERE id=?", (row["session_id"],))
+    con.commit()
+    return True
+
+
+def last_total(session_id: str) -> float | None:
+    """Последняя сумма, посчитанная кодом в этом диалоге (расчет или КП): для карточки менеджера."""
+    for r in db().execute("SELECT output_json FROM steps WHERE session_id=? AND kind='tool' "
+                          "AND name IN ('calc_total', 'make_quote') ORDER BY id DESC", (session_id,)):
+        total = json.loads(r["output_json"]).get("total")
+        if total:
+            return float(total)
+    return None
+
+
+def drop_session(session_id: str):
+    con = db()
+    for table in ("messages", "steps", "handoffs", "quotes"):
+        con.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
+    con.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+    con.commit()
 
 
 def add_quote(session_id: str, number: str, customer: str, items: list[dict], total: float, file: str) -> int:
@@ -172,8 +224,5 @@ def purge(days: int) -> int:
     con = db()
     old = [r[0] for r in con.execute("SELECT id FROM sessions WHERE updated_at<?", (time.time() - days * 86400,))]
     for sid in old:
-        for table in ("messages", "steps", "handoffs", "quotes"):
-            con.execute(f"DELETE FROM {table} WHERE session_id=?", (sid,))
-        con.execute("DELETE FROM sessions WHERE id=?", (sid,))
-    con.commit()
+        drop_session(sid)
     return len(old)

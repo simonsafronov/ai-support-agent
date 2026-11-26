@@ -114,8 +114,8 @@ def context_block(session: dict, page_hint: str = "", previous: dict | None = No
                      f"{_price(q['total'])}). Он лежит под вашим прошлым ответом.")
     if session.get("status") == "handoff":
         lines.append("Обращение уже передано менеджеру. На вопросы продолжайте отвечать. Контакт и то, что вы "
-                     "записали меткой facts, дописываются в обращение сами: второй раз handoff_to_manager не "
-                     "вызывайте." + ("" if (session.get("facts") or {}).get("контакт") else
+                     "записали меткой facts, менеджер видит в карточке обращения сам: второй раз "
+                     "handoff_to_manager не вызывайте." + ("" if (session.get("facts") or {}).get("контакт") else
                                      " Контакта клиента пока нет: попросите его один раз."))
     if previous and (previous.get("facts") or (previous.get("items") or {}).get("offers")):
         prev = []

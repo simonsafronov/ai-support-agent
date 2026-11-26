@@ -18,18 +18,18 @@ import statistics
 import time
 from pathlib import Path
 
-from app import config, store
+from app import cases as app_cases, config, store
 from app.agent import loop, prices
 
 ROOT = Path(__file__).parent
 ASK = {  # о чем агент должен спросить -> по каким словам это видно в его вопросе
     "users": r"пользовател|рабочих мест|сотрудник|устройств|узл|компьютер|количеств|сколько",
-    "term": r"срок|на год|года|лет|месяц|бессрочн",
-    "license_type": r"продлен|нов[аоу][яйю]|подписк|первичн|тип лицензи",
+    "term": r"срок|\bгод|лет|месяц|бессрочн",
+    "license_type": r"продлен|нов[аоу][яйю]|подписк|первичн|тип лицензи|полная|техподдержк|техническ\w+ поддержк",
     "org_type": r"организаци|юрлиц|юридическ|физлиц|физическ|коммерческ|государствен|образовательн|частн",
     "version": r"верси|редакци|выпуск|релиз",
     "platform": r"платформ|операционн|windows|linux|macos|\bос\b",
-    "task": r"задач|для чего|что именно|какие функции|что нужно|что требуется|како(?:й|го|му) продукт|на что|что подобрать",
+    "task": r"задач|для чего|что именно|какие функции|что нужно|что требуется|како(?:й|го|му) продукт|на что|подобрать|уровень|требовани",
     "budget": r"бюджет|ориентир по цене|сумм",
     "infrastructure": r"инфраструктур|сервер|облак|операционн|почтов|windows|linux|где развернут",
     "contact": r"почт|телефон|контакт|e-mail|email|связаться",
@@ -105,6 +105,7 @@ def main():
     args = ap.parse_args()
 
     cases = [json.loads(line) for line in (ROOT / "cases.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    cases += app_cases.load()  # кейсы, которые оператор добавил со стенда кнопкой "В проверочный набор"
     if args.merge:
         return gate(merge(cases, args.merge, Path(args.out)), args.min_pass)
     if args.only:

@@ -2,7 +2,7 @@
 import pytest
 
 from app import store
-from app.agent import loop, prices
+from app.agent import handoff_card, loop, prices
 from app.agent.llm import LLMError, Scripted
 from app.catalog import search as catalog
 
@@ -246,10 +246,14 @@ def test_contact_is_hidden_from_model_and_reaches_manager():
     assert "[email]" in seen and "[телефон]" in seen and "контакт: получен, скрыт защитой" in llm.calls[0][0]["content"]
     ticket = store.open_handoff(res["session_id"])
     assert ticket["contact"] == "ivanov@romashka.example, +7 (912) 345-67-89"
-    # следующий ход: модель знает, что контакт есть, а новое от клиента попадает в то же обращение без вызова модели
+    # следующий ход: модель знает, что контакт есть, а новое от клиента попадает в карточку того же обращения
     loop.run_turn(res["session_id"], "Нас 40 человек, запасная почта petrov@romashka.example", llm=llm)
     ticket = store.open_handoff(res["session_id"])
-    assert "petrov@romashka.example" in ticket["contact"] and "пользователей: 40" in ticket["summary"]
+    assert "petrov@romashka.example" in ticket["contact"] and ticket["summary"] == "Просит скидку"
+    row = dict(store.db().execute("SELECT * FROM handoffs WHERE id=?", (ticket["id"],)).fetchone())
+    card = handoff_card.build(row)
+    assert card["needs"] == {"пользователей": "40"} and "petrov@romashka.example" in card["client"]["контакт"]
+    assert card["flags"] == ["просит скидку"] and card["priority"] == "normal"
     assert store.messages(res["session_id"])[0]["content"].count("ivanov@romashka.example") == 1  # оператор видит как есть
 
 

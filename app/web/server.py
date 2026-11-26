@@ -7,6 +7,7 @@ import datetime
 import io
 import json
 import queue
+import re
 import secrets
 import subprocess
 import sys
@@ -14,13 +15,13 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import config, store
-from app.agent import loop
+from app import cases, config, economy, store
+from app.agent import handoff_card, loop, proof
 from app.catalog import search as catalog, update as catalog_update
 from app.kb import answers, search as kb
 
@@ -120,8 +121,22 @@ def view(request: Request, payload: dict) -> dict:
     """Экран оператора без ключа открыт только на чтение, почта и телефоны клиентов в нем скрыты."""
     if is_operator(request):
         return {**payload, "role": "operator"}
-    masked = json.loads(loop.mask_contacts(json.dumps(payload, ensure_ascii=False, default=str))[0])
-    return {**masked, "role": "demo"}
+    return {**_hide(json.loads(json.dumps(payload, ensure_ascii=False, default=str))), "role": "demo"}
+
+
+_REQUISITE = re.compile(r"(?<!\d)(?<!\d[.,])\d{9,12}(?!\d|[.,]\d)")  # ИНН, КПП, ОГРН и номера счетов в тексте
+_KEEP = {"id", "session_id", "number", "url", "file"}  # служебные поля: по ним экран открывает диалог и КП
+
+
+def _hide(obj, key: str = ""):
+    """Режим просмотра: почта, телефоны и реквизиты клиентов заменяются метками во всех текстах ответа."""
+    if isinstance(obj, dict):
+        return {k: _hide(v, k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_hide(v, key) for v in obj]
+    if isinstance(obj, str) and key not in _KEEP:
+        return _REQUISITE.sub("[реквизит]", loop.mask_contacts(obj)[0])
+    return obj
 
 
 _slots = threading.BoundedSemaphore(max(1, config.MAX_PARALLEL_TURNS))  # столько ходов модель обслуживает разом
@@ -245,8 +260,56 @@ def admin_session(request: Request, session_id: str):
     s["facts"], s["items"] = json.loads(s.pop("facts_json")), json.loads(s.pop("items_json"))
     return view(request, {
         "session": s, "messages": store.messages(session_id), "steps": store.steps(session_id),
-        "handoffs": [dict(r) for r in con.execute("SELECT * FROM handoffs WHERE session_id=?", (session_id,))],
+        "handoffs": _handoffs("WHERE session_id=?", (session_id,)),
         "quotes": [dict(r) for r in con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,))]})
+
+
+def _handoffs(where: str = "", args: tuple = (), limit: int = 50) -> list[dict]:
+    """Обращения с карточками: сначала открытые, внутри них срочные и те, у кого срок реакции ближе."""
+    rows = [dict(r) for r in store.db().execute(f"SELECT * FROM handoffs {where} ORDER BY id DESC LIMIT ?",
+                                                (*args, limit))]
+    now, order = time.time(), {"high": 0, "normal": 1, "low": 2}
+    for h in rows:
+        h["card"] = handoff_card.build(h, now)
+    return sorted(rows, key=lambda h: (h["status"] in ("answered", "returned"), order[h["card"]["priority"]],
+                                       h["card"]["sla_due"]))
+
+
+class TakeIn(BaseModel):
+    who: str = Field(default="менеджер", max_length=60)
+
+
+@app.post("/api/admin/handoff/{handoff_id}/take", dependencies=[Depends(admin)])
+def admin_take(handoff_id: int, body: TakeIn):
+    """Менеджер берет обращение в работу."""
+    return {"ok": store.take_handoff(handoff_id, body.who.strip() or "менеджер")}
+
+
+@app.post("/api/admin/handoff/{handoff_id}/return", dependencies=[Depends(admin)])
+def admin_return(handoff_id: int):
+    """Менеджер возвращает диалог агенту: человек здесь не нужен."""
+    return {"ok": store.return_handoff(handoff_id)}
+
+
+class CaseIn(BaseModel):
+    handoff: bool | None = None  # как должно было быть: передать менеджеру, не передавать, None = допустимо и так и так
+    quote: bool = False
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/admin/session/{session_id}/case", dependencies=[Depends(admin)])
+def admin_case(session_id: str, body: CaseIn):
+    """Диалог, где агент ошибся, становится кейсом проверочного набора: следующий прогон его проиграет."""
+    case = cases.from_session(session_id, "any" if body.handoff is None else body.handoff, body.quote, body.note)
+    if case is None:
+        raise HTTPException(404, "в диалоге нет реплик клиента")
+    return {"ok": True, "case_id": case["id"], "added_cases": cases.add(case)}
+
+
+@app.post("/api/proof")
+def proof_run():
+    """Показ проверки цен: подставная модель называет выдуманную цену, настоящая проверка ее ловит."""
+    return proof.price_guard()
 
 
 class AnswerIn(BaseModel):
@@ -304,7 +367,9 @@ def admin_catalog_update():
 
 
 @app.get("/api/admin/stats")
-def admin_stats(request: Request):
+def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=600),
+                rub_hour: float | None = Query(None, ge=0, le=100000),
+                card_share: float | None = Query(None, ge=0, le=1), volume: int | None = Query(None, ge=1, le=10**7)):
     con = store.db()
     one = lambda sql: con.execute(sql).fetchone()[0] or 0
     dialogs = one("SELECT COUNT(*) FROM sessions WHERE llm_calls>0")
@@ -320,7 +385,8 @@ def admin_stats(request: Request):
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
-            "handoffs": [dict(r) for r in con.execute("SELECT * FROM handoffs ORDER BY id DESC LIMIT 50")],
+            "handoffs": _handoffs(), "added_cases": len(cases.load()),
+            "economy": economy.calc(dialogs, handoff, total, minutes, rub_hour, card_share, volume),
             "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": time.time()})
 
 
@@ -335,6 +401,11 @@ def quote_file(name: str):
 @app.get("/admin")
 def admin_page():
     return FileResponse(STATIC / "admin.html")
+
+
+@app.get("/proof")
+def proof_page():
+    return FileResponse(STATIC / "proof.html")
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

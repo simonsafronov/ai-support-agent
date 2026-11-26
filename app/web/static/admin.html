@@ -7,27 +7,58 @@
 <link rel="stylesheet" href="app.css">
 <style>
 .wrap{max-width:1680px;margin:0 auto;padding:var(--s32);display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s32);align-items:start}
-.bar{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:var(--s16);align-items:center;font-size:var(--f12);color:var(--muted)}
+.wide{grid-column:1/-1}
+.note{padding:var(--s8) var(--s16);background:var(--rose);border-radius:var(--r);color:var(--crimson-dark)}
+.bar{display:flex;flex-wrap:wrap;gap:var(--s16);align-items:center;font-size:var(--f12);color:var(--muted)}
 .bar span{flex:1 1 320px}
-.bar button,.bar a,.ans button{font:inherit;font-size:var(--f12);padding:var(--s8) var(--s16);border:1px solid var(--line);border-radius:var(--r);background:#fff;color:var(--navy);cursor:pointer;text-decoration:none}
-.bar button:hover,.bar a:hover,.ans button:hover{border-color:var(--crimson);color:var(--crimson)}
-.ans{margin:var(--s8) 0 var(--s16);display:grid;gap:var(--s8)}
-.ans textarea{width:100%;min-height:88px;font:inherit;padding:var(--s8);border:1px solid var(--line);border-radius:var(--r);resize:vertical}
-.ans label{font-size:var(--f12);color:var(--muted);display:flex;gap:var(--s8);align-items:flex-start}
-.ans div{display:flex;gap:var(--s16);align-items:center;flex-wrap:wrap}
-.kpi{grid-column:1/-1;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s16)}
+.btn{font:inherit;font-size:var(--f12);padding:var(--s8) var(--s16);border:1px solid var(--line);border-radius:var(--r);background:#fff;color:var(--navy);cursor:pointer;text-decoration:none;white-space:nowrap}
+.btn:hover{border-color:var(--crimson);color:var(--crimson)}
+.btn.main{background:var(--crimson);border-color:var(--crimson);color:#fff}
+.btn.main:hover{background:var(--crimson-dark);color:#fff}
+.kpi{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s16)}
 .kpi div{background:var(--panel);border-radius:var(--r);padding:var(--s16)}
 .kpi b{display:block;font-size:var(--f28);font-weight:400;line-height:1.2}
 .kpi span{font-size:var(--f12);color:var(--muted)}
 h2{margin-bottom:var(--s16)}
+h2 small{font-size:var(--f12);font-weight:400;color:var(--muted);margin-left:var(--s8)}
+
+/* Экономика: слева результат, справа допущения, которые можно поменять */
+.eco{border:1px solid var(--line);border-radius:var(--r);padding:var(--s24);display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s32)}
+.eco h2{grid-column:1/-1;margin:0}
+.eco .res{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s24)}
+.eco h3{margin:0 0 var(--s8);font-size:var(--f12);font-weight:500;color:var(--muted)}
+.eco .big{font-size:var(--f28);line-height:1.2}
+.eco dl{margin:var(--s8) 0 0;display:grid;grid-template-columns:1fr auto;gap:var(--s4) var(--s16)}
+.eco dt{color:var(--muted)}.eco dd{margin:0;text-align:right;white-space:nowrap}
+.eco .in{display:grid;gap:var(--s8);align-content:start}
+.eco label{display:grid;grid-template-columns:1fr 96px;gap:var(--s16);align-items:center}
+.eco label span i{font-style:normal;font-size:var(--f12);color:var(--muted);display:block}
+.eco input{font:inherit;padding:var(--s4) var(--s8);border:1px solid var(--line);border-radius:var(--r);text-align:right;width:100%;height:32px}
+
+/* Карточка обращения */
+.cards{display:grid;gap:var(--s16)}
+.card{overflow-wrap:anywhere;border:1px solid var(--line);border-left:4px solid var(--line);border-radius:var(--r);padding:var(--s16);display:grid;gap:var(--s8);cursor:pointer}
+.card.high{border-left-color:var(--crimson)}.card.normal{border-left-color:var(--navy)}
+.card.on{background:var(--rose)}.card.done{opacity:.6}
+.card .hd{display:flex;flex-wrap:wrap;gap:var(--s8);align-items:center}
+.card .hd b{font-weight:600}
+.card .hd .due{margin-left:auto;font-size:var(--f12);color:var(--muted)}
+.card .hd .due.late{color:var(--crimson);font-weight:500}
+.card .row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:var(--s16);align-items:start}
+.card .row>span:first-child{font-size:var(--f12);color:var(--muted);padding-top:2px}
+.card .act{display:flex;flex-wrap:wrap;gap:var(--s8);align-items:center;margin-top:var(--s4)}
+.card .act em{font-style:normal;font-size:var(--f12);color:var(--muted)}
+
 table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:var(--s8) var(--s16) var(--s8) 0;border-bottom:1px solid var(--line);vertical-align:top}
+th,td{text-align:left;padding:var(--s8) var(--s16) var(--s8) 0;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
 th{font-weight:500;font-size:var(--f12);color:var(--muted)}
 td.num,th.num{text-align:right;padding-right:0;padding-left:var(--s16);white-space:nowrap}
+td:first-child{white-space:nowrap;overflow-wrap:normal}
 tbody tr{cursor:pointer}
 tbody tr:hover td,tbody tr.on td{background:var(--rose)}
 .tag{display:inline-block;padding:0 var(--s8);border-radius:var(--r);font-size:var(--f12);background:var(--panel);color:var(--navy);white-space:nowrap}
 .tag.h{background:var(--rose);color:var(--crimson-dark)}
+.tag.u{background:var(--crimson);color:#fff}
 .block{margin-bottom:var(--s32)}
 .detail{position:sticky;top:var(--s16);max-height:calc(100vh - 32px);overflow:auto;border:1px solid var(--line);border-radius:var(--r);padding:var(--s16)}
 .detail .msg{max-width:100%;margin-bottom:var(--s8)}
@@ -36,22 +67,30 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
 .st.tool{border-color:var(--crimson)}.st.guard,.st.error{border-color:var(--navy)}
 .st b{font-weight:500}
 .st pre{margin:var(--s4) 0 0;white-space:pre-wrap;color:var(--muted);font:inherit;max-height:160px;overflow:auto}
-@media (max-width:1100px){.wrap{grid-template-columns:minmax(0,1fr);padding:var(--s16)}.kpi{grid-template-columns:repeat(2,minmax(0,1fr))}.detail{position:static;max-height:none}}
+.ans,.case{margin:var(--s16) 0;display:grid;gap:var(--s8);padding-top:var(--s16);border-top:1px solid var(--line)}
+.ans textarea,.case input[type=text],.case select{width:100%;font:inherit;padding:var(--s8);border:1px solid var(--line);border-radius:var(--r)}
+.ans textarea{min-height:88px;resize:vertical}
+.ans label,.case label{font-size:var(--f12);color:var(--muted);display:flex;gap:var(--s8);align-items:flex-start}
+.ans div,.case div{display:flex;gap:var(--s8);align-items:center;flex-wrap:wrap}
+@media (max-width:700px){td:first-child{white-space:normal}table th:nth-child(4),table td:nth-child(4),table th:nth-child(5),table td:nth-child(5){display:none}.card .row{grid-template-columns:minmax(0,1fr);gap:0}.card .hd .due{margin-left:0;flex-basis:100%}.eco{padding:var(--s16)}}
+@media (max-width:1100px){.wrap{grid-template-columns:minmax(0,1fr);padding:var(--s16)}.kpi{grid-template-columns:repeat(2,minmax(0,1fr))}.eco,.eco .res{grid-template-columns:minmax(0,1fr)}.detail{position:static;max-height:none}}
 </style>
 </head>
 <body>
 <header class="top">
   <div class="brand"><b>Softline Store</b><span>экран оператора</span></div>
-  <nav><a href="/">Чат покупателя</a></nav>
+  <nav><a href="/">Чат покупателя</a><a href="/proof">Проверка цен</a></nav>
 </header>
 <div class="wrap">
-  <div class="kpi" id="kpi"></div>
-  <div class="bar"><span id="cat"></span><button type="button" id="upd">Обновить каталог сейчас</button><a id="exp" href="/api/admin/export.csv">Выгрузить журнал диалогов (CSV)</a></div>
+  <div class="note wide" id="demo" hidden>Режим просмотра: почта и телефоны клиентов скрыты, ответы клиентам, выгрузка журнала и обновление каталога отключены. Полный доступ открывается по ссылке с ключом оператора.</div>
+  <div class="kpi wide" id="kpi"></div>
+  <section class="eco wide" id="eco"></section>
+  <div class="bar wide"><span id="cat"></span><button type="button" class="btn op" id="upd">Обновить каталог сейчас</button><a class="btn op" id="exp" href="/api/admin/export.csv">Выгрузить журнал диалогов (CSV)</a></div>
   <div>
-    <div class="block"><h2>Ждут менеджера</h2><table><thead><tr><th>Обращение</th><th>Причина</th><th>Что нужно клиенту</th><th>Контакт</th><th>Статус</th></tr></thead><tbody id="hand"></tbody></table></div>
+    <div class="block"><h2>Обращения к менеджеру<small id="handn"></small></h2><div class="cards" id="hand"></div></div>
     <div class="block"><h2>Диалоги</h2><table><thead><tr><th>Начало</th><th>Первое сообщение</th><th>Итог</th><th class="num">Ходов</th><th class="num">Токенов</th><th class="num">Стоимость</th></tr></thead><tbody id="rows"></tbody></table></div>
   </div>
-  <div class="detail" id="detail"><span class="empty">Выберите диалог: откроется переписка и каждый шаг агента с вызовами инструментов и токенами.</span></div>
+  <div class="detail" id="detail"><span class="empty">Выберите обращение или диалог: откроется переписка и каждый шаг агента с вызовами инструментов и токенами.</span></div>
 </div>
 <script src="admin.js"></script>
 </body>

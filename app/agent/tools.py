@@ -90,10 +90,8 @@ def save_facts(ctx, facts: dict) -> dict:
         ctx.facts.update(saved)
         store.update_session(ctx.session_id, facts=ctx.facts)
         ticket = store.open_handoff(ctx.session_id)
-        if ticket:  # обращение уже у менеджера: новое от клиента дописывается в него без вызова модели
-            extra = "; ".join(f"{k}: {v}" for k, v in saved.items() if k != "контакт" and v not in ticket["summary"])
-            store.update_handoff(ticket["id"], ticket["summary"] + (f"\nКлиент дополнил: {extra}." if extra else ""),
-                                 saved.get("контакт") or ticket["contact"])
+        if ticket and saved.get("контакт"):  # обращение уже у менеджера: контакт попадает в него без вызова модели
+            store.update_handoff(ticket["id"], ticket["summary"], saved["контакт"])  # остальное покажет карточка
     return {"saved": saved, "known": ctx.facts}
 
 

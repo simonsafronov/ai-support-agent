@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Проверка цен: ИИ-консультант Softline Store</title>
+<link rel="stylesheet" href="app.css">
+<style>
+.wrap{max-width:960px;margin:0 auto;padding:var(--s32);display:grid;gap:var(--s24)}
+.lead{font-size:var(--f18);line-height:1.45;max-width:720px}
+.btn{font:inherit;padding:var(--s8) var(--s24);border:1px solid var(--crimson);border-radius:var(--r);background:var(--crimson);color:#fff;cursor:pointer;justify-self:start;height:40px}
+.btn:hover{background:var(--crimson-dark)}
+.btn:disabled{opacity:.5;cursor:default}
+.run{border:1px solid var(--line);border-radius:var(--r);padding:var(--s24);display:grid;gap:var(--s16)}
+.run h2{margin:0}
+.step{display:grid;grid-template-columns:168px minmax(0,1fr);gap:var(--s16);align-items:start}
+.step>span{font-size:var(--f12);color:var(--muted);padding-top:var(--s8)}
+.box{padding:var(--s8) var(--s16);border-radius:var(--r);background:var(--panel)}
+.box.bad{background:var(--rose);border-left:4px solid var(--crimson);color:var(--crimson-dark)}
+.box.ok{background:#EEF6EE;border-left:4px solid var(--green)}
+.box b{font-weight:600}
+.facts{color:var(--muted);font-size:var(--f12)}
+@media (max-width:700px){.wrap{padding:var(--s16)}.step{grid-template-columns:minmax(0,1fr);gap:var(--s4)}.step>span{padding-top:0}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><b>Softline Store</b><span>проверка цен</span></div>
+  <nav><a href="/">Чат покупателя</a><a href="/admin">Экран оператора</a></nav>
+</header>
+<main class="wrap">
+  <h1>Цена не из каталога до клиента не доходит</h1>
+  <p class="lead">Языковая модель может назвать сумму, которой нет в каталоге. Поэтому каждый ответ агента перед отправкой проверяет код: любая сумма в тексте должна совпасть с ценой из каталога, с расчетом или со словами самого клиента. Здесь это видно на деле: модель подставная и нарочно называет выдуманную цену, а цикл агента, каталог и проверка те же, что работают в чате.</p>
+  <button type="button" class="btn" id="go">Показать проверку</button>
+  <div id="out"></div>
+  <p class="facts" id="facts"></p>
+</main>
+<script src="proof.js"></script>
+</body>
+</html>

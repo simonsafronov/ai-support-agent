@@ -122,3 +122,107 @@ def test_broken_feed_keeps_working_catalog(tmp_path, monkeypatch):
     res = update.run("https://example.test/feed.yml.gz", db)
     assert not res["ok"] and "подмена отменена" in res["error"]
     assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM offers").fetchone()[0] == 10
+
+
+def _tender_dialog(offer: dict) -> tuple[str, int]:
+    """Клиент назвал организацию и объем, получил расчет и попросил скидку по госзакупке."""
+    res = loop.run_turn(None, "Мы школа, 30 компьютеров, закупка по 44-ФЗ, нужна скидка. Почта zakupki@school.example",
+                        llm=Scripted([
+                            {"name": "calc_total", "args": {"items": [{"offer_id": offer["offer_id"], "qty": offer["qty"]}]}},
+                            {"name": "handoff_to_manager", "args": {"reason": "госзакупка и скидка",
+                                                                    "summary": "Школа, 30 лицензий, 44-ФЗ"}},
+                            "Передал менеджеру.\n[[facts: company=Школа 17; users=30; org_type=образовательная]]"]))
+    return res["session_id"], store.open_handoff(res["session_id"])["id"]
+
+
+@pytest.fixture(scope="module")
+def priced_offer():
+    from app.catalog import search as catalog
+    product = catalog.search_products("Kaspersky Endpoint Security", only_available=True, limit=1)["products"][0]
+    offer = next(o for o in catalog.get_product(product["product_id"], limit=20)["offers"] if o.get("price"))
+    return {**offer, "qty": offer.get("qty_min") or 1}  # количество внутри ценовой ступени варианта
+
+
+def test_handoff_card_is_built_by_code_and_sorted_by_urgency(priced_offer):
+    _handoff_dialog()  # обычное обращение без срочной темы
+    sid, hid = _tender_dialog(priced_offer)
+    first = client.get("/api/admin/stats", headers=KEY).json()["handoffs"][0]
+    card = first["card"]
+    assert first["id"] == hid and card["priority"] == "high" and card["sla_minutes"] == 30
+    assert {"госзакупка", "просит скидку"} <= set(card["flags"])
+    assert card["client"] == {"компания": "Школа 17", "тип организации": "образовательная",
+                              "контакт": "zakupki@school.example"}
+    assert card["needs"] == {"пользователей": "30"} and card["calc_total"] == round(priced_offer["price"] * priced_offer["qty"], 2)
+    assert card["turns"] == 1 and len(card["templates"]) == 3 and not card["overdue"]
+    # без ключа карточка видна, но контакт в ней скрыт
+    demo = client.get("/api/admin/stats").json()["handoffs"][0]["card"]
+    assert demo["client"]["контакт"] == "[email]"
+
+
+def test_view_mode_hides_requisites_but_keeps_links(priced_offer):
+    res = loop.run_turn(None, "Нужно КП, ИНН 7701234567, КПП 770101001", llm=Scripted([
+        {"name": "make_quote", "args": {"items": [{"offer_id": priced_offer["offer_id"], "qty": priced_offer["qty"]}],
+                                        "customer": "ООО Ромашка", "inn": "7701234567", "kpp": "770101001"}},
+        "Черновик готов."]))
+    sid = res["session_id"]
+    full = client.get(f"/api/admin/session/{sid}", headers=KEY).json()
+    seen = client.get(f"/api/admin/session/{sid}").json()
+    assert full["session"]["facts"]["ИНН"] == "7701234567" and "7701234567" in full["messages"][0]["content"]
+    text = json.dumps(seen, ensure_ascii=False)
+    assert "7701234567" not in text and "770101001" not in text and seen["session"]["facts"]["ИНН"] == "[реквизит]"
+    assert seen["session"]["id"] == sid and seen["quotes"][0]["number"] == full["quotes"][0]["number"]
+    assert seen["quotes"][0]["total"] == full["quotes"][0]["total"]  # суммы и время остаются числами
+
+
+def test_manager_takes_and_returns_a_request(priced_offer):
+    sid, hid = _tender_dialog(priced_offer)
+    assert client.post(f"/api/admin/handoff/{hid}/take", json={"who": "Анна"}).status_code == 403
+    assert client.post(f"/api/admin/handoff/{hid}/take", headers=KEY, json={"who": "Анна"}).json() == {"ok": True}
+    card = client.get(f"/api/admin/session/{sid}", headers=KEY).json()["handoffs"][0]
+    assert card["status"] == "taken" and card["card"]["assignee"] == "Анна"
+    assert store.open_handoff(sid)["id"] == hid  # взятое обращение агент дополняет, а не заводит второе
+    assert client.post(f"/api/admin/handoff/{hid}/return", headers=KEY).json() == {"ok": True}
+    assert store.open_handoff(sid) is None and store.get_session(sid)["status"] == "bot"
+    assert client.post(f"/api/admin/handoff/{hid}/return", headers=KEY).json() == {"ok": False}
+
+
+def test_economy_separates_measurements_from_assumptions():
+    from app import economy
+    e = economy.calc(dialogs=100, handed=25, cost_total=1000.0, minutes=10, rub_hour=600, card_share=0.5, volume=500)
+    assert e["measured"] == {"dialogs": 100, "closed": 75, "handed": 25, "closed_share": 0.75,
+                             "cost_per_dialog_rub": 10.0}
+    # стенд: 75 диалогов по 10 минут и 25 по 5 минут = 875 минут = 14,6 часа = 8 750 руб.
+    assert e["stand"] == {"saved_hours": 14.6, "saved_rub": 8750, "model_cost_rub": 1000, "net_rub": 7750,
+                          "return_x": 8.8}
+    assert e["half_year"]["requests"] == 500 and e["half_year"]["closed"] == 375
+    assert e["half_year"]["saved_rub"] == 43750 and e["half_year"]["model_cost_rub"] == 5000
+    assert economy.calc(0, 0, 0.0)["measured"] is None
+    stats = client.get("/api/admin/stats?minutes=20&rub_hour=900").json()["economy"]
+    assert stats["assumptions"]["minutes_per_request"] == 20 and stats["assumptions"]["manager_rub_per_hour"] == 900
+    assert client.get("/api/admin/stats?minutes=0").status_code == 422
+
+
+def test_failed_dialog_becomes_a_regression_case(tmp_path, monkeypatch):
+    from app import cases
+    monkeypatch.setattr(cases, "ADDED", tmp_path / "cases_added.jsonl")
+    sid, _ = _handoff_dialog()
+    assert client.post(f"/api/admin/session/{sid}/case", json={"handoff": False}).status_code == 403
+    r = client.post(f"/api/admin/session/{sid}/case", headers=KEY,
+                    json={"handoff": False, "note": "iSpring есть в каталоге, менеджер не нужен"}).json()
+    assert r["ok"] and r["added_cases"] == 1
+    (case,) = cases.load()
+    assert case["turns"] == ["Продаете ли вы Articulate 360? Почта [email]"]  # контакт клиента в набор не попал
+    assert case["expect"]["handoff"] is False and case["expect"]["tools_any"] == ["handoff_to_manager"]
+    client.post(f"/api/admin/session/{sid}/case", headers=KEY, json={"handoff": None})
+    assert len(cases.load()) == 1 and cases.load()[0]["expect"]["handoff"] == "any"  # повтор заменяет кейс
+
+
+def test_price_guard_demo_shows_both_outcomes():
+    before = store.db().execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    r = client.post("/api/proof").json()
+    fixed, stubborn = r["runs"]
+    assert fixed["caught"] and stubborn["caught"] and r["fake_price"] != r["real_price"]
+    assert "цена по запросу" in stubborn["client_saw"] and fixed["caught"][0] not in stubborn["client_saw"]
+    assert fixed["client_saw"] == fixed["model_second"] and fixed["caught"][0] not in fixed["client_saw"]
+    assert store.db().execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == before  # показ не копит диалоги
+    assert client.get("/proof").status_code == 200

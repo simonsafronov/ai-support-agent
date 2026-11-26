@@ -116,6 +116,7 @@ async function send(message) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, session_id: state.session || null, client_id: state.client, page_url: state.page }),
     });
+    if (r.status === 429) throw new Error("слишком много сообщений подряд, подождите минуту");
     if (!r.ok) throw new Error("сервер ответил " + r.status);
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = "";

@@ -58,3 +58,9 @@ FEED_UPDATE_HOUR = int(env("FEED_UPDATE_HOUR", "4"))  # час по Москве
 # Ключ оператора. С ним экран оператора (/admin?token=...) показывает контакты клиентов и дает отвечать,
 # выгружать журнал и обновлять каталог. Без ключа экран открыт только на чтение, контакты в нем скрыты.
 ADMIN_TOKEN = env("ADMIN_TOKEN", "")
+
+# Экономика на экране оператора. Первые три числа это допущения: их меняют под свои данные прямо на экране.
+MANAGER_MIN_PER_REQUEST = float(env("MANAGER_MIN_PER_REQUEST", "10"))  # минут менеджера на одно обращение
+MANAGER_RUB_PER_HOUR = float(env("MANAGER_RUB_PER_HOUR", "600"))        # стоимость часа менеджера для компании
+CARD_SAVES_SHARE = float(env("CARD_SAVES_SHARE", "0.5"))  # какую долю времени снимает готовая карточка обращения
+REQUESTS_PER_HALF_YEAR = int(env("REQUESTS_PER_HALF_YEAR", "500"))      # объем обращений: цифра заказчика
