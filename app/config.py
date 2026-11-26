@@ -70,6 +70,10 @@ MANAGER_MIN_PER_REQUEST = float(env("MANAGER_MIN_PER_REQUEST", "30"))  # мин�
 MANAGER_RUB_PER_HOUR = float(env("MANAGER_RUB_PER_HOUR", "600"))        # стоимость часа менеджера для компании
 CARD_SAVES_SHARE = float(env("CARD_SAVES_SHARE", "0.5"))  # какую долю времени снимает готовая карточка обращения
 REQUESTS_PER_HALF_YEAR = int(env("REQUESTS_PER_HALF_YEAR", "500"))      # объем обращений: цифра заказчика
+# Подписант КП: имя, должность и подпись под чертой. По умолчанию нейтральные, настоящие из шаблона заказчика в .env
+KP_SIGNER_NAME = env("KP_SIGNER_NAME", "Менеджер Softline Store")
+KP_SIGNER_TITLE = env("KP_SIGNER_TITLE", "Отдел продаж")
+KP_SIGNER_SHORT = env("KP_SIGNER_SHORT", "Менеджер")
 AGENT_DISCOUNT_MAX = float(env("AGENT_DISCOUNT_MAX", "5"))  # скидка, которую агент дает сам, проценты: ответ
 # заказчика на брифе ("агент может предоставить скидку 5%, все остальное уходит на оператора"); 0 = не дает
 SLA_MINUTES = env("SLA_MINUTES", "2,5,15")  # срок реакции менеджера на обращение: срочное, обычное, прочее.
