@@ -191,25 +191,42 @@ class Bridge:
     """Режим разработки без ключа модели: запрос кладется файлом в каталог, ответ ждем файлом оттуда же.
 
     Отвечает внешний исполнитель через `python -m app.agent.bridge` (человек или модель, у которой нет
-    HTTP-интерфейса). Токены считаются оценкой по числу знаков; время ответа скорость модели не показывает.
+    HTTP-интерфейса). Токены считаются оценкой по числу знаков. Два режима:
+    - пакетный прогон (alive_sec = 0): ждем исполнителя сколько задано, время ответа не пишем;
+    - дежурство на стенде (alive_sec > 0): исполнитель отмечается в файле ALIVE; нет свежей отметки или нет
+      ответа за timeout секунд, значит запрос снят и клиент получает ответ о передаче менеджеру. Время
+      ожидания пишется: это то, что видит клиент стенда.
     """
 
     CHARS_PER_TOKEN = 3.0
+    ALIVE = "alive"  # исполнитель трогает этот файл, пока ждет запрос
 
-    def __init__(self, directory: str, model: str, timeout: float = 1800):
+    def __init__(self, directory: str, model: str, timeout: float = 1800, alive_sec: float = 0):
         if not directory:
             raise LLMError("не задан BRIDGE_DIR")
-        self.dir, self.model, self.timeout = Path(directory), model, timeout
+        self.dir, self.model, self.timeout, self.alive_sec = Path(directory), model, timeout, alive_sec
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.n = len(list(self.dir.glob("req-*.json")))
+        self.n, self._lock = len(list(self.dir.glob("req-*.json"))), threading.Lock()
 
     @classmethod
     def tokens(cls, text: str) -> int:
         return int(len(text) / cls.CHARS_PER_TOKEN) + 1
 
+    def online(self) -> bool:
+        """Есть ли кому ответить. Без проверки отметки (alive_sec = 0) считаем, что есть."""
+        if not self.alive_sec:
+            return True
+        mark = self.dir / self.ALIVE
+        return mark.exists() and time.time() - mark.stat().st_mtime < self.alive_sec
+
     def chat(self, messages: list[dict], tools: list[dict], **_) -> LLMResult:
-        self.n += 1
-        req, res = self.dir / f"req-{self.n:05d}.json", self.dir / f"res-{self.n:05d}.json"
+        if not self.online():
+            (self.dir / "wanted").touch()  # клиент пришел, а ответить некому: сторож дежурства это увидит
+            raise LLMError("мост: исполнитель не на связи")
+        with self._lock:  # ходы разных диалогов идут разом: номер запроса у каждого свой
+            self.n += 1
+            n = self.n
+        req, res = self.dir / f"req-{n:05d}.json", self.dir / f"res-{n:05d}.json"
         body = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False)
         tmp = req.with_suffix(".tmp")
         tmp.write_text(body, encoding="utf-8")
@@ -217,11 +234,12 @@ class Bridge:
         t0 = time.time()
         while not res.exists():
             if time.time() - t0 > self.timeout:
+                res.write_text('{"expired": true}', encoding="utf-8")  # запрос снят: позже на него не ответят
                 raise LLMError(f"мост: нет ответа на {req.name} за {self.timeout:.0f} с")
             time.sleep(0.2)
         ans = json.loads(res.read_text(encoding="utf-8"))
-        # seconds остается 0: ждали сессию разработчика, скорость модели это не показывает
-        out = LLMResult(text=(ans.get("text") or "").strip(), model=self.model, seconds=0.0,
+        out = LLMResult(text=(ans.get("text") or "").strip(), model=self.model,
+                        seconds=time.time() - t0 if self.alive_sec else 0.0,
                         prompt_tokens=self.tokens(body),
                         completion_tokens=self.tokens(json.dumps(ans, ensure_ascii=False)))
         if ans.get("tool_call"):
@@ -241,7 +259,12 @@ def get_llm():
         elif config.LLM_PROVIDER == "openai":
             _llm = OpenAICompat(config.LLM_BASE_URL, config.LLM_API_KEY, config.LLM_MODEL)
         elif config.LLM_PROVIDER == "bridge":
-            _llm = Bridge(config.BRIDGE_DIR, config.LLM_MODEL, config.BRIDGE_TIMEOUT)
+            _llm = Bridge(config.BRIDGE_DIR, config.LLM_MODEL, config.BRIDGE_TIMEOUT, config.BRIDGE_ALIVE_SEC)
         else:
             raise LLMError(f"неизвестный LLM_PROVIDER: {config.LLM_PROVIDER}")
     return _llm
+
+
+def model_online() -> bool:
+    """Ответит ли модель прямо сейчас. Проверка есть только у моста: остальные подключения считаются живыми."""
+    return get_llm().online() if config.LLM_PROVIDER == "bridge" else True

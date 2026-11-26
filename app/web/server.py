@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import cases, config, economy, store
-from app.agent import handoff_card, loop, proof
+from app.agent import handoff_card, llm, loop, proof
 from app.catalog import search as catalog, update as catalog_update
 from app.kb import answers, search as kb
 
@@ -164,7 +164,8 @@ class ChatIn(BaseModel):
 def health():
     c = catalog.stats()
     return {"ok": True, "offers": c["offers"], "products": c["products"], "feed_date": c.get("feed_date"),
-            "kb_chunks": kb.stats()["chunks"], "model": config.LLM_MODEL, "provider": config.LLM_PROVIDER}
+            "kb_chunks": kb.stats()["chunks"], "model": config.LLM_MODEL, "provider": config.LLM_PROVIDER,
+            "label": config.LLM_LABEL, "online": llm.model_online()}
 
 
 @app.post("/api/chat")
@@ -403,7 +404,8 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
     pt, ct = one("SELECT SUM(prompt_tokens) FROM sessions"), one("SELECT SUM(completion_tokens) FROM sessions")
     turns = one("SELECT COUNT(*) FROM messages WHERE role='user'")
     handoff = one("SELECT COUNT(DISTINCT session_id) FROM handoffs")
-    lat = one("SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' GROUP BY session_id, turn)")
+    lat = one("SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' GROUP BY session_id, turn) "
+              "WHERE t > 0")  # ходы пакетных прогонов времени не несут и в среднее не идут
     total = loop.cost_rub(pt, ct)
     return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff,
             "without_human_share": round(1 - handoff / dialogs, 3) if dialogs else None,

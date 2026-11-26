@@ -61,6 +61,8 @@ function economy(e) {
   $("eco").querySelectorAll("input").forEach((i) => (i.onchange = () => { eco[i.dataset.eco] = i.value; load(); }));
 }
 
+get("/api/health").then((h) => { $("model").textContent = "модель " + h.label + (h.online ? "" : ", сейчас не на связи"); });
+
 async function load() {
   const q = new URLSearchParams(Object.entries(eco).filter(([, v]) => v !== "")).toString();
   const [st, ss, cat] = await Promise.all([get("/api/admin/stats" + (q ? "?" + q : "")), get("/api/admin/sessions"), get("/api/admin/catalog")]);

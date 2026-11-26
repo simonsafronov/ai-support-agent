@@ -13,11 +13,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
-WAIT = 90  # сколько секунд один вызов ждет следующего запроса
+WAIT = float(os.environ.get("BRIDGE_WAIT", "90"))  # сколько секунд один вызов ждет следующего запроса
+ALIVE = "alive"  # отметка "исполнитель на связи": по ней стенд решает, ждать ответа или звать менеджера
 
 
 def _state(d: Path) -> dict:
@@ -93,8 +95,11 @@ def check(answer: dict, req: Path) -> str:
 
 
 def show_next(d: Path, wait: float = WAIT) -> str:
-    t0 = time.time()
+    t0, marked = time.time(), 0.0
     while True:
+        if time.time() - marked > 2:
+            (d / ALIVE).touch()
+            marked = time.time()
         req = pending(d)
         if req:
             state = _state(d)

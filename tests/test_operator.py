@@ -258,3 +258,16 @@ def test_price_guard_demo_shows_both_outcomes():
     assert fixed["client_saw"] == fixed["model_second"] and fixed["caught"][0] not in fixed["client_saw"]
     assert store.db().execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == before  # показ не копит диалоги
     assert client.get("/proof").status_code == 200
+
+
+def test_health_names_the_model_and_tells_if_it_answers_now(monkeypatch, tmp_path):
+    """Чат и экран оператора берут отсюда имя модели; у моста еще и то, на связи ли исполнитель."""
+    from app.agent import llm
+    monkeypatch.setattr(server.config, "LLM_PROVIDER", "openai")  # у подключения по API проверки связи нет
+    h = client.get("/api/health").json()
+    assert h["label"] == server.config.LLM_LABEL and h["online"] is True
+    monkeypatch.setattr(server.config, "LLM_PROVIDER", "bridge")
+    monkeypatch.setattr(llm, "_llm", llm.Bridge(str(tmp_path), "m", alive_sec=30))
+    assert client.get("/api/health").json()["online"] is False
+    (tmp_path / "alive").touch()
+    assert client.get("/api/health").json()["online"] is True

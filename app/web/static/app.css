@@ -81,6 +81,8 @@ h2{font-size:var(--f18);font-weight:600}
 .send textarea:focus{border-color:var(--crimson);outline:0}
 .send button{border:0;border-radius:var(--r);background:var(--crimson);color:#fff;padding:0 var(--s16);font-weight:500;height:40px}
 .send button:disabled{background:var(--muted);cursor:default}
+.model{margin:0;padding:0 var(--s16) var(--s8);font-size:var(--f12);color:var(--muted)}
+.model.off{color:var(--crimson-dark)}
 
 /* Ход работы агента */
 .meter{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s8);margin:var(--s16) 0}

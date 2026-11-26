@@ -200,6 +200,18 @@ async function goods(q) {
 $("sf").onsubmit = (e) => { e.preventDefault(); goods($("sq").value.trim()); };
 $("ctxoff").onclick = () => { state.page = ""; $("ctx").classList.remove("on"); };
 
+// Какая модель отвечает и на связи ли она: если нет, вопрос сразу уйдет менеджеру, и клиент видит это заранее
+async function model() {
+  try {
+    const h = await (await fetch("/api/health")).json(), el = $("model");
+    el.textContent = h.online ? `Отвечает модель ${h.label}. Цены и суммы проверяет код.`
+      : `Модель ${h.label} сейчас не на связи: вопрос сразу уйдет менеджеру.`;
+    el.classList.toggle("off", !h.online);
+    el.hidden = false;
+  } catch (e) { /* подпись не загрузилась: чат работает и без нее */ }
+}
+model(); setInterval(model, 30000);
+
 (async () => {
   goods("");
   if (state.session) {

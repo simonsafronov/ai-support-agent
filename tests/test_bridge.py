@@ -66,3 +66,52 @@ def test_bad_answer_is_rejected_and_request_stays(tmp_path):
 def test_done_marker_ends_the_session(tmp_path):
     (tmp_path / "DONE").touch()
     assert bridge.show_next(tmp_path, wait=1) == "ВСЕ ЗАПРОСЫ ОБРАБОТАНЫ"
+
+
+def test_duty_mode_does_not_wait_when_nobody_answers(tmp_path):
+    """На стенде без исполнителя запрос не ждет: сбой сразу, цикл агента передаст обращение менеджеру."""
+    import pytest
+    from app.agent.llm import LLMError
+    llm = Bridge(str(tmp_path), "test-model", timeout=5, alive_sec=30)
+    assert not llm.online()
+    with pytest.raises(LLMError, match="не на связи"):
+        llm.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": "нужен антивирус"}], TOOLS)
+    assert not list(tmp_path.glob("req-*.json"))  # запрос даже не положен: позже на него никто не ответит
+
+
+def test_responder_marks_itself_alive_and_duty_mode_times_the_answer(tmp_path):
+    assert bridge.show_next(tmp_path, wait=0.1).startswith("ЗАПРОСА ПОКА НЕТ")  # исполнитель заглянул: отметка
+    llm, box = Bridge(str(tmp_path), "test-model", timeout=5, alive_sec=30), []
+    assert llm.online()
+    t = threading.Thread(target=ask, args=(llm, [{"role": "system", "content": SYSTEM},
+                                                  {"role": "user", "content": "нужен антивирус"}], box))
+    t.start()
+    bridge.show_next(tmp_path, wait=5)
+    bridge.answer(tmp_path, '{"text": "Здравствуйте."}', wait=0.1)
+    t.join(5)
+    assert box[0].text == "Здравствуйте." and box[0].seconds > 0
+
+
+def test_unanswered_request_is_withdrawn(tmp_path):
+    """Нет ответа за отведенное время: запрос снят, исполнитель, который придет позже, его не увидит."""
+    import pytest
+    from app.agent.llm import LLMError
+    llm = Bridge(str(tmp_path), "test-model", timeout=0.3)
+    with pytest.raises(LLMError, match="нет ответа"):
+        llm.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": "нужен антивирус"}], TOOLS)
+    assert bridge.pending(tmp_path) is None
+
+
+def test_parallel_turns_get_different_request_numbers(tmp_path):
+    llm, box = Bridge(str(tmp_path), "test-model", timeout=5), []
+    threads = [threading.Thread(target=ask, args=(llm, [{"role": "system", "content": SYSTEM},
+                                                        {"role": "user", "content": f"вопрос {i}"}], box))
+               for i in range(6)]
+    for t in threads:
+        t.start()
+    for _ in range(6):
+        bridge.show_next(tmp_path, wait=5)
+        bridge.answer(tmp_path, '{"text": "Здравствуйте."}', wait=0.1)
+    for t in threads:
+        t.join(5)
+    assert len(box) == 6 and len(list(tmp_path.glob("req-*.json"))) == 6
