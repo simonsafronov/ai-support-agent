@@ -1055,7 +1055,8 @@ def browse_categories(query: str | None = None, parent_id: int | None = None,
 def _analog_levels(conn: sqlite3.Connection, category_id: int | None) -> list[sqlite3.Row]:
     """Категории, в которых искать аналоги: от ближайшей к корню.
 
-    Лист это сама линейка продукта, поэтому поиск начинается с ее родителя.
+    В выгрузке-файле лист дерева это сама линейка продукта, поэтому поиск начинается с ее родителя.
+    В живом фиде линейки в дерево не входят: продукты лежат прямо в категории, и она идет в поиск первой.
     """
     chain = []
     while category_id is not None and len(chain) < 10:
@@ -1064,9 +1065,11 @@ def _analog_levels(conn: sqlite3.Connection, category_id: int | None) -> list[sq
             break
         chain.append(row)
         category_id = row["parent_id"]
-    with_children = [c for c in chain if conn.execute(
-        "SELECT 1 FROM categories WHERE parent_id = ? LIMIT 1", (c["id"],)).fetchone()]
-    return with_children or chain
+    def is_line(c) -> bool:  # категория без подкатегорий, в которой лежит один продукт: это сама его линейка
+        return (conn.execute("SELECT 1 FROM categories WHERE parent_id = ? LIMIT 1", (c["id"],)).fetchone() is None
+                and conn.execute("SELECT COUNT(*) FROM products WHERE category_id = ?", (c["id"],)).fetchone()[0] <= 1)
+
+    return [c for c in chain if not is_line(c)] or chain
 
 
 def _import_substitution(conn: sqlite3.Connection, category_id: int | None) -> list[sqlite3.Row]:

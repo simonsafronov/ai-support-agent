@@ -74,6 +74,29 @@ def _diff(old: Path, new: Path) -> dict:
         con.close()
 
 
+# Параметры лицензии, которые агент читает из фида. Если после обновления колонка заполнена заметно реже,
+# магазин изменил разметку фида: такая база ответит клиенту без сроков или числа пользователей, подмена отменяется.
+GUARD_COLUMNS = ("price", "vendor_code", "term_months", "license_type", "org_type", "user_type", "users_max",
+                 "nodes", "platform")
+MIN_FILL = 0.5      # колонка считается потерянной, если заполнена меньше чем у половины прежнего числа предложений
+GUARD_FROM = 500    # редкие колонки не сторожим: их заполнение колеблется само
+
+
+def _filled(db: Path) -> dict[str, int]:
+    """У скольких предложений заполнена каждая сторожевая колонка."""
+    with sqlite3.connect(db) as con:
+        have = {r[1] for r in con.execute("PRAGMA table_info(offers)")}
+        cols = [c for c in GUARD_COLUMNS if c in have]
+        row = con.execute("SELECT " + ", ".join(f"COUNT({c})" for c in cols) + " FROM offers").fetchone() if cols else ()
+    return {**dict.fromkeys(GUARD_COLUMNS, 0), **dict(zip(cols, row))}
+
+
+def lost_fields(old: Path, new: Path) -> list[str]:
+    before, after = _filled(old), _filled(new)
+    return [f"{c}: было {before[c]}, стало {after[c]}" for c in GUARD_COLUMNS
+            if before[c] >= GUARD_FROM and after[c] < before[c] * MIN_FILL]
+
+
 def run(url: str | None = None, db: Path | None = None) -> dict:
     url, db = url or config.FEED_URL, Path(db or config.CATALOG_DB)
     feed, new_db = db.with_name("feed.new.xml"), db.with_name(db.stem + ".new.sqlite")
@@ -86,6 +109,10 @@ def run(url: str | None = None, db: Path | None = None) -> dict:
             before = _offers(db)
             if after < before * MIN_SHARE:
                 raise ValueError(f"в новом фиде {after} предложений против {before} в рабочей базе: подмена отменена")
+            lost = lost_fields(db, new_db)
+            if lost:
+                raise ValueError("разметка фида изменилась, параметры лицензий читаются не полностью ("
+                                 + "; ".join(lost) + "): подмена отменена")
             state.update(_diff(db, new_db), offers_before=before)
         os.replace(new_db, db)
         state.update(ok=True, offers=after, products=counts.get("products"), feed_date=counts.get("feed_date"))

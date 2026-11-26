@@ -124,6 +124,25 @@ def test_broken_feed_keeps_working_catalog(tmp_path, monkeypatch):
     assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM offers").fetchone()[0] == 10
 
 
+def test_changed_feed_markup_keeps_working_catalog(tmp_path, monkeypatch):
+    """Магазин переименовал параметр: предложений столько же, но число пользователей больше не читается."""
+    def catalog(path, users):
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE offers(id INTEGER PRIMARY KEY, price REAL, users_max INTEGER)")
+        con.executemany("INSERT INTO offers VALUES(?,?,?)", [(i, 100, users) for i in range(600)])
+        con.commit()
+        con.close()
+
+    db = tmp_path / "catalog.sqlite"
+    catalog(db, 30)
+    monkeypatch.setattr(update, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(update, "download", lambda url, dest: dest.write_text("<yml/>"))
+    monkeypatch.setattr(update.ingest, "build", lambda feed, new_db, verbose=True: catalog(new_db, None) or {})
+    res = update.run("https://example.test/feed.yml.gz", db)
+    assert not res["ok"] and "разметка фида изменилась" in res["error"] and "users_max: было 600, стало 0" in res["error"]
+    assert sqlite3.connect(db).execute("SELECT COUNT(users_max) FROM offers").fetchone()[0] == 600
+
+
 def _tender_dialog(offer: dict) -> tuple[str, int]:
     """Клиент назвал организацию и объем, получил расчет и попросил скидку по госзакупке."""
     res = loop.run_turn(None, "Мы школа, 30 компьютеров, закупка по 44-ФЗ, нужна скидка. Почта zakupki@school.example",

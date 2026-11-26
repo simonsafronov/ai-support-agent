@@ -22,6 +22,19 @@ from pathlib import Path
 
 from . import DEFAULT_DB, DEFAULT_FEED, DIMENSIONS, MULTI_SEP, RU_VENDORS, facet_counts, norm
 
+# Фид отдается в двух разметках: выгрузка-файл и живой адрес магазина называют часть параметров по-разному
+# ("К-во пользователей до" = 30 против "К-во пользователей" = "от 30 до 30"). Читаются обе: первое имя, которое есть.
+PARAM_NAMES = {
+    "users": ("К-во пользователей до", "К-во пользователей"),
+    "user_type": ("Пользователь", "Конечный пользователь"),
+    "platform": ("Совместимая архитектура/платформа", "Операционная система"),
+}
+
+
+def param(params: dict[str, list[str]], field: str) -> list[str]:
+    return next((params[name] for name in PARAM_NAMES[field] if params.get(name)), [])
+
+
 # Значения-пустышки в param: выбрасываются.
 PLACEHOLDERS = {"", "другое или отсутствует", "не определено", "другое", "n/a"}
 
@@ -212,7 +225,7 @@ def _money(text: str | None) -> float | None:
 def _quantity_columns(params: dict[str, list[str]], description: str, sales_notes: str) -> dict:
     """Ярусы варианта: пользователи, узлы, ступень количества для цены."""
     nodes_min, nodes_max = parse_count(params.get("К-во узлов", []))
-    users_max = parse_count(params.get("К-во пользователей до", []))[1]
+    users_max = parse_count(param(params, "users"))[1]
     qty_min, qty_max = parse_qty(description, sales_notes)
     # ступень, повторяющая ярус узлов или пользователей, отдельным измерением не считается
     repeats_tier = (qty_min, qty_max) == (nodes_min, nodes_max) or (
@@ -238,42 +251,43 @@ def _license_columns(params: dict[str, list[str]], description: str) -> dict:
         "term_months": parse_term(get("Срок действия")),
         "term_raw": join_values(get("Срок действия")),
         "org_type": join_values(get("Тип организации")),
-        "user_type": join_values(get("Пользователь")),
+        "user_type": join_values(param(params, "user_type")),
         "version": join_values(get("Версия")),
-        "platform": join_values(platform + get("Совместимая архитектура/платформа")),
+        "platform": join_values(platform + [v for v in param(params, "platform") if v not in platform]),
         "registry_no": join_values(get("Номер записи в реестре отечественного ПО")),
         "lang": join_values(get("Язык интерфейса"), LANG_ALIASES),
     }
 
 
-def offer_row(el: ET.Element, ru_vendors: set[str]) -> tuple[dict, str]:
-    """offer из фида -> (значения колонок offers, vendorUrl)."""
+def offer_row(el: ET.Element, ru_vendors: set[str]) -> tuple[dict, str, tuple[str, str]]:
+    """offer из фида -> (значения колонок offers, vendorUrl, название и адрес линейки, если фид их дает)."""
     offer_id = int(el.get("id"))
     fields, params = _read_offer(el)
     text = {tag: clean(fields.get(tag)) for tag in (
         "name", "vendor", "vendorCode", "url", "description", "sales_notes", "group_id",
-        "categoryId", "vendorUrl")}
+        "categoryId", "vendorUrl", "group_name", "group_url")}
     group = el.get("group_id") or text["group_id"]
     row = {
         "id": offer_id,
         "product_id": group or f"o{offer_id}",
         "name": text["name"],
         "vendor": text["vendor"],
-        "vendor_code": text["vendorCode"] or None,
+        "vendor_code": text["vendorCode"] or next(iter(params.get("Артикул", [])), None),  # живой фид: артикул в param
         "url": text["url"],
         "price": _money(fields.get("price")),
         "oldprice": _money(fields.get("oldprice")),
         "available": int(el.get("available") == "true"),
         "category_id": int(text["categoryId"]) if text["categoryId"] else None,
         "description": text["description"] or None,
-        "product_type": join_values(params.get("Тип продукта", [])),
+        # живой фид типа не дает; в выгрузке-файле "электроника" это ровно позиции без линейки (group_id)
+        "product_type": join_values(params.get("Тип продукта", [])) or ("софт" if group else "электроника"),
         "sales_notes": text["sales_notes"] or None,
         "params_json": json.dumps(params, ensure_ascii=False, separators=(",", ":")),
         "russian_vendor": int(text["vendor"] in ru_vendors),
     }
     row.update(_quantity_columns(params, text["description"], text["sales_notes"]))
     row.update(_license_columns(params, text["description"]))
-    return row, text["vendorUrl"]
+    return row, text["vendorUrl"], (text["group_name"], text["group_url"])
 
 
 def iter_feed(feed: Path):
@@ -296,7 +310,8 @@ def load_feed(conn: sqlite3.Connection, feed: Path, ru_vendors: set[str]) -> dic
     categories: dict[int, tuple[int | None, str]] = {}
     vendor_urls: dict[str, str] = {}
     batch: list[tuple] = []
-    info = {"feed_date": "", "categories": categories, "vendor_urls": vendor_urls,
+    groups: dict[str, tuple[str, str]] = {}  # product_id -> (название линейки, адрес) из group_name и group_url
+    info = {"feed_date": "", "categories": categories, "vendor_urls": vendor_urls, "groups": groups,
             "offers_read": 0}
     names = [name for name, _ in OFFER_COLUMNS]
     insert = (f"INSERT OR REPLACE INTO offers({','.join(names)})"
@@ -308,9 +323,11 @@ def load_feed(conn: sqlite3.Connection, feed: Path, ru_vendors: set[str]) -> dic
             parent = el.get("parentId")
             categories[int(el.get("id"))] = (int(parent) if parent else None, clean(el.text))
         else:
-            row, vendor_url = offer_row(el, ru_vendors)
+            row, vendor_url, group = offer_row(el, ru_vendors)
             if vendor_url:
                 vendor_urls.setdefault(row["vendor"], vendor_url)
+            if group[0]:
+                groups.setdefault(row["product_id"], group)
             batch.append(tuple(row[name] for name in names))
             info["offers_read"] += 1
             if len(batch) >= 5000:
@@ -579,8 +596,12 @@ def _sales_summary(offers: list[sqlite3.Row]) -> dict:
     }
 
 
-def product_record(product_id: str, offers: list[sqlite3.Row], leaves: dict, paths: dict) -> dict:
-    """Продукт из его вариантов: заголовок, листовая категория, цены, счетчики значений."""
+def product_record(product_id: str, offers: list[sqlite3.Row], leaves: dict, paths: dict,
+                   group: tuple[str, str] | None = None) -> dict:
+    """Продукт из его вариантов: заголовок, листовая категория, цены, счетчики значений.
+
+    group это название и адрес линейки из фида: если они есть, заголовок берется оттуда, а не выводится из названий.
+    """
     names = [o["name"] for o in offers]
     vendor = _most_common(o["vendor"] for o in offers)
     category_id = _most_common(o["category_id"] for o in offers)
@@ -588,7 +609,7 @@ def product_record(product_id: str, offers: list[sqlite3.Row], leaves: dict, pat
     title = names[0]  # товар без вариантов: имя уже и есть название
     if not product_id.startswith("o"):
         leaf = match_leaf([norm(n) for n in names], leaves.get(category_id, []))
-        title = product_title(names, vendor, leaf)
+        title = group[0] if group and group[0] else product_title(names, vendor, leaf)
         category_id = leaf[0] if leaf else category_id
     registry_no = _most_common(o["registry_no"] for o in offers)
     russian_vendor = offers[0]["russian_vendor"]
@@ -599,13 +620,13 @@ def product_record(product_id: str, offers: list[sqlite3.Row], leaves: dict, pat
         "registry_no": registry_no, "russian_vendor": russian_vendor,
         "is_russian": int(bool(registry_no or russian_vendor)),
         "facets": json.dumps(facet_counts(offers), ensure_ascii=False, separators=(",", ":")),
-        **_sales_summary(offers),
+        **_sales_summary(offers), **({"sample_url": group[1]} if group and group[1] else {}),
     }
 
 
 def build_products(conn: sqlite3.Connection, paths: dict[int, tuple[str, int]],
                    categories: dict[int, tuple[int | None, str]],
-                   vendor_urls: dict[str, str]) -> int:
+                   vendor_urls: dict[str, str], groups: dict[str, tuple[str, str]] | None = None) -> int:
     leaves: dict[int, list[tuple[int, str, str]]] = {}
     for cid, (parent, name) in categories.items():
         if parent is not None:
@@ -619,7 +640,7 @@ def build_products(conn: sqlite3.Connection, paths: dict[int, tuple[str, int]],
     pricing: dict[int, str] = {}
     for product_id, group in itertools.groupby(cur, key=lambda r: r["product_id"]):
         offers = list(group)
-        products.append(product_record(product_id, offers, leaves, paths))
+        products.append(product_record(product_id, offers, leaves, paths, (groups or {}).get(product_id)))
         pricing.update(qty_pricing(offers))
     conn.row_factory = None
     widen_duplicate_titles(conn, products)
@@ -739,13 +760,15 @@ def fill(conn: sqlite3.Connection, feed: Path, log) -> dict:
     conn.executescript("CREATE INDEX offers_product ON offers(product_id);")
     conn.execute("BEGIN")
     paths = category_paths(categories)
-    n_products = build_products(conn, paths, categories, feed_info["vendor_urls"])
+    n_products = build_products(conn, paths, categories, feed_info["vendor_urls"], feed_info["groups"])
     log(f"продукты собраны: {n_products}")
     code_counts = mark_same_code_prices(conn)
     build_categories(conn, categories, paths)
     conn.create_function("norm", 1, norm, deterministic=True)
+    # артикул ищется и по тегу vendorCode, и по param "Артикул": в живом фиде они бывают разными
     conn.execute("INSERT INTO offers_fts(rowid, name, vendor_code)"
-                 " SELECT id, norm(name), norm(vendor_code) FROM offers")
+                 " SELECT id, norm(name), norm(COALESCE(vendor_code, '') || ' ' ||"
+                 " COALESCE(json_extract(params_json, '$.\"Артикул\"[0]'), '')) FROM offers")
     log("полнотекстовые индексы построены")
     counts = {key: conn.execute(sql).fetchone()[0] for key, sql in _COUNTERS.items()}
     counts.update(ru_vendors_in_list=len(ru_vendors), **code_counts,
