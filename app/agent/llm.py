@@ -261,7 +261,7 @@ class Bridge:
         mark = self.dir / self.ALIVE
         return mark.exists() and time.time() - mark.stat().st_mtime < self.alive_sec
 
-    def chat(self, messages: list[dict], tools: list[dict], **_) -> LLMResult:
+    def chat(self, messages: list[dict], tools: list[dict], time_left: float | None = None, **_) -> LLMResult:
         if not self.online():
             (self.dir / "wanted").touch()  # клиент пришел, а ответить некому: сторож дежурства это увидит
             raise LLMError("мост: исполнитель не на связи")
@@ -273,11 +273,11 @@ class Bridge:
         tmp = req.with_suffix(".tmp")
         tmp.write_text(body, encoding="utf-8")
         tmp.rename(req)
-        t0 = time.time()
-        while not res.exists():
-            if time.time() - t0 > self.timeout:
+        t0, wait = time.time(), self.timeout if time_left is None else min(self.timeout, max(time_left, 0))
+        while not res.exists():  # ждем не дольше остатка хода клиента
+            if time.time() - t0 > wait:
                 res.write_text('{"expired": true}', encoding="utf-8")  # запрос снят: позже на него не ответят
-                raise LLMError(f"мост: нет ответа на {req.name} за {self.timeout:.0f} с")
+                raise LLMError(f"мост: нет ответа на {req.name} за {wait:.0f} с")
             time.sleep(0.2)
         ans = json.loads(res.read_text(encoding="utf-8"))
         out = LLMResult(text=(ans.get("text") or "").strip(), model=self.model,

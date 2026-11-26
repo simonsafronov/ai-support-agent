@@ -842,8 +842,9 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
               "GROUP BY session_id, turn) WHERE t > 0")  # ходы пакетных прогонов времени не несут и в среднее не идут
     total, now = loop.cost_rub(pt, ct), time.time()
     return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff, "closed_dialogs": closed,
-            "without_human_share": round(closed / dialogs, 3) if dialogs else None,  # от нее считается экономика
-            "requests": requests, "requests_without_human_share": round(closed / requests, 3) if requests else None,
+            "without_human_share": round(closed / dialogs, 3) if dialogs else None,
+            "requests": requests,  # от доли по всем обращениям считается экономика: вызов кнопкой тоже работа менеджера
+            "requests_without_human_share": round(closed / requests, 3) if requests else None,
             "quotes": one(f"SELECT COUNT(*) FROM quotes WHERE {where_id}"), "learned_answers": answers.count(),
             "prompt_tokens": pt, "completion_tokens": ct,
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
@@ -852,7 +853,7 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
             "handoffs": _handoffs(f"WHERE {where_id}"), "queue": _queue(now, where_id),
             "added_cases": len(cases.load()),
             "stand_note": config.STAND_NOTE,
-            "economy": economy.calc(dialogs, handoff, total, minutes, rub_hour, card_share, volume, pt + ct),
+            "economy": economy.calc(requests, requests - closed, total, minutes, rub_hour, card_share, volume, pt + ct),
             "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": now})
 
 

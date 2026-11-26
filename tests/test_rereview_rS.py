@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import store
 from app.agent import loop
-from app.agent.llm import LLMError, Limited, Scripted
+from app.agent.llm import Bridge, LLMError, Limited, Scripted
 from app.web import server
 
 client = TestClient(server.app)
@@ -135,8 +135,9 @@ def test_reviewer_example_one_agent_dialog_and_two_button_calls():
     st = client.get("/api/admin/stats", headers=KEY).json()
     assert (st["closed_dialogs"], st["dialogs"], st["without_human_share"]) == (1, 1, 1.0)
     assert (st["closed_dialogs"], st["requests"], st["requests_without_human_share"]) == (1, 3, 0.333)
-    # экономика считается от доли среди диалогов с агентом, вызовы кнопкой в нее не входят
-    assert st["economy"]["measured"]["closed_share"] == st["without_human_share"]
+    # экономика считается от доли по всем обращениям: вызов кнопкой тоже работа менеджера
+    assert (st["economy"]["measured"]["dialogs"], st["economy"]["measured"]["handed"]) == (3, 2)
+    assert st["economy"]["measured"]["closed_share"] == st["requests_without_human_share"]
     seen = client.get("/api/admin/stats").json()  # без ключа обращений посетителей нет и в этих счетчиках
     assert (seen["requests"], seen["requests_without_human_share"]) == (0, None)
 
@@ -219,3 +220,14 @@ def test_model_is_not_called_after_the_turn_time_is_over():
     res = loop.run_turn(None, "Нужен счет", client_id="w3-rS-late", llm=Limited(Scripted([]), time.monotonic() - 1))
     assert res["reply"] == loop.FALLBACK
     assert store.db().execute("SELECT COUNT(*) FROM handoffs WHERE session_id=?", (res["session_id"],)).fetchone()[0] == 1
+
+
+def test_bridge_waits_no_longer_than_the_rest_of_the_turn(tmp_path):
+    """Мост на стенде ждет исполнителя не дольше остатка хода, а не свой общий таймаут."""
+    (tmp_path / Bridge.ALIVE).touch()
+    bridge = Bridge(str(tmp_path), "m", timeout=60, alive_sec=600)
+    t0 = time.monotonic()
+    with pytest.raises(LLMError):
+        bridge.chat([{"role": "user", "content": "x"}], [], time_left=0.5)
+    assert time.monotonic() - t0 < 3
+    assert json.loads(next(tmp_path.glob("res-*.json")).read_text()) == {"expired": True}  # запрос снят
