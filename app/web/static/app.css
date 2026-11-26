@@ -3,8 +3,8 @@
 @font-face{font-family:Inter;font-weight:500;font-display:swap;src:url(fonts/Inter-Medium.woff2) format("woff2")}
 @font-face{font-family:Inter;font-weight:600;font-display:swap;src:url(fonts/Inter-SemiBold.woff2) format("woff2")}
 :root{
-  --crimson:#A50F2D;--crimson-dark:#840B23;--ink:#121519;--navy:#393F6B;--muted:#768297;--line:#E3E5EA;
-  --bg:#FFFFFF;--panel:#F2F2F2;--rose:#FCF1F3;--green:#3E8E41;
+  --crimson:#A50F2D;--crimson-dark:#840B23;--ink:#121519;--navy:#393F6B;--muted:#5F6B80;--line:#E3E5EA;
+  --bg:#FFFFFF;--panel:#F2F2F2;--rose:#FCF1F3;--green:#2F7D32;
   --f12:12px;--f14:14px;--f18:18px;--f28:28px;--f40:40px;
   --s4:4px;--s8:8px;--s16:16px;--s24:24px;--s32:32px;--s48:48px;--r:8px;
 }
@@ -107,5 +107,7 @@ h2{font-size:var(--f18);font-weight:600}
   .top{padding:0 var(--s16)}.brand span{display:none}
   .grid{grid-template-columns:minmax(0,1fr);padding:var(--s16);gap:var(--s24)}
   .chat{height:calc(100vh - 96px)}
+  .top nav a{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px}
+  .chat-head .acts button,.choices button,.starters button{min-height:44px}
 }
 @media (prefers-reduced-motion:reduce){.typing i{animation:none}}
