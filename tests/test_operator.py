@@ -283,3 +283,14 @@ def test_health_names_the_model_and_tells_if_it_answers_now(monkeypatch, tmp_pat
     assert client.get("/api/health").json()["online"] is False
     (tmp_path / "alive").touch()
     assert client.get("/api/health").json()["online"] is True
+
+
+def test_client_who_asks_for_a_human_is_not_left_with_the_lowest_urgency():
+    from app.agent import handoff_card
+
+    for said in ("не хочу с ботом, хочу менеджера", "позовите человека", "можно живого оператора?"):
+        assert handoff_card.priority(said) == "normal", said
+    assert handoff_card.priority("клиент позвал менеджера кнопкой") == "normal"
+    assert handoff_card.priority("агент не смог ответить") == "normal"   # клиент остался без ответа агента
+    assert handoff_card.priority("какая у вас лицензия на 1С") == "low"
+    assert handoff_card.priority("хочу менеджера, жалоба: третий день жду ключ") == "high"

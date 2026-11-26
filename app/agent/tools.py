@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 
 from app import config, store
-from app.catalog import search as catalog
+from app.catalog import cards, search as catalog
 from app.kb import answers, search as kb
 from app.quote import kp
 
@@ -29,6 +29,8 @@ def _search_products(ctx, query: str, vendor: str = "", only_available: bool = F
     res = catalog.search_products(query, vendor=vendor or None, category_id=category_id,
                                   only_available=only_available, russian_only=russian_only,
                                   product_type=product_type or None, limit=6)
+    for p in (res.get("products") or [])[:4]:  # коротко, что это за продукт: только из уже сохраненных описаний
+        p["about"] = cards.about(p["product_id"], p.get("url"), limit=ABOUT_IN_SEARCH, fetch=False)
     first = (res.get("products") or [None])[0]
     if first and res.get("match") == "all" and res.get("total", 0) <= 2:
         # продукт найден однозначно: его варианты отдаются сразу, второй вызов модели на get_product не нужен
@@ -51,7 +53,10 @@ def _get_product(ctx, product_id: str, quantity: int | None = None, **filters):
                if v is not None and v != "" and v is not False and (v != 0 or k == "term_months")}
     if quantity:  # одно число на все виды ступеней: комплект на N пользователей, диапазон узлов, объем покупки
         filters.update(users=quantity, nodes=quantity, qty=quantity)
-    return catalog.get_product(str(product_id), filters=filters, limit=6)
+    res = catalog.get_product(str(product_id), filters=filters, limit=6)
+    if res.get("product"):  # описание со страницы товара: для чего продукт и чем отличается от соседних
+        res["product"]["about"] = cards.about(res["product"]["product_id"], res["product"].get("url"))
+    return res
 
 
 def _browse_categories(ctx, query: str = "", parent_id: int | None = None):
@@ -353,6 +358,9 @@ _AMBIGUOUS_ONLY = "same_code_prices"  # список цен артикула н�
 _ONLY_TRUE = {"in_ru_registry", "russian_vendor", "price_on_request", "price_ambiguous", "has_price_on_request"}
 
 
+ABOUT_IN_SEARCH = 220  # знаков описания на продукт в результатах поиска
+
+
 def slim(name: str, out):
     """Ответ инструмента в том виде, в каком его видит модель: без ссылок, путей и пустых полей.
 
@@ -368,6 +376,8 @@ def slim(name: str, out):
     for k, v in out.items():
         if k == "price" and v is None:
             res[k] = "по запросу"
+        elif k in ("price_min", "price_max") and "n_offers" in out:
+            continue  # диапазон по всем вариантам продукта клиенту не ориентир: минимум это чужая ступень и тип покупателя
         elif (k in _DROP_KEYS and name != "kb_search") or (k in _ONLY_TRUE and not v):
             continue
         elif k == _AMBIGUOUS_ONLY and not out.get("price_ambiguous"):
