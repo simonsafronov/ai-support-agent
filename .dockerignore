@@ -1,0 +1,7 @@
+.venv
+.git
+data/raw
+data/db
+data/quotes
+**/__pycache__
+eval/runs
