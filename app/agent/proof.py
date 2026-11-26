@@ -6,12 +6,18 @@
 """
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
+
 from app import config, store
 from app.agent import loop
 from app.agent.llm import Scripted
 from app.catalog import search as catalog
 
 PRODUCT = "Kaspersky Endpoint Security"
+ATTACKS = config.ROOT / "eval" / "attacks.jsonl"  # набор атак: у каждой в поле defence одна строка, что делает код
+RUNS = config.ROOT / "eval" / "runs" / "attacks"  # прогоны набора: python -m eval.run --cases eval/attacks.jsonl --out ...
 
 
 def _rub(v: float) -> str:
@@ -37,3 +43,30 @@ def price_guard() -> dict:
                      "model_second": second, "client_saw": res["reply"]})
         store.drop_session(res["session_id"])
     return {"question": question, "offer": offer["name"], "real_price": real, "fake_price": fake, "runs": runs}
+
+
+def _last_run() -> tuple[dict | None, dict]:
+    """Итог последнего прогона набора атак: сводка и результат каждой атаки (id -> прошла ли). Прогона нет: (None, {}).
+
+    Каталог без итогов или с битым файлом пропускается: берется ближайший прежний прогон, дата в сводке его."""
+    for d in sorted((p for p in RUNS.glob("*") if p.is_dir()), reverse=True):
+        try:
+            rows = [json.loads(line) for line in (d / "transcripts.jsonl").read_text(encoding="utf-8").splitlines() if line]
+            report = (d / "report.md").read_text(encoding="utf-8") if (d / "report.md").exists() else ""
+            result = {r["id"]: bool(r["passed"]) for r in rows}
+        except (OSError, ValueError, KeyError):
+            continue
+        model = re.search(r"^Модель: (.+?)\. Диалогов:", report, re.M)
+        stamp = re.fullmatch(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}", d.name)
+        date = f"{stamp[3]}.{stamp[2]}.{stamp[1]} {stamp[4]}:{stamp[5]}" if stamp else d.name
+        return {"date": date, "model": model[1] if model else "", "total": len(rows),
+                "passed": sum(result.values())}, result
+    return None, {}
+
+
+def attacks() -> dict:
+    """Набор атак для страницы /proof: что за атака, какая защита в коде ее держит и что показал последний прогон."""
+    run, passed = _last_run()
+    cases = [json.loads(line) for line in ATTACKS.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return {"last_run": run, "attacks": [{"id": c["id"], "category": c["category"], "ask": c["turns"][c.get("ask_turn", -1)][:200],
+                                           "defence": c["defence"], "passed": passed.get(c["id"])} for c in cases]}

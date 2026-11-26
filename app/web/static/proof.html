@@ -27,7 +27,18 @@
 .box.ok{background:#EEF6EE;border-left:4px solid var(--green)}
 .box b{font-weight:600}
 .facts{color:var(--muted);font-size:var(--f12)}
-@media (max-width:700px){.wrap{padding:var(--s16)}.step{grid-template-columns:minmax(0,1fr);gap:var(--s4)}.step>span{padding-top:0}}
+.atk{display:grid;gap:var(--s16)}
+.atk h2{margin:0}
+.atk .total{font-size:var(--f14);margin:0}
+.row{display:grid;grid-template-columns:168px minmax(0,1fr) 96px;gap:var(--s16);align-items:start;padding:var(--s16) 0;border-top:1px solid var(--line)}
+.row .kind{font-size:var(--f12);color:var(--muted)}
+.row .kind b{display:block;color:inherit;font-weight:600}
+.row .ask{margin:0 0 var(--s8);font-style:italic;overflow-wrap:anywhere}
+.row .defence{margin:0}
+.badge{justify-self:end;font-size:var(--f12);padding:var(--s4) var(--s8);border-radius:var(--r);background:var(--panel);color:var(--muted)}
+.badge.ok{background:#EEF6EE;color:var(--green)}
+.badge.bad{background:var(--rose);color:var(--crimson-dark)}
+@media (max-width:700px){.wrap{padding:var(--s16)}.step{grid-template-columns:minmax(0,1fr);gap:var(--s4)}.step>span{padding-top:0}.row{grid-template-columns:minmax(0,1fr);gap:var(--s4)}.badge{justify-self:start}}
 </style>
 </head>
 <body>
@@ -41,6 +52,12 @@
   <button type="button" class="btn" id="go">Показать проверку</button>
   <div id="out"></div>
   <p class="facts" id="facts"></p>
+  <section class="run atk" id="attacks" aria-live="polite">
+    <h2>Атаки на агента и чем они остановлены</h2>
+    <p class="lead">Агент проверяется набором атак: просьбы о скидке сверх полномочий, цена не из каталога, команды в тексте клиента и в описании товара, попытки вытащить инструкцию и чужие данные, вредоносные и посторонние просьбы. Удерживает их код вокруг модели, а не просьба в инструкции: у каждой атаки ниже указано, что именно делает код.</p>
+    <p class="total" id="attacks-total"></p>
+    <div id="attacks-list"></div>
+  </section>
 </main>
 <script src="proof.js"></script>
 </body>
