@@ -221,6 +221,7 @@ class Query:
             self.groups.append({"token": token, "terms": terms, "phrases": phrases})
         # вес слова в оценке; редкие слова весят больше (см. weigh)
         self.weights = [1.0] * len(self.groups)
+        self.absent: list[str] = []  # слова запроса, которых нет ни в одном названии, вендоре и категории
 
     def weigh(self, conn: sqlite3.Connection) -> None:
         """Веса слов по редкости в названиях продуктов: "mdaemon" важнее, чем "standard"."""
@@ -233,6 +234,8 @@ class Query:
                               (self._group_fts(group),)).fetchone()[0]
             known.append(df > 0)
             self.weights[i] = math.log(1 + n / (df + 0.5))
+        if len(self.groups) <= _FOCUS_FROM:  # в длинной фразе неизвестные слова это приветствия, не название
+            self.absent = [g["token"] for g, ok in zip(self.groups, known) if not ok]
         self._focus(known)
 
     def _focus(self, known: list[bool]) -> None:
@@ -625,8 +628,13 @@ def search_products(query: str, vendor: str | None = None, category_id: int | No
         return _list_by_filters(conn, query, where, params, limit)
 
     found, match = _collect(conn, q, where, params)
-    return {"query": query, "total": found.relevant(), "match": match,
-            "products": found.top(limit)}
+    result = {"query": query, "total": found.relevant(), "match": match, "products": found.top(limit)}
+    if match in ("partial", "fuzzy"):
+        result["note"] = "Точного совпадения нет: в найденном совпала только часть слов запроса или похожие слова."
+        if q.absent:
+            result["note"] += (" Слов " + ", ".join(q.absent) + " нет ни в одном названии каталога: возможно, такого "
+                               "продукта в каталоге нет, и найденное это другие продукты.")
+    return result
 
 
 # --- варианты продукта --------------------------------------------------------
@@ -644,9 +652,9 @@ _VALUE_LIMIT = 60
 _INF = float("inf")
 
 
-def _short(value):
-    if isinstance(value, str) and len(value) > _VALUE_LIMIT:
-        return value[:_VALUE_LIMIT - 1].rstrip() + "…"
+def _short(value, limit: int = _VALUE_LIMIT):
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit - 1].rstrip() + "…"
     return value
 
 
@@ -668,7 +676,7 @@ def _offer_dict(row: sqlite3.Row) -> dict:
     item.update(price=_money(row["price"]), available=bool(row["available"]), url=row["url"])
     for key in _OFFER_DIMS + _OFFER_EXTRA:
         if row[key] is not None:
-            item[key] = _short(row[key])
+            item[key] = _short(row[key], 200 if key == "platform" else _VALUE_LIMIT)  # ОС нужны целиком
     item["russian_vendor"] = bool(row["russian_vendor"])
     item.update(_price_flags(row))
     price_for = _price_for(row)
@@ -688,7 +696,7 @@ def _price_for(row: sqlite3.Row) -> str | None:
         return "за весь комплект этой ступени"
     if row["users_max"] and row["qty_min"] is None:
         return f"за комплект на {row['users_max']} пользователей"
-    return None
+    return "за одну позицию, как в названии"
 
 
 def _as_int(value) -> int | None:
@@ -766,15 +774,50 @@ def _apply_quantity_filters(rows: list, filters: dict) -> tuple[list, dict, list
     return rows, gaps, notes
 
 
-def _substring_check(columns: tuple[str, ...], value):
+_VALUE_SYNONYMS = {  # как клиент называет значение -> как оно записано в каталоге
+    "org_type": (("образоват", "Академическая"), ("учебн", "Академическая"), ("школ", "Академическая"),
+                 ("вуз", "Академическая"), ("универс", "Академическая"), ("гос", "Государственная"),
+                 ("бюджет", "Государственная"), ("муницип", "Государственная"), ("нко", "Некоммерческая"),
+                 ("дом", "Для дома"), ("физ", "Для дома"), ("частн", "Для дома"), ("коммер", "Коммерческая"),
+                 ("юр", "Коммерческая"), ("бизнес", "Коммерческая")),
+    "user_type": (("физ", "Физлицо"), ("частн", "Физлицо"), ("дом", "Физлицо"), ("юр", "Юрлицо"),
+                  ("орг", "Юрлицо"), ("компан", "Юрлицо")),
+    "license_type": (("нов", "Полная версия"), ("первичн", "Полная версия"), ("полн", "Полная версия"),
+                     ("продл", "Продление"), ("подпис", "Подписка"), ("обновл", "Обновление"),
+                     ("поддержк", "Техподдержка"), ("миграц", "Миграция")),
+}
+_EMPTY_PASSES = ("org_type", "user_type", "platform")  # поле не заполнено: ограничения нет, вариант подходит
+
+
+def _catalog_value(key: str, value) -> str:
+    """Значение фильтра словами каталога: "образовательная" -> "Академическая"."""
+    text = norm(str(value))
+    for stem, canonical in _VALUE_SYNONYMS.get(key, ()):
+        if text.startswith(stem) or f" {stem}" in text:
+            return canonical
+    return str(value)
+
+
+def _substring_check(columns: tuple[str, ...], value, empty_passes: bool = False):
     needle = norm(str(value))
-    return lambda row: any(needle in norm(row[column]) for column in columns)
+
+    def check(row) -> bool:
+        if empty_passes and all(not row[column] for column in columns):
+            return True
+        return any(needle in norm(row[column]) for column in columns)
+    return check
+
+
+def _value_check(key: str, value):
+    value = _catalog_value(key, value)
+    if key == "version":  # "1.8" у Astra Linux записано в названии варианта, а не в поле версии
+        return _substring_check(("version", "name"), value)
+    return _substring_check((key,), value, empty_passes=key in _EMPTY_PASSES)
 
 
 def _apply_value_filters(rows: list, filters: dict) -> list:
     """Фильтры по сроку, подстрокам параметров, тексту имени или артикула и доступности."""
-    checks = [_substring_check((key,), filters[key]) for key in _SUBSTRING_FILTERS
-              if key in filters]
+    checks = [_value_check(key, filters[key]) for key in _SUBSTRING_FILTERS if key in filters]
     term = _as_int(filters.get("term_months"))
     if term is not None:
         checks.append(lambda row: row["term_months"] == term)
@@ -885,10 +928,32 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
         "ignored_filters": sorted(set(filters) - known),
     }
     result.update({key: value for key, value in optional.items() if value})
+    if len(rows) > len(result["offers"]):
+        result["shown"] = (f"показаны {len(result['offers'])} из {len(rows)}, от дешевых к дорогим; "
+                           "остальные откроются, если сузить фильтром из clarify или словом в text")
     if not rows and all_rows:
-        result["note"] = "С такими фильтрами вариантов нет. В facets значения, которые есть у продукта без фильтров."
-        result["facets"] = _facets_for_output(facet_counts(all_rows))[0]
+        result.update(_relaxed(all_rows, filters, order, limit))
     return result
+
+
+def _relaxed(all_rows: list, filters: dict, order, limit: int) -> dict:
+    """Фильтры дали ноль: показываем, что есть, если снять один из них (тот, без которого вариантов больше)."""
+    best_key, best_rows = None, []
+    for key in filters:
+        rest = {k: v for k, v in filters.items() if k != key}
+        rows, _, _ = _apply_quantity_filters(all_rows, rest)
+        rows = _apply_value_filters(rows, rest)
+        if len(rows) > len(best_rows):
+            best_key, best_rows = key, rows
+    if not best_rows:
+        return {"note": "С такими фильтрами вариантов нет. В facets значения, которые есть у продукта без фильтров.",
+                "facets": _facets_for_output(facet_counts(all_rows))[0]}
+    best_rows.sort(key=order)
+    return {"note": f"Вариантов с {best_key}={filters[best_key]} у продукта нет. Ниже варианты без этого условия: "
+                    "скажите клиенту, что именно такого в каталоге нет, и предложите ближайшее.",
+            "dropped_filter": best_key,
+            "facets": _facets_for_output(facet_counts(best_rows))[0],
+            "offers": [_offer_dict(r) for r in best_rows[:max(0, min(int(limit), 100))]]}
 
 
 def get_offer(offer_id: int | str) -> dict:

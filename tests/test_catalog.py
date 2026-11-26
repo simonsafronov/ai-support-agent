@@ -361,3 +361,29 @@ def test_price_for_tells_unit_from_pack():
         pytest.skip("в базе нет контрольных вариантов")
     assert search._price_for(rows[4857]) == "за 1 лицензию при покупке от 50 до 99"
     assert search._price_for(rows[477652]) == "за комплект на 30 пользователей"
+
+
+def test_live_filters_speak_client_language():
+    """Живая база: клиент говорит 'образовательная' и 'юрлицо', каталог пишет 'Академическая' и часто не пишет ничего."""
+    from app.catalog import search
+    if not DEFAULT_DB.exists():
+        pytest.skip("нет собранной базы каталога")
+    kes = search.get_product("3935", filters={"org_type": "образовательная", "term_months": 12}, limit=3)
+    if kes.get("error"):
+        pytest.skip("в базе нет контрольного продукта")
+    assert kes["matching"] > 0 and all(o["org_type"] == "Академическая" for o in kes["offers"])
+    md = search.get_product("394683", filters={"user_type": "юрлицо", "users": 25, "nodes": 25, "qty": 25}, limit=6)
+    assert md["matching"] > 0 and all(o["users_max"] == 30 for o in md["offers"])   # поле не заполнено: не отсекаем
+    none = search.get_product("394683", filters={"text": "Standard", "term_months": 24}, limit=3)
+    assert none["matching"] == 0 and none["dropped_filter"] == "text" and none["offers"]
+    assert "price_for" in none["offers"][0]
+
+
+def test_live_search_says_when_word_is_not_in_catalog():
+    from app.catalog import search
+    if not DEFAULT_DB.exists():
+        pytest.skip("нет собранной базы каталога")
+    res = search.search_products("RuPost Enterprise")
+    assert res["match"] in ("partial", "fuzzy", "none")
+    if res["match"] != "none":
+        assert "rupost" in res["note"]
