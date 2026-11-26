@@ -51,11 +51,14 @@ _PRICE_KEY = re.compile(r"price|total|sum|vat|amount")
 _ASSERT = re.compile(r"стоит|стоимост|\bцен[аыуе]\b|ценой|итого|\bсумм[аыуе]\b|составит|составляет|обойд[её]тся|выйдет|"
                      r"к оплате|подтвержда[юе]|верно|договорились|оформл|\bда[,.!\s]|"
                      r"за (?:лицензи|штук|шт\b|комплект|мест|позици|единиц|кажд)", re.I)
-_NOT_ASSERT = re.compile(r"\bне\b|\bнет\b|\bни\b|уточн|провер|бюджет|в рамках|укладыва|в пределах|превыша|лимит|"
+_NOT_ASSERT = re.compile(r"\bне\b|\bнет\b|\bни\b|уточн|провер|бюджет|в рамках|укладыва|улож|в пределах|превыша|лимит|"
                          r"вы (?:назвали|указали|написали|упомянули|сказали|говорили|называли|привели|видели|писали)|"
                          r"по вашим словам|с ваших слов|названн\w+ вами|у конкурент|друго\w+ поставщик|"
                          r"(?:чужом|другом|стороннем|вашем) (?:сч[её]те|кп|предложении)", re.I)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?![а-яёa-z])|\n")  # "руб. за место" фразу не заканчивает
+# Метка [[facts: ...]] это запись модели о клиенте: клиент ее не видит, код убирает ее из ответа. Бюджет и просьба
+# о скидке в ней ("budget=1400 руб. за место", "нужна скидка 15%") это слова клиента, а не цена и не обещание.
+FACTS_MARK = re.compile(r"\[\[facts:.*?\]\]", re.S | re.I)
 
 # Сумма без валюты в свободной формулировке: "отдам за 4999", "обойдется вам в 4999", "стоимость лицензии 4999
 # (без НДС)", "1 лицензия = 4999". Между словом о цене и числом допускаются только строчные русские слова:
@@ -65,7 +68,7 @@ _LOOSE_CUE = (rf"(?:{_CUE}|составит|составляет|будет|от
 _NOT_A_SUM = re.compile(r"артикул|\bкод|номер|№|заказ|сч[её]т|\bкп\b|\bинн\b|\bкпп\b|тел|верси|редакци|выпуск|"
                         r"\bдо\b|\bс\b|\bот\b|\bпо\b", re.I)
 LOOSE = re.compile(rf"(?<![а-яёa-z])({_LOOSE_CUE})((?:[\s:=~(«\"—–-]+|[а-яё]+\s+){{0,4}}?)(?<![\d.,])({_NUM})"
-                   rf"(?![{_SP}.,'’`]?\d)(?!\s*(?:{_UNIT}|{_CUR}))"
+                   rf"(?![{_SP}.,'’`]?\d){_MULT}?(?!\s*(?:{_UNIT}|{_CUR}))"
                    # после суммы конец фразы, знак или предлог; иначе это количество чего-то: "за 100 виртуальных машин"
                    r"(?=\s*(?:$|[.,;:!?()\n])|\s+(?:в|за|с|со|без|на|при|и|или|для|плюс|это)(?![а-яёa-z]))", re.I)
 LOOSE_MAX = 99_999_999  # длиннее это ИНН, телефон или артикул
@@ -74,7 +77,10 @@ _NUM_WORD = (r"(?:один|одна|одну|два|две|три|четыре|�
              r"сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|сто|двести|триста|четыреста|\w+сот|"
              r"полтор[аы]|пол|тысяч[аиу]?|миллион(?:а|ов)?|млн|тыс\.?)")
 WORDS = re.compile(rf"(?<![а-яёa-z])(?:{_NUM_WORD}\s+){{0,5}}(?:сто|двести|триста|четыреста|[а-яё]+сот|тысяч[аиу]?|"
-                   rf"миллион(?:а|ов)?)\s+{_RUB}", re.I)
+                   rf"миллион(?:а|ов)?)(?:\s+{_NUM_WORD}){{0,4}}\s+{_RUB}", re.I)
+# то же без слова "руб", но сразу после слова о цене: "стоит пять тысяч", "итого полтора миллиона"; не количество
+WORDS_BARE = re.compile(rf"\b{_CUE}(?:\s+{_FILLER}|\s*[:=—–])*\s+((?:{_NUM_WORD}\s+){{0,5}}(?:тысяч[аиу]?|"
+                        rf"миллион(?:а|ов)?)(?![а-яё]))(?!\s*(?:{_UNIT}|{_CUR}))", re.I)
 
 
 def _scale(word: str | None) -> float:
@@ -170,12 +176,17 @@ def _asserts_price(sentence: str) -> bool:
     return bool(_ASSERT.search(sentence)) and not _NOT_ASSERT.search(sentence)
 
 
-def _bad(text: str, known, said) -> list[tuple[int, int]]:
-    """Места в тексте с суммой, которой нет в данных инструментов и которая не подана как слова клиента."""
+def _bad(text: str, known, said, positions=None) -> list[tuple[int, int]]:
+    """Места в тексте с суммой, которой нет в данных инструментов и которая не подана как слова клиента.
+
+    С positions сюда же попадает известная сумма, которая стоит не у своей позиции (см. price_pairs).
+    """
     out = []
+    marks = [m.span() for m in FACTS_MARK.finditer(text)]
+    hidden = lambda a, b: any(x <= a and b <= y for x, y in marks)  # внутри метки [[facts: ...]]
     for a, b, values in mentions(text):
         for v in values:
-            if v < 1 or _is_known(v, known):
+            if v < 1 or _is_known(v, known) or hidden(a, b):
                 continue
             if _is_known(v, said) and not _asserts_price(_sentence_at(text, a)):
                 continue  # клиент сам назвал эту сумму, и ответ повторяет ее как его слова, а не как цену товара
@@ -184,36 +195,189 @@ def _bad(text: str, known, said) -> list[tuple[int, int]]:
     taken = [(a, b) for a, b, _ in mentions(text)]
     free = lambda a, b: all(b <= x or a >= y for x, y in taken + out)
     for m in LOOSE.finditer(text):
-        v, (a, b) = number(m.group(3)), m.span(3)
-        if v is None or not BARE_MIN <= v <= LOOSE_MAX or _is_known(v, known) or not free(a, b):
+        v, a, b = number(m.group(3)), m.start(3), m.end(4) if m.group(4) else m.end(3)
+        if v is None or not free(a, b) or hidden(a, b):
             continue
-        if _NOT_A_SUM.search(m.group(2)) or (v == int(v) and 1900 <= v <= 2100 and len(m.group(3)) == 4):
+        year = v == int(v) and 1900 <= v <= 2100 and len(m.group(3)) == 4 and not m.group(4)
+        v *= _scale(m.group(4))  # "цена лицензии 5 тыс.", "обойдется в 120 тыс. на всех"
+        if not BARE_MIN <= v <= LOOSE_MAX or _is_known(v, known) or _NOT_A_SUM.search(m.group(2)) or year:
             continue  # "стоимость по артикулу 4601546", "цена действует до 2027"
         if _is_known(v, said) and not _asserts_price(_sentence_at(text, a)):
             continue
         out.append((a, b))
-    for m in WORDS.finditer(text):
-        if free(*m.span()) and not _NOT_ASSERT.search(_sentence_at(text, m.start())):
-            out.append(m.span())
+    for m in list(WORDS.finditer(text)) + list(WORDS_BARE.finditer(text)):
+        a, b = m.span(m.lastindex or 0)
+        if free(a, b) and not hidden(a, b) and not _NOT_ASSERT.search(_sentence_at(text, a)):
+            out.append((a, b))
+    out += [(a, b) for a, b, _, verdict in price_pairs(text, positions) if verdict == FOREIGN and (a, b) not in out]
     return sorted(out)
 
 
-def unknown(text: str, known, said=()) -> list[str]:
+def unknown(text: str, known, said=(), positions=None) -> list[str]:
     """Суммы в тексте ответа, которых нет среди известных.
 
     known это суммы из ответов инструментов, said это суммы из слов клиента: вторые можно повторить
     ("в ваш бюджет 300 000 руб. укладывается"), но утверждать ими цену товара нельзя ("лицензия стоит 500 руб.").
+    positions это позиции диалога (collect_positions): известная сумма у чужой позиции тоже считается ошибкой.
     """
-    return [text[a:b].strip() for a, b in _bad(text, known, said)]
+    return [text[a:b].strip() for a, b in _bad(text, known, said, positions)]
 
 
-def mask_unknown(text: str, known, said=()) -> str:
+def mask_unknown(text: str, known, said=(), positions=None) -> str:
     """Последний рубеж: неизвестные суммы заменяются словами, известные остаются как есть."""
-    for a, b in reversed(_bad(text, known, said)):
+    for a, b in reversed(_bad(text, known, said, positions)):
         text = text[:a] + "цена по запросу" + text[b:]
     # "цена 12 345 руб." не должна стать "цена цена по запросу", а "около 100 тыс." не должно стать "около цена..."
     return re.sub(r"(?:\b(?:цена|цены|около|примерно|порядка|приблизительно)\s+)+цена по запросу",
                   lambda m: "Цена по запросу" if m.group(0)[0].isupper() else "цена по запросу", text, flags=re.I)
+
+
+# --- Цена у своей позиции --------------------------------------------------------------------------------------------
+# Обе суммы взяты из каталога, но стоят не у своих позиций: "А стоит 20 000, Б стоит 10 000" при ценах 10 000 и
+# 20 000. Проверка "сумма есть в данных диалога" этого не видит. Здесь узкая проверка привязки: во фразе или пункте
+# списка названа ровно одна известная позиция (метка [[offer:id]], артикул, название варианта или продукта из
+# ответов инструментов) и есть цена за единицу. Если ни одна сумма фразы к этой позиции не относится, а одна из них
+# это цена за единицу другой позиции диалога, цена стоит не у своей позиции. Позицию однозначно определить нельзя
+# (две позиции во фразе, названия нет): проверка молчит, ложная тревога хуже пропуска.
+OWN, FOREIGN, OTHER = "своя", "чужая", "прочая"
+_ROWS = ("offers", "lines", "items")  # где в ответах инструментов лежат позиции: варианты, строки расчета и КП
+_UNIT_PRICE = re.compile(r"стоит|стоимост|\bцен[аыуе]\b|ценой|\bпо\s+\d|за (?:одну |1 |кажд\w+ )?(?:лицензи|штук|шт\b|"
+                         r"комплект|мест|единиц|пользовател|устройств|узел|пк\b|копи)", re.I)
+_REF_MARK = re.compile(r"\[\[(offer|product):\s*([\w-]+)\]\]", re.I)
+POSITIONS_KEPT = 60  # сколько позиций диалог помнит между ходами
+
+
+def collect_positions(out, acc: dict) -> None:
+    """Позиции из ответа инструмента: id варианта -> название, артикул, продукт, цены за единицу и все суммы."""
+    if not isinstance(out, dict):
+        return
+    titles = {str(p.get("product_id")): p.get("title") or "" for p in out.get("products") or [] if isinstance(p, dict)}
+    blocks = [out] + ([out["first_product"]] if isinstance(out.get("first_product"), dict) else [])
+    for block in blocks:
+        product = block.get("product") if isinstance(block.get("product"), dict) else {}
+        pid = str(product.get("product_id") or block.get("product_id") or "")
+        title = product.get("title") or titles.get(pid, "")
+        for row in (r for key in _ROWS for r in block.get(key) or [] if isinstance(r, dict)):
+            if row.get("offer_id") is None:
+                continue
+            p = acc.setdefault(str(row["offer_id"]), {"name": "", "code": "", "product": "", "pid": "",
+                                                       "unit": set(), "sums": set()})
+            p["name"], p["code"] = row.get("name") or p["name"], row.get("vendor_code") or p["code"]
+            p["product"], p["pid"] = title or p["product"], pid or p["pid"]
+            for k, v in row.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 and _PRICE_KEY.search(k):
+                    p["sums"].add(float(v))
+                    if k.startswith("price"):  # price, price_with_discount: цена за единицу
+                        p["unit"].add(float(v))
+
+
+def load_positions(rows, offers=()) -> dict:
+    """Позиции прошлых ходов (dump_positions) и запомненные варианты диалога (id, name, price)."""
+    acc = {str(r[0]): {"name": r[1], "code": r[2], "product": r[3], "pid": r[4], "unit": set(r[5]), "sums": set(r[6])}
+           for r in rows or []}
+    for o in offers or []:
+        if o.get("id") is not None and o.get("price"):
+            p = acc.setdefault(str(o["id"]), {"name": o.get("name") or "", "code": "", "product": "", "pid": "",
+                                              "unit": set(), "sums": set()})
+            p["unit"].add(float(o["price"]))
+            p["sums"].add(float(o["price"]))
+    return acc
+
+
+def dump_positions(acc: dict) -> list:
+    return [[i, p["name"], p["code"], p["product"], p["pid"], sorted(p["unit"]), sorted(p["sums"])]
+            for i, p in list(acc.items())[-POSITIONS_KEPT:]]
+
+
+# Между названием позиции и суммой допускаются только слова о цене, количестве и сроке ("стоит", ": ", ", 50 лицензий
+# по", "на 1 год стоит"). Любое другое слово может быть вторым подлежащим ("дешевле: вариант на 2 года стоит ..."),
+# и тогда сумма относится не к названной позиции: такая фраза не проверяется.
+_TIGHT = re.compile(r"(?:[\s:;,.()«»\"“”„—–-]|\d+(?:[.,]\d+)?\s*%?|стоит|стоимость\w*|цен[аыуе]|ценой|по|за|это|будет|"
+                    r"составит|составляет|обойд[её]тся|выйдет|в|от|на|с|со|без|скидкой|ндс|всего|итого|нов(?:ая|ую)|"
+                    r"одн[ауы]|кажд\w+|(?:шт|штук\w*|лиценз\w+|пользовател\w+|узл\w+|мест\w*|пк|год\w*|лет|месяц\w*|мес)\.?)*",
+                    re.I)
+_QUOTES = "«»\"“”„'"
+
+
+def _plain(s: str) -> str:
+    return re.sub(rf"[{_QUOTES}]", "", (s or "").lower().replace("ё", "е")).split()
+
+
+def _named(sentence: str, positions: dict) -> tuple[set, list[tuple[int, int]]]:
+    """Позиции, названные во фразе, если это одна позиция (иначе пустое множество), и места упоминаний."""
+    found, spans = [], []  # по одному множеству id на каждое упоминание
+    for m in _REF_MARK.finditer(sentence):
+        kind, ident = m.group(1).lower(), m.group(2)
+        ids = {i for i, p in positions.items() if (i if kind == "offer" else p["pid"]) == ident}
+        if not ids:
+            return set(), []  # названа позиция, про которую ничего не известно: привязку не определить
+        found.append(ids)
+        spans.append(m.span())
+    low = sentence.lower().replace("ё", "е")  # длина та же: места совпадают с местами во фразе
+    names: dict[tuple, set] = {}
+    for i, p in positions.items():
+        for words in {tuple(_plain(p["name"])), tuple(_plain(p["product"])), tuple(_plain(p["code"]))}:
+            if len(" ".join(words)) >= 5:
+                names.setdefault(words, set()).add(i)
+    for words in sorted(names, key=lambda w: -len(" ".join(w))):  # длинное название раньше короткого внутри него
+        hit = re.compile(r"(?<![\w-])" + rf"[\s{_QUOTES}]+".join(map(re.escape, words)) + r"(?![\w-])")
+        for m in hit.finditer(low):
+            low = low[:m.start()] + " " * (m.end() - m.start()) + low[m.end():]
+            found.append(names[words])
+            spans.append(m.span())
+    return (set.intersection(*found) if found else set()), spans
+
+
+def _sentences(text: str):
+    """Фразы и пункты списка с их местом в тексте. Метка после суммы ("16 800 руб. [[offer:1]], а также")
+    относится к уже названной цене: перед меткой фраза не рвется."""
+    start = 0
+    for m in _SENTENCE.finditer(text):
+        if text.startswith("[[", m.end()) and "\n" not in m.group(0):
+            continue
+        yield start, text[start:m.start()]
+        start = m.end()
+    yield start, text[start:]
+
+
+def price_pairs(text: str, positions) -> list[tuple[int, int, float, str]]:
+    """Суммы ответа, у которых однозначно определена позиция: (начало, конец, сумма, своя | чужая | прочая).
+
+    Своя: цена за единицу или сумма этой позиции из ответов инструментов, она же со скидкой в пределах своей,
+    цена на названное во фразе количество. Чужая: цена за единицу другой позиции диалога во фразе, где своей
+    суммы нет и между названием и суммой стоят только слова о цене и количестве. Прочая: сумма, про которую по данным позиций
+    сказать нечего (ее сверяет проверка известных сумм).
+    """
+    out = []
+    if not positions or not config.PRICE_BINDING:
+        return out
+    hidden = [m.span() for m in FACTS_MARK.finditer(text)]
+    for start, sentence in _sentences(text):
+        if not _UNIT_PRICE.search(sentence) or any(x <= start < y for x, y in hidden):
+            continue
+        named, spans = _named(sentence, positions)
+        sums = [(a, b, v) for a, b, values in mentions(sentence) for v in values if v >= 1]
+        if not named or not sums:
+            continue
+        counts = {v for v in map(number, NUMBER.findall(sentence)) if v and v == int(v) and 2 <= v <= 100_000}
+        own = set().union(*(positions[i]["sums"] | positions[i]["unit"] for i in named))
+        own |= {u * q for i in named for u in positions[i]["unit"] for q in counts}
+        others = {u for i, p in positions.items() if i not in named for u in p["unit"]}
+        low = 1 - config.AGENT_DISCOUNT_MAX / 100
+        mine = [any(x * low - TOLERANCE <= v <= x + TOLERANCE for x in own) for _, _, v in sums]
+        for (a, b, v), ok in zip(sums, mine):
+            verdict = OWN if ok else OTHER
+            if not any(mine) and _is_known(v, others):
+                prev = max((e for _, e in spans if e <= a), default=0)
+                gap = sentence[prev:a]
+                verdict = FOREIGN if _TIGHT.fullmatch(_REF_MARK.sub(" ", gap)) else OTHER
+            out.append((start + a, start + b, v, verdict))
+    return out
+
+
+def misplaced(text: str, positions) -> list[str]:
+    """Суммы, названные не у своей позиции: цена другой позиции диалога во фразе про эту."""
+    return [text[a:b].strip() for a, b, _, verdict in price_pairs(text, positions) if verdict == FOREIGN]
 
 
 # --- Скидка словами --------------------------------------------------------------------------------------------------
@@ -232,7 +396,7 @@ _WORD_VALUES = tuple((re.compile(rx), v) for rx, v in (  # числительн�
     (r"пятьдесят|пятидесяти", 50), (r"половин[ауы]", 50)))
 WORD_PERCENT = re.compile(r"(?<![а-яё])((?:[а-яё]+\s+){1,2})процент", re.I)
 # о снижении цены говорят и без слова "скидка": "минус 15% от цены", "цена будет на 20% ниже"
-_CHEAPER = re.compile(r"скидк|дисконт|дешевле|ниже|минус|уступ|сброш|сниж|сбав", re.I)
+_CHEAPER = re.compile(r"скидк|дисконт|дешевле|ниже|минус|уступ|сброш|сниж|сбав|\bсним(?:у|ем)\b|\bскин(?:у|ем)\b", re.I)
 REFUSAL = re.compile(r"не могу|не вправе|нельзя|не даю|не обещаю|не в моих|менеджер|больше\s+\d", re.I)
 _HARD_REFUSAL = re.compile(r"не могу|не вправе|нельзя|не даю|не обещаю|не в моих", re.I)
 _RESTATE = re.compile(r"прос(?:ите|или|ил|ит|ьб)|запр(?:ос|аш|ош)|хот(?:ите|ели)|по вопросу|насч[её]т|"
@@ -309,16 +473,20 @@ def discount_over_limit(replies: list[str], allowed=()) -> list[str]:
     Отказ ("15% дать не могу"), отсылка к менеджеру и повтор просьбы клиента ("вы просите 15%") сюда не попадают.
     allowed это проценты из ответов инструментов этого диалога: акцию из справки можно пересказать.
     """
-    return [s.strip() for s in _SENTENCE.split(" ".join(replies)) if _promises_too_much(s, allowed)]
+    return [s.strip() for s in _SENTENCE.split(FACTS_MARK.sub(" ", " ".join(replies))) if _promises_too_much(s, allowed)]
 
 
 def cut_discount(text: str, allowed=()) -> str:
     """Последний рубеж: фраза с обещанием скидки больше своей заменяется отсылкой к менеджеру."""
     cut = DISCOUNT_CUT.format(limit=config.AGENT_DISCOUNT_MAX)
     out, done = [], False
-    for part in re.split(f"({_SENTENCE.pattern})", text):
-        if _promises_too_much(part, allowed):
-            part = "" if done else cut
-            done = True
-        out.append(part)
+    for chunk in re.split(f"({FACTS_MARK.pattern})", text, flags=re.S | re.I):
+        if FACTS_MARK.fullmatch(chunk):  # запись о клиенте остается как есть: ее разберет код после проверки
+            out.append(chunk)
+            continue
+        for part in re.split(f"({_SENTENCE.pattern})", chunk):
+            if _promises_too_much(part, allowed):
+                part = "" if done else cut
+                done = True
+            out.append(part)
     return re.sub(r"[ \t]{2,}", " ", "".join(out)).strip()

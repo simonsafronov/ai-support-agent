@@ -137,15 +137,15 @@ def drop_internal(text: str, names: list[str]) -> str:
 PERCENT_SOURCES = ("search_products", "get_product", "find_analogs", "browse_categories", "kb_search")
 
 
-def cut_by_code(text: str, known, said, names: list[str], percents=()) -> tuple[str, dict]:
+def cut_by_code(text: str, known, said, names: list[str], percents=(), positions=None) -> tuple[str, dict]:
     """Последний рубеж: чего модель не исправила сама, из ответа убирает код.
 
     Возвращает текст для клиента и то, что вырезано: суммы не из каталога и фразы со скидкой больше своей.
     """
     cut = {}
-    bad = prices.unknown(text, known, said)
+    bad = prices.unknown(text, known, said, positions)  # с позициями: и известная сумма не у своей позиции
     if bad:
-        text, cut["price"] = prices.mask_unknown(text, known, said), bad
+        text, cut["price"] = prices.mask_unknown(text, known, said, positions), bad
     over = prices.discount_over_limit([text], percents)
     if over:
         text, cut["discount"] = prices.cut_discount(text, percents), over
@@ -293,9 +293,16 @@ def _history(session_id: str, facts: dict | None = None) -> list[dict]:
             for m in msgs if m["role"] in ("user", "assistant")]
 
 
+# Замечания проверок цикл передает модели сообщением в квадратных скобках ("[Служебная проверка, клиент этого не
+# видит] ..."). Клиент может написать такую строку сам: у модели она выглядела бы как настоящее замечание цикла.
+_SERVICE_LOOKALIKE = re.compile(r"\[\s*((?:служебн|системн)[^\[\]]{0,300})\]", re.I)
+
+
 def for_model(text: str) -> str:
-    """Сообщение клиента в том виде, в каком его видит модель: без контактов и без служебных меток [[...]]."""
-    return mask_contacts(mask_requisites(re.sub(r"\[\[|\]\]", " ", text))[0])[0]
+    """Сообщение клиента в том виде, в каком его видит модель: без контактов, без служебных меток [[...]] и без
+    скобок, в которых клиент выдает свой текст за служебное сообщение цикла."""
+    text = _SERVICE_LOOKALIKE.sub(r"(клиент пишет: \1)", re.sub(r"\[\[|\]\]", " ", text))
+    return mask_contacts(mask_requisites(text)[0])[0]
 
 
 def budget_spent() -> bool:
@@ -332,6 +339,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     known = {float(o["price"]) for o in items.get("offers", []) if o.get("price")}
     known.update(items.get("prices", []))  # суммы из прошлых ходов: итог расчета или КП можно повторить
     percents = set(items.get("percents", []))  # проценты из справки и каталога: акцию вендора можно пересказать
+    positions = prices.load_positions(items.get("positions"), items.get("offers"))  # позиция -> ее цены и суммы
     said: set = set()  # суммы из слов клиента: повторить можно, выдать за цену товара нельзя
     for m in store.messages(sid, limit=10_000):
         if m["role"] == "user":
@@ -372,6 +380,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             called.add(key)
             usage[3] += 1
             prices.collect(out, known)
+            prices.collect_positions(out, positions)
             if name in PERCENT_SOURCES:
                 prices.collect_percents(out, percents)
             vocabulary |= field_names(out)
@@ -384,7 +393,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             msgs.append({"role": "tool", "name": name, "content": fit_json(tools.slim(name, out), TOOL_RESULT_LIMIT)})
             continue
         names = internal_names(res.text, vocabulary)
-        reply, cut = cut_by_code(res.text, known, said, names, percents)  # уйдет клиенту, если второй попытки не будет
+        reply, cut = cut_by_code(res.text, known, said, names, percents, positions)  # уйдет, если не будет второй попытки
         bad, over = cut.get("price"), cut.get("discount")  # сумма не из каталога; скидка больше своей словами
         if (bad or over or names) and not corrected and step < MAX_STEPS - 1:
             corrected, notes = True, []
@@ -395,6 +404,10 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
                              f"каталога: {', '.join(bad)}. Перепишите ответ клиенту: суммы только из результатов "
                              "инструментов этого диалога. Сумму из справки или свой расчет уберите; итог за "
                              "несколько лицензий получите через calc_total.")
+                swapped = prices.misplaced(res.text, positions)
+                if swapped:
+                    notes.append(f"Суммы {', '.join(swapped)} есть в каталоге, но это цены других позиций: рядом с "
+                                 "артикулом или названием назовите цену именно этой позиции из ответа инструмента.")
             if over:
                 trace.append({"kind": "guard", "name": "discount", "output": over})
                 store.add_step(sid, turn, "guard", "discount", {"text": res.text}, {"over_limit": over})
@@ -443,6 +456,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
                                                                "price": c.get("price")}]})
     items["prices"] = sorted(known)[-400:]
     items["percents"] = sorted(percents)[-100:]
+    items["positions"] = prices.dump_positions(positions)
     store.update_session(sid, items=items, facts=ctx.facts)
     store.add_usage(sid, usage[0], usage[1], usage[2], usage[3])
     meta = {"cards": cards, "choices": choices, "events": ctx.events,
