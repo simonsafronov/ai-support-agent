@@ -166,12 +166,13 @@ def _error(text: str) -> dict:
     return {"ok": False, "error": text}
 
 
+NO_CUSTOMER = "Заказчик уточняется"  # клиент не назвал организацию: черновик все равно нужен менеджеру
+
+
 def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "", payment: str = "",
                contact: str = "", delivery: str = "") -> dict:
     """Собирает черновик КП: проверяет позиции, считает суммы и НДС, пишет PDF и запись в хранилище."""
-    customer = _clean(customer)
-    if not customer:
-        return _error("Не указан заказчик. Уточните у клиента название компании и передайте его в customer.")
+    customer = _clean(customer) or NO_CUSTOMER
     if not isinstance(items, list) or not items:
         return _error("Нет позиций для КП. Передайте в items хотя бы одну позицию: offer_id и qty.")
     if len(items) > MAX_ITEMS:
@@ -239,7 +240,8 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
             "valid_until": quote["valid_until"], "customer": customer, "items": out_items, "total": float(total),
             "vat_total": float(vat_total), "has_price_on_request": on_request,
             "needs_availability_check": [ln["name"] for ln in lines if not ln["available"] and ln["price"] is not None],
-            "note": QUOTE_NOTE}
+            "note": QUOTE_NOTE + (" Наименование заказчика не указано: менеджер уточнит его перед отправкой."
+                                  if customer == NO_CUSTOMER else "")}
 
 
 # --- PDF -------------------------------------------------------------------------------------------------------------

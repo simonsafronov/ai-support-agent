@@ -177,8 +177,6 @@ def test_only_offer_id_and_qty_are_taken_from_the_model(offers):
 def test_errors_do_not_create_pdf(offers, missing_id, storage):
     good = {"offer_id": offers["plain"]["id"], "qty": 1}
     cases = [
-        (dict(customer="", items=[good]), "заказчик"),
-        (dict(customer="   ", items=[good]), "заказчик"),
         (dict(customer="ООО Тест", items=[]), "позици"),
         (dict(customer="ООО Тест", items=None), "позици"),
         (dict(customer="ООО Тест", items=[{**good, "qty": 0}]), "qty"),
@@ -293,3 +291,9 @@ def test_catalog_search_is_used_and_rounding_is_to_kopecks(monkeypatch):
     ]
     assert res["total"] == 2102.95 and res["vat_total"] == 18.57 and res["has_price_on_request"] is True
     assert kp.VAT_RATE == Decimal("22")
+
+
+def test_quote_without_customer_name_is_still_a_draft(offers, storage):
+    """Клиент не назвал организацию: черновик все равно собирается, менеджер уточнит название."""
+    res = kp.make_quote("s1", "  ", [{"offer_id": offers["plain"]["id"], "qty": 1}])
+    assert res["ok"] and res["customer"] == kp.NO_CUSTOMER and "не указано" in res["note"]

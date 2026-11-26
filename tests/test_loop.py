@@ -193,3 +193,27 @@ def test_model_sees_tool_output_without_links_and_unknown_flags():
         "offers": [{"offer_id": 2, "price": "по запросу", "available": False}]}
     kb = {"results": [{"title": "Оплата", "url": "https://store.softline.ru/help/pay/"}]}
     assert tools.slim("kb_search", kb) == kb                                # на справку агент ссылается
+
+
+def test_total_from_earlier_turn_can_be_repeated(offer):
+    qty = offer.get("qty_min") or 3
+    total = round(offer["price"] * qty, 2)
+    first = loop.run_turn(None, "Посчитайте", llm=Scripted([
+        {"name": "calc_total", "args": {"items": [{"offer_id": offer["offer_id"], "qty": qty}]}},
+        f"Итого {total:.2f} руб."]))
+    again = loop.run_turn(first["session_id"], "Повторите сумму", llm=Scripted([f"Итого {total:.2f} руб."]))
+    assert not again["trace"] and "Итого" in again["reply"] and "по запросу" not in again["reply"]
+
+
+def test_second_handoff_updates_the_same_ticket():
+    from app import store
+    first = loop.run_turn(None, "Позовите менеджера", llm=Scripted([
+        {"name": "handoff_to_manager", "args": {"reason": "просит человека", "summary": "просит менеджера"}},
+        "Передал менеджеру. Оставьте, пожалуйста, почту."]))
+    sid = first["session_id"]
+    second = loop.run_turn(sid, "it@romashka.ru", llm=Scripted([
+        {"name": "handoff_to_manager", "args": {"reason": "контакт", "summary": "просит менеджера, оставил почту",
+                                                "contact": "it@romashka.ru"}},
+        "Спасибо, менеджер напишет на эту почту."]))
+    assert second["trace"][0]["output"]["updated"] and not second["events"]      # второго обращения нет
+    assert store.open_handoff(sid)["contact"] == "it@romashka.ru"

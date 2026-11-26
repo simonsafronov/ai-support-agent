@@ -116,6 +116,17 @@ def add_handoff(session_id: str, reason: str, summary: str, contact: str) -> int
     return cur.lastrowid
 
 
+def open_handoff(session_id: str) -> dict | None:
+    row = db().execute("SELECT id, reason, summary, contact FROM handoffs WHERE session_id=? ORDER BY id DESC LIMIT 1",
+                       (session_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_handoff(handoff_id: int, summary: str, contact: str):
+    db().execute("UPDATE handoffs SET summary=?, contact=? WHERE id=?", (summary, contact, handoff_id))
+    db().commit()
+
+
 def add_quote(session_id: str, number: str, customer: str, items: list[dict], total: float, file: str) -> int:
     cur = db().execute("INSERT INTO quotes(session_id, ts, number, customer, items_json, total, file) "
                        "VALUES(?,?,?,?,?,?,?)", (session_id, time.time(), number, customer, _j(items), total, file))

@@ -182,6 +182,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     ctx = tools.ToolContext(sid, facts=dict(s["facts"]))
     items = s["items"]
     known = {round(o["price"]) for o in items.get("offers", []) if o.get("price")}
+    known.update(items.get("prices", []))  # суммы из прошлых ходов: итог расчета или КП можно повторить
     # суммы, которые назвал сам клиент (бюджет, цена из чужого счета), агент вправе повторить
     for m in store.messages(sid):
         if m["role"] == "user":
@@ -247,6 +248,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
         if c["type"] == "offer":
             _remember_items(items, "get_product", {"offers": [{"offer_id": c["id"], "name": c["title"],
                                                                "price": c.get("price")}]})
+    items["prices"] = sorted(known)[-400:]
     store.update_session(sid, items=items, facts=ctx.facts)
     store.add_usage(sid, usage[0], usage[1], usage[2], usage[3])
     meta = {"cards": cards, "choices": choices, "events": ctx.events,

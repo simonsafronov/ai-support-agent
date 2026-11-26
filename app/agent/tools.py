@@ -30,8 +30,10 @@ def _search_products(ctx, query: str, vendor: str = "", only_available: bool = F
                                    product_type=product_type or None, limit=6)
 
 
-def _get_product(ctx, product_id: str, **filters):
+def _get_product(ctx, product_id: str, quantity: int | None = None, **filters):
     filters = {k: v for k, v in filters.items() if v not in (None, "", False) and (v != 0 or k == "term_months")}
+    if quantity:  # одно число на все виды ступеней: комплект на N пользователей, диапазон узлов, объем покупки
+        filters.update(users=quantity, nodes=quantity, qty=quantity)
     return catalog.get_product(str(product_id), filters=filters, limit=6)
 
 
@@ -101,7 +103,7 @@ def _calc_total(ctx, items: list[dict]):
             else "Цены из каталога, с НДС где он применим."}
 
 
-def _make_quote(ctx, customer: str, items: list[dict], inn: str = "", payment: str = "", contact: str = ""):
+def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", payment: str = "", contact: str = ""):
     res = kp.make_quote(ctx.session_id, customer=customer, items=items, inn=inn, payment=payment, contact=contact)
     if res.get("ok"):
         ctx.events.append({"type": "quote", **{k: res[k] for k in ("number", "url", "total")}})
@@ -109,6 +111,11 @@ def _make_quote(ctx, customer: str, items: list[dict], inn: str = "", payment: s
 
 
 def _handoff(ctx, reason: str, summary: str, contact: str = ""):
+    old = store.open_handoff(ctx.session_id)
+    if old:  # обращение уже у менеджера: дополняем его, а не заводим второе
+        store.update_handoff(old["id"], summary or old["summary"], contact or old["contact"])
+        return {"ok": True, "ticket": old["id"], "updated": True,
+                "note": "Обращение уже у менеджера, сводка и контакт в нем обновлены."}
     hid = store.add_handoff(ctx.session_id, reason, summary, contact)
     ctx.events.append({"type": "handoff", "id": hid, "reason": reason})
     return {"ok": True, "ticket": hid,
@@ -133,20 +140,22 @@ TOOLS = [
     {"name": "get_product", "handler": _get_product,
      "description": "Варианты лицензий одного продукта с ценами и артикулами. Фильтры сужают набор. В ответе "
                     "поле clarify: какие параметры стоит уточнить у клиента, и facets: какие значения бывают. "
-                    "matching 0: такого сочетания в каталоге нет, смотрите facets. price_ambiguous: у артикула "
+                    "Показаны первые 6 вариантов от дешевых, поле shown говорит, сколько всего. matching 0: такого "
+                    "сочетания нет, в note сказано, без какого условия варианты есть. price_ambiguous: у артикула "
                     "несколько цен. Вызывайте после search_products и повторно, когда клиент ответил на уточнение.",
      "parameters": _obj({
          "product_id": {"type": "string", "description": "id продукта из search_products"},
-         "users": {"type": "integer", "description": "сколько пользователей или рабочих мест"},
-         "nodes": {"type": "integer", "description": "сколько узлов, устройств или серверов"},
-         "qty": {"type": "integer", "description": "сколько лицензий покупают, если цена зависит от объема"},
+         "quantity": {"type": "integer", "description": "сколько нужно клиенту: пользователей, рабочих мест, "
+                      "устройств, узлов или лицензий. Останутся комплекты и ступени цены под это количество"},
          "term_months": {"type": "integer", "description": "срок лицензии в месяцах, 0 = бессрочная"},
-         "license_type": {"type": "string", "description": "тип лицензии: новая, продление, подписка и т.п."},
-         "org_type": {"type": "string", "description": "тип организации: коммерческая, государственная, образовательная"},
+         "license_type": {"type": "string", "description": "новая, продление, подписка, обновление, техподдержка"},
+         "org_type": {"type": "string", "description": "коммерческая, государственная, образовательная, "
+                      "некоммерческая, для дома"},
          "user_type": {"type": "string", "description": "физлицо или юрлицо"},
-         "version": {"type": "string", "description": "версия или редакция продукта"},
-         "platform": {"type": "string", "description": "платформа или ОС"},
-         "text": {"type": "string", "description": "слово, которое должно быть в названии варианта"},
+         "version": {"type": "string", "description": "версия или редакция: 'Воронеж', '1.8', '5.0'"},
+         "platform": {"type": "string", "description": "платформа или ОС: Windows, Linux, macOS"},
+         "text": {"type": "string", "description": "слово или часть артикула, которые должны быть в названии "
+                  "варианта: 'Plus', 'сетевая', '256'"},
          "only_available": {"type": "boolean"},
      }, ["product_id"])},
     {"name": "browse_categories", "handler": _browse_categories,
@@ -172,8 +181,9 @@ TOOLS = [
                                    "'доставка электронной лицензии', 'способы оплаты', 'закрывающие документы'"}},
                         ["query"])},
     {"name": "calc_total", "handler": _calc_total,
-     "description": "Посчитать стоимость: цена варианта на количество и итог по нескольким позициям. Любую сумму, "
-                    "кроме цены из каталога, называйте клиенту только после этого инструмента.",
+     "description": "Посчитать стоимость: цена варианта на количество и итог по позициям одной покупки. Любую "
+                    "сумму, кроме цены из каталога, называйте клиенту только после этого инструмента. Варианты на "
+                    "выбор считайте отдельными вызовами: total складывает все позиции.",
      "parameters": _obj({
          "items": {"type": "array", "description": "позиции расчета",
                    "items": _obj({"offer_id": {"type": "integer"}, "qty": {"type": "integer"}},
@@ -181,20 +191,22 @@ TOOLS = [
      }, ["items"])},
     {"name": "make_quote", "handler": _make_quote,
      "description": "Сформировать черновик коммерческого предложения (PDF по шаблону Softline) для проверки "
-                    "менеджером. Только после того, как клиент согласился с выбором и назвал количество и компанию.",
+                    "менеджером. После того, как клиент согласился с выбором и назвал количество. Название "
+                    "организации спросите один раз; не назвал, формируйте без него.",
      "parameters": _obj({
-         "customer": {"type": "string", "description": "наименование заказчика"},
+         "customer": {"type": "string", "description": "наименование заказчика, если клиент его назвал"},
          "items": {"type": "array", "description": "позиции КП",
                    "items": _obj({"offer_id": {"type": "integer"}, "qty": {"type": "integer"}},
                                  ["offer_id", "qty"])},
          "inn": {"type": "string"},
          "payment": {"type": "string", "description": "условия оплаты, если клиент назвал"},
          "contact": {"type": "string", "description": "почта или телефон клиента"},
-     }, ["customer", "items"])},
+     }, ["items"])},
     {"name": "handoff_to_manager", "handler": _handoff,
      "description": "Передать обращение менеджеру: цена по запросу, скидка, госзакупка, статус заказа, жалоба, "
                     "нестандартные условия, вопрос вне каталога и базы знаний. В summary кратко: кто клиент, "
-                    "что нужно, что уже подобрано.",
+                    "что нужно, что уже подобрано. Повторный вызов дополняет то же обращение: так добавляют "
+                    "контакт или новые детали.",
      "parameters": _obj({
          "reason": {"type": "string", "description": "причина одной фразой"},
          "summary": {"type": "string"},
@@ -215,7 +227,7 @@ EXAMPLES = {
     ],
     "get_product": [
         {"request": "на 50 пользователей на год, новая лицензия",
-         "params": {"product_id": "3935", "nodes": 50, "term_months": 12, "license_type": "Полная версия"}},
+         "params": {"product_id": "3935", "quantity": 50, "term_months": 12, "license_type": "новая"}},
     ],
     "kb_search": [
         {"request": "как я получу лицензию после оплаты", "params": {"query": "доставка электронной лицензии"}},
@@ -230,6 +242,7 @@ EXAMPLES = {
 
 
 _DROP_KEYS = {"url", "file", "sample_url", "has_children", "n_available", "qty_pricing", "nodes_min"}
+_AMBIGUOUS_ONLY = "same_code_prices"  # список цен артикула нужен, только когда выбрать одну нельзя
 _ONLY_TRUE = {"in_ru_registry", "russian_vendor", "price_on_request", "price_ambiguous", "has_price_on_request"}
 
 
@@ -249,6 +262,8 @@ def slim(name: str, out):
         if k == "price" and v is None:
             res[k] = "по запросу"
         elif (k in _DROP_KEYS and name != "kb_search") or (k in _ONLY_TRUE and not v):
+            continue
+        elif k == _AMBIGUOUS_ONLY and not out.get("price_ambiguous"):
             continue
         elif v is None or v == "" or (v in ([], {}) and k not in ("products", "offers", "results", "categories")):
             continue
