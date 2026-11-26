@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ИИ-консультант Softline Store: демо-стенд</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><b>Softline Store</b><span>демо-стенд ИИ-консультанта</span></div>
+  <nav><a href="/admin">Экран оператора</a><a href="https://github.com/simonsafronov/ai-support-agent" target="_blank" rel="noopener">Код</a></nav>
+</header>
+<main class="grid">
+  <section class="shop" aria-label="Витрина">
+    <h1>Каталог магазина</h1>
+    <p class="sub">Откройте товар: консультант увидит, с какой страницы пишет клиент.</p>
+    <form class="search" id="sf"><input id="sq" placeholder="Продукт, производитель или артикул" aria-label="Поиск по каталогу"><button>Найти</button></form>
+    <div class="ctx" id="ctx"><span id="ctxt"></span><button type="button" id="ctxoff">закрыть страницу</button></div>
+    <ul class="goods" id="goods"></ul>
+  </section>
+
+  <section class="chat" aria-label="Чат с консультантом">
+    <div class="chat-head">
+      <div><b>Консультант магазина</b><small>ИИ-помощник, подбирает ПО по каталогу</small></div>
+      <button type="button" id="new">Новый диалог</button>
+    </div>
+    <div class="log" id="log" aria-live="polite"></div>
+    <div class="starters" id="starters">
+      <p>Попробуйте сценарий:</p>
+      <button type="button">Нужен MDaemon Standard</button>
+      <button type="button">Не знаю, что нужно, но хотим защитить почту и файлы на 50 сотрудников</button>
+      <button type="button">Как я получу лицензию после оплаты?</button>
+    </div>
+    <form class="send" id="f"><textarea id="t" placeholder="Напишите вопрос" aria-label="Сообщение"></textarea><button id="b">Отправить</button></form>
+  </section>
+
+  <aside class="trace" aria-label="Ход работы агента">
+    <h2>Ход работы агента</h2>
+    <div class="meter">
+      <div><b id="m1">0</b><span>шагов</span></div>
+      <div><b id="m2">0</b><span>токенов</span></div>
+      <div><b id="m3">0 ₽</b><span>стоимость диалога</span></div>
+    </div>
+    <ol class="steps" id="steps"><li class="turn empty">Здесь появится каждый шаг: поиск в каталоге, уточнение вариантов, база знаний, проверка цен.</li></ol>
+  </aside>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

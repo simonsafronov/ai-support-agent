@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Экран оператора: ИИ-консультант Softline Store</title>
+<link rel="stylesheet" href="app.css">
+<style>
+.wrap{max-width:1680px;margin:0 auto;padding:var(--s32);display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s32);align-items:start}
+.kpi{grid-column:1/-1;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s16)}
+.kpi div{background:var(--panel);border-radius:var(--r);padding:var(--s16)}
+.kpi b{display:block;font-size:var(--f28);font-weight:400;line-height:1.2}
+.kpi span{font-size:var(--f12);color:var(--muted)}
+h2{margin-bottom:var(--s16)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:var(--s8) var(--s16) var(--s8) 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:500;font-size:var(--f12);color:var(--muted)}
+td.num,th.num{text-align:right;padding-right:0;white-space:nowrap}
+tbody tr{cursor:pointer}
+tbody tr:hover td,tbody tr.on td{background:var(--rose)}
+.tag{display:inline-block;padding:0 var(--s8);border-radius:var(--r);font-size:var(--f12);background:var(--panel);color:var(--navy);white-space:nowrap}
+.tag.h{background:var(--rose);color:var(--crimson-dark)}
+.block{margin-bottom:var(--s32)}
+.detail{position:sticky;top:var(--s16);max-height:calc(100vh - 32px);overflow:auto;border:1px solid var(--line);border-radius:var(--r);padding:var(--s16)}
+.detail .msg{max-width:100%;margin-bottom:var(--s8)}
+.detail .who{font-size:var(--f12);color:var(--muted);margin-top:var(--s16)}
+.st{font-size:var(--f12);border-left:2px solid var(--line);padding:var(--s4) 0 var(--s4) var(--s16);margin:var(--s4) 0;overflow-wrap:anywhere}
+.st.tool{border-color:var(--crimson)}.st.guard,.st.error{border-color:var(--navy)}
+.st b{font-weight:500}
+.st pre{margin:var(--s4) 0 0;white-space:pre-wrap;color:var(--muted);font:inherit;max-height:160px;overflow:auto}
+@media (max-width:1100px){.wrap{grid-template-columns:minmax(0,1fr);padding:var(--s16)}.kpi{grid-template-columns:repeat(2,minmax(0,1fr))}.detail{position:static;max-height:none}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><b>Softline Store</b><span>экран оператора</span></div>
+  <nav><a href="/">Чат покупателя</a></nav>
+</header>
+<div class="wrap">
+  <div class="kpi" id="kpi"></div>
+  <div>
+    <div class="block"><h2>Ждут менеджера</h2><table><thead><tr><th>Обращение</th><th>Причина</th><th>Что нужно клиенту</th><th>Контакт</th></tr></thead><tbody id="hand"></tbody></table></div>
+    <div class="block"><h2>Диалоги</h2><table><thead><tr><th>Начало</th><th>Первое сообщение</th><th>Итог</th><th class="num">Ходов</th><th class="num">Токенов</th><th class="num">Стоимость</th></tr></thead><tbody id="rows"></tbody></table></div>
+  </div>
+  <div class="detail" id="detail"><span class="empty">Выберите диалог: откроется переписка и каждый шаг агента с вызовами инструментов и токенами.</span></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const rub = (v) => v == null ? "нет данных" : Number(v).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽";
+const dt = (t) => new Date(t * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+const get = async (u) => (await fetch(u)).json();
+
+async function load() {
+  const [st, ss] = await Promise.all([get("/api/admin/stats"), get("/api/admin/sessions")]);
+  const pct = st.without_human_share == null ? "нет данных" : Math.round(st.without_human_share * 100) + "%";
+  $("kpi").innerHTML = [
+    [st.dialogs, "диалогов"], [pct, "закрыто без менеджера"], [st.quotes, "черновиков КП"],
+    [rub(st.cost_rub_per_turn), "стоимость одного запроса"], [rub(st.cost_rub_per_dialog), "стоимость диалога"],
+    [st.avg_model_seconds_per_turn == null ? "нет данных" : st.avg_model_seconds_per_turn + " с", "модель думает на запрос"],
+  ].map(([b, s]) => `<div><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join("");
+  $("hand").innerHTML = st.handoffs.map((h) => `<tr data-id="${esc(h.session_id)}"><td>№ ${h.id}<br><span class="tag">${dt(h.ts)}</span></td><td>${esc(h.reason)}</td><td>${esc(h.summary)}</td><td>${esc(h.contact || "не оставил")}</td></tr>`).join("")
+    || '<tr><td colspan="4" class="empty">Передач менеджеру пока нет.</td></tr>';
+  $("rows").innerHTML = ss.sessions.map((s) => `<tr data-id="${esc(s.id)}"><td>${dt(s.created_at)}</td><td>${esc((s.first || "").slice(0, 140))}</td>
+    <td>${s.status === "handoff" ? '<span class="tag h">менеджеру</span>' : '<span class="tag">агент</span>'}${s.quotes ? ' <span class="tag">КП</span>' : ""}</td>
+    <td class="num">${s.turns}</td><td class="num">${(s.prompt_tokens + s.completion_tokens).toLocaleString("ru-RU")}</td><td class="num">${rub(s.cost_rub)}</td></tr>`).join("")
+    || '<tr><td colspan="6" class="empty">Диалогов пока нет. Напишите в чат покупателя.</td></tr>';
+  document.querySelectorAll("tr[data-id]").forEach((tr) => (tr.onclick = () => open(tr.dataset.id)));
+}
+
+async function open(id) {
+  document.querySelectorAll("tr[data-id]").forEach((tr) => tr.classList.toggle("on", tr.dataset.id === id));
+  const d = await get("/api/admin/session/" + id);
+  const facts = Object.entries(d.session.facts || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join("; ");
+  let html = `<h2>Диалог ${esc(id)}</h2><div class="st">Стоимость ${rub(d.session.cost_rub)} · вызовов модели ${d.session.llm_calls} · инструментов ${d.session.tool_calls}${d.session.page_url ? " · страница " + esc(d.session.page_url) : ""}${facts ? "<br>Память о клиенте: " + facts : ""}</div>`;
+  let turn = 0;
+  for (const m of d.messages) {
+    if (m.role === "user") {
+      turn++;
+      html += `<div class="who">Клиент</div><div class="msg user">${esc(m.content)}</div>`;
+      for (const s of d.steps.filter((x) => x.turn === turn)) {
+        if (s.kind === "llm") {
+          const tc = s.output.tool_call;
+          html += `<div class="st"><b>Модель</b> ${esc(s.name)} · ${s.prompt_tokens}+${s.completion_tokens} токенов · ${s.seconds.toFixed(1)} с${tc ? " → вызывает " + esc(tc.name) : " → отвечает клиенту"}</div>`;
+        } else {
+          html += `<div class="st ${esc(s.kind)}"><b>${esc(s.name)}</b> ${esc(JSON.stringify(s.input))}<pre>${esc(JSON.stringify(s.output).slice(0, 1500))}</pre></div>`;
+        }
+      }
+    } else {
+      html += `<div class="who">Агент</div><div class="msg bot">${esc(m.content)}</div>`;
+      for (const c of m.meta.cards || []) html += `<div class="st">Карточка: ${esc(c.title)}${c.price ? ", " + rub(c.price) : ""}</div>`;
+    }
+  }
+  for (const q of d.quotes) html += `<div class="st tool"><b>КП ${esc(q.number)}</b> ${esc(q.customer)}, итого ${rub(q.total)} · <a href="/quotes/${esc(q.number)}.pdf" target="_blank" rel="noopener">открыть PDF</a></div>`;
+  $("detail").innerHTML = html;
+}
+load(); setInterval(load, 15000);
+</script>
+</body>
+</html>
