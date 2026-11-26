@@ -7,7 +7,7 @@ const rid = () => Math.random().toString(16).slice(2, 10) + Date.now().toString(
 const state = {
   session: localStorage.getItem("session") || "",
   client: localStorage.getItem("client") || (() => { const c = rid(); localStorage.setItem("client", c); return c; })(),
-  page: "", busy: false, steps: 0, tokens: 0, cost: 0,
+  page: "", busy: false, steps: 0, tokens: 0, cost: 0, seen: 0,
 };
 
 const TOOL = {
@@ -49,7 +49,7 @@ function card(c) {
 }
 
 function showReply(r) {
-  if (r.reply) add("msg bot", text(r.reply));
+  if (r.reply) add(r.from === "manager" ? "msg bot mgr" : "msg bot", text(r.reply));
   for (const c of r.cards || []) add("card", card(c));
   for (const e of r.events || []) {
     if (e.type === "quote") add("card doc", `<div class="t">Черновик КП ${esc(e.number)}</div><div class="row"><span>${e.total ? "Итого " + rub(e.total) : ""}</span><a class="go" href="${esc(e.url)}" target="_blank" rel="noopener">Открыть PDF</a></div>`);
@@ -176,7 +176,7 @@ $("t").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDef
 $("starters").querySelectorAll("button").forEach((b) => (b.onclick = () => send(b.textContent)));
 $("new").onclick = () => {
   state.session = ""; localStorage.removeItem("session");
-  state.steps = state.tokens = state.cost = 0; meter({});
+  state.steps = state.tokens = state.cost = state.seen = 0; meter({});
   $("log").innerHTML = ""; $("steps").innerHTML = ""; $("starters").hidden = false;
   step("turn", "Новый диалог. Память о клиенте сохранена.");
   hello();
@@ -200,6 +200,22 @@ async function goods(q) {
 $("sf").onsubmit = (e) => { e.preventDefault(); goods($("sq").value.trim()); };
 $("ctxoff").onclick = () => { state.page = ""; $("ctx").classList.remove("on"); };
 
+// Ответ менеджера приходит в этот же чат: пока страница открыта, чат раз в несколько секунд спрашивает о новых
+async function answersPoll() {
+  if (!state.session || state.busy || document.hidden) return;
+  try {
+    const r = await fetch(`/api/session/${state.session}/answers?client_id=${encodeURIComponent(state.client)}&after=${state.seen}`);
+    if (!r.ok) return;
+    for (const m of (await r.json()).answers || []) {
+      if (m.id <= state.seen) continue;
+      state.seen = m.id;
+      showReply({ reply: m.content, from: "manager" });
+      step("turn", "Менеджер ответил в чат");
+    }
+  } catch (e) { /* связь пропала: спросим на следующем круге */ }
+}
+setInterval(answersPoll, 4000);
+
 // Какая модель отвечает и на связи ли она: если нет, вопрос сразу уйдет менеджеру, и клиент видит это заранее
 async function model() {
   try {
@@ -222,7 +238,10 @@ model(); setInterval(model, 30000);
       const s = r.ok ? await r.json() : {};
       if ((s.messages || []).length) {
         $("starters").hidden = true;
-        for (const m of s.messages) m.role === "user" ? add("msg user", esc(m.content)) : showReply({ reply: m.content, cards: m.cards, events: m.events });
+        for (const m of s.messages) {
+          if (m.from === "manager") state.seen = m.id;
+          m.role === "user" ? add("msg user", esc(m.content)) : showReply({ reply: m.content, from: m.from, cards: m.cards, events: m.events });
+        }
         return;
       }
     } catch (e) { /* история не загрузилась: начинаем с приветствия */ }

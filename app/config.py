@@ -80,3 +80,13 @@ MODEL_BUDGET_HALF_YEAR_RUB = float(env("MODEL_BUDGET_HALF_YEAR_RUB", "7000"))  #
 # Сколько своих прокси стоит перед сервером (стенд за одним Caddy). Адрес клиента для лимита частоты берется
 # из X-Forwarded-For с конца: начало списка задает сам клиент. 0 = прокси нет, берется адрес соединения
 PROXY_HOPS = int(env("PROXY_HOPS", "1"))
+
+# Обращения менеджеру в Telegram (app/notify.py): ключ бота и номер чата менеджеров. Пусто = только экран оператора
+TG_TOKEN = env("TG_TOKEN", "")
+TG_CHAT = env("TG_CHAT", "")
+PUBLIC_URL = env("PUBLIC_URL", "")  # адрес стенда: кнопка "Экран оператора" под карточкой обращения в Telegram
+
+# Описание продукта с его страницы в магазине (app/catalog/cards.py): агент получает его вместе с вариантами лицензий
+CARDS_DB = Path(env("CARDS_DB", str(ROOT / "data/db/cards.sqlite")))
+PRODUCT_CARDS = env("PRODUCT_CARDS", "1") == "1"  # 0 = описаний не запрашивать, агент работает только по фиду
+ABOUT_LIMIT = int(env("ABOUT_LIMIT", "1200"))     # сколько знаков описания отдавать модели

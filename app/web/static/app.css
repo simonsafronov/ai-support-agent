@@ -57,6 +57,7 @@ h2{font-size:var(--f18);font-weight:600}
 .msg{max-width:88%;padding:var(--s8) var(--s16);border-radius:var(--r);white-space:pre-wrap;overflow-wrap:anywhere}
 .msg.user{align-self:flex-end;background:var(--navy);color:#fff}
 .msg.bot{align-self:flex-start;background:var(--panel)}
+.msg.mgr{background:#fff;border:1px solid var(--crimson)}
 .msg.sys{align-self:center;max-width:100%;background:var(--rose);color:var(--crimson-dark);font-size:var(--f12);text-align:center}
 .msg b{font-weight:600}
 .typing{align-self:flex-start;color:var(--muted);font-size:var(--f12);padding-left:var(--s4)}

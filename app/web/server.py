@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import cases, config, economy, store
+from app import cases, config, economy, notify, store
 from app.agent import handoff_card, llm, loop, proof
 from app.catalog import search as catalog, update as catalog_update
 from app.kb import answers, search as kb
@@ -34,6 +34,7 @@ STATIC = Path(__file__).parent / "static"
 async def lifespan(_app):
     if config.FEED_URL:  # каталог обновляется с фида раз в сутки, пока работает сервер
         threading.Thread(target=_daily_update, daemon=True).start()
+    notify.start(manager_answer)  # карточки обращений в Telegram и ответы менеджеров оттуда, если бот настроен
     yield
 
 
@@ -372,10 +373,20 @@ def session(session_id: str, client_id: str = Query("", max_length=64)):
     if s is None:
         raise HTTPException(404, "нет такого диалога")
     return {"session_id": s["id"], "status": s["status"],
-            "messages": [{"role": m["role"], "content": m["content"], "from": m["meta"].get("from", ""),
+            "messages": [{"id": m["id"], "role": m["role"], "content": m["content"], "from": m["meta"].get("from", ""),
                           "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
                           "events": sign_links(m["meta"].get("events", []))}
                          for m in store.messages(session_id)]}
+
+
+@app.get("/api/session/{session_id}/answers")
+def session_answers(session_id: str, client_id: str = Query("", max_length=64), after: int = 0):
+    """Новые ответы менеджера для открытого чата: чат спрашивает о них, пока клиент на странице."""
+    s = store.find_session(own_session(session_id, client_id))
+    if s is None:
+        raise HTTPException(404, "нет такого диалога")
+    return {"answers": [{"id": m["id"], "content": m["content"]} for m in store.messages(session_id)
+                        if m["id"] > after and m["meta"].get("from") == "manager"]}
 
 
 # Витрина без запроса: продукты, о которых чаще всего спрашивают в обращениях (docs/chat_analysis.md)
@@ -488,16 +499,24 @@ class AnswerIn(BaseModel):
     teach: bool = False
 
 
-@app.post("/api/admin/handoff/{handoff_id}/answer", dependencies=[Depends(admin)])
-def admin_answer(handoff_id: int, body: AnswerIn):
-    """Ответ менеджера на обращение: клиент видит его в чате; общий ответ становится знанием агента."""
+def manager_answer(handoff_id: int, answer: str, teach: bool = False) -> dict | None:
+    """Ответ менеджера с экрана оператора или из Telegram: клиент видит его в чате, общий ответ становится знанием."""
     h = store.db().execute("SELECT * FROM handoffs WHERE id=?", (handoff_id,)).fetchone()
     if h is None:
-        raise HTTPException(404, "нет такого обращения")
+        return None
     asked = [m["content"] for m in store.messages(h["session_id"]) if m["role"] == "user"][-3:]
     # вопрос и ответ остаются в знаниях дольше диалога и уходят в модель: контакты и реквизиты из них убираются
     question = _for_knowledge(" ".join(asked))[:600] + " | " + h["reason"] + ": " + _for_knowledge(h["summary"])
-    return answers.add(handoff_id, body.answer.strip(), body.teach, question, _for_knowledge(body.answer.strip()))
+    return answers.add(handoff_id, answer, teach, question, _for_knowledge(answer))
+
+
+@app.post("/api/admin/handoff/{handoff_id}/answer", dependencies=[Depends(admin)])
+def admin_answer(handoff_id: int, body: AnswerIn):
+    """Ответ менеджера на обращение с экрана оператора."""
+    done = manager_answer(handoff_id, body.answer.strip(), body.teach)
+    if done is None:
+        raise HTTPException(404, "нет такого обращения")
+    return done
 
 
 @app.get("/api/admin/export.csv", dependencies=[Depends(admin)])
