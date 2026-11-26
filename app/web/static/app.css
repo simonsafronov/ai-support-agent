@@ -19,8 +19,8 @@ button{font:inherit;cursor:pointer}
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 .top{display:flex;align-items:center;justify-content:space-between;gap:var(--s16);height:64px;padding:0 max(var(--gut),calc((100vw - var(--page))/2 + var(--gut)));border-bottom:1px solid var(--line)}
-.brand{display:flex;align-items:baseline;gap:var(--s8);min-width:0}
-.brand b{font-weight:600;font-size:var(--f18);color:var(--crimson);letter-spacing:-.01em;white-space:nowrap}
+.brand{display:flex;align-items:center;gap:var(--s16);min-width:0}
+.brand img{display:block;height:28px;width:auto;flex:none}
 .brand span{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .top nav{display:flex;gap:var(--s24)}
 .top nav a{color:var(--navy);text-decoration:none;white-space:nowrap}
