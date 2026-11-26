@@ -92,6 +92,8 @@ h2{font-size:var(--f18);font-weight:600}
 .card a.go:hover{background:var(--crimson-dark)}
 .card .take{border:1px solid var(--crimson);border-radius:var(--r);background:#fff;color:var(--crimson);padding:var(--s4) var(--s16);font-size:var(--f14)}
 .card .take:hover{background:var(--rose)}
+.fresh{align-self:flex-start;margin-top:calc(var(--s16) * -.5);font-size:var(--f12);color:var(--muted)}
+.fresh:empty{display:none}
 .card.doc{border-color:var(--crimson)}
 .card.doc .sum{font-size:var(--f18);font-weight:600;color:var(--ink)}
 .card.doc.old{border-color:var(--line);opacity:.6}
@@ -157,6 +159,7 @@ h2{font-size:var(--f18);font-weight:600}
   .chat-head .acts button{flex:1}
   .log{padding:var(--s16) var(--s8);gap:var(--s8)}
   .log .msg.bot,.log .card{max-width:100%;width:100%}
+  .fresh{margin-top:calc(var(--s8) * -.5)}
   .starters{flex-wrap:nowrap;overflow-x:auto;margin:0 calc(-1 * var(--s8));padding:0 var(--s8) var(--s4)}
   .starters p{display:none}
   .starters button{flex:none;max-width:80%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

@@ -125,11 +125,54 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
 .ans div,.case div{display:flex;gap:var(--s8);align-items:center;flex-wrap:wrap}
 .hint{font-size:var(--f12);color:var(--crimson-dark)}
 
+/* Было -> стало: четыре замера рядом, у каждого подпись, чье это число */
+.ba{border:1px solid var(--line);border-radius:var(--r);padding:var(--s16) var(--s24) var(--s24)}
+.ba h2{margin-bottom:var(--s16)}
+.ba .rows{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s24)}
+.ba .m{display:grid;gap:var(--s8);align-content:start}
+.ba .was,.ba .now{display:grid;gap:var(--s4);margin:0}
+.ba .was b{font-size:var(--f18);font-weight:400;color:var(--muted)}
+.ba .now b{font-size:var(--f28);font-weight:400;line-height:1.2}
+.ba .arr{color:var(--crimson);font-size:var(--f18);line-height:1}
+.ba .nt{font-size:var(--f12);color:var(--muted)}
+.ba .who{display:inline-block;justify-self:start;padding:0 var(--s8);border-radius:var(--r);font-size:var(--f12);background:var(--panel);color:var(--navy)}
+
+/* Три блока по сохраненным диалогам: чего нет в каталоге, причины передач, проблемные диалоги */
+.blocks{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s32)}
+.blk{min-width:0}
+.blk.wide{grid-column:1/-1}
+.blk .why{margin:0 0 var(--s16);font-size:var(--f12);color:var(--muted)}
+.gt{table-layout:fixed}
+.gt th:nth-child(1){width:30%}.gt th:nth-child(2){width:96px}.gt th:nth-child(3){width:230px}
+.gt .num{text-align:left;padding-left:0}
+.gt tbody tr{cursor:default}
+.gt tbody tr:hover td{background:none}
+.gt td:first-child{white-space:normal;overflow-wrap:anywhere}
+.gt td.ex{color:var(--muted);font-size:var(--f12)}
+.gmore{margin-top:var(--s16)}
+.rs{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:var(--s4) var(--s16);margin:0;align-items:center}
+.rs dt{overflow-wrap:anywhere}
+.rs dd{margin:0;text-align:right;white-space:nowrap}
+.rs dd.fill{grid-column:1/-1;height:6px;background:var(--panel);border-radius:3px;margin-bottom:var(--s8);overflow:hidden}
+.rs dd.fill i{display:block;height:100%;background:var(--navy)}
+.rs .zero{color:var(--muted)}
+.pl{list-style:none;margin:var(--s16) 0 0;padding:0;display:grid;gap:var(--s8)}
+.pl li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--s4) var(--s16);align-items:start;padding:var(--s8) 0;border-bottom:1px solid var(--line)}
+.pl .why2{grid-column:2;font-size:var(--f12);color:var(--muted)}
+.pl .btn,.pl .tag{align-self:start}
+.rules{margin:var(--s8) 0 0;font-size:var(--f12);color:var(--muted)}
+.sc{display:inline-block;min-width:24px;text-align:center;padding:0 var(--s8);border-radius:var(--r);font-size:var(--f12);background:var(--panel);color:var(--navy)}
+.sc.bad{background:var(--crimson);color:#fff}
+.btn.mini{padding:var(--s4) var(--s8)}
+.rsn{display:block;font-size:var(--f12);color:var(--crimson-dark)}
+
 @media (max-width:1100px){
   .wrap{padding:var(--s16)}
   .kpi{grid-template-columns:repeat(3,minmax(0,1fr))}
   .kpi a{grid-column:1/-1}
   .eco .body,.eco .res{grid-template-columns:minmax(0,1fr)}
+  .ba .rows{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .blocks{grid-template-columns:minmax(0,1fr)}
   .work{grid-template-columns:minmax(0,1fr);grid-template-areas:"q" "d" "t"}
   .detail{position:static;max-height:none}
   .detail:not(.has){display:none}
@@ -139,18 +182,25 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
   .kpi{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s8)}
   .kpi>*{padding:var(--s8) var(--s16)}
   .kpi b{font-size:var(--f18)}
-  .eco summary,.eco .body{padding-left:var(--s16);padding-right:var(--s16)}
+  .eco summary,.eco .body,.ba{padding-left:var(--s16);padding-right:var(--s16)}
+  .ba .rows{grid-template-columns:minmax(0,1fr)}
+  #gapr tr{display:grid;gap:var(--s4);padding:var(--s8) 0;border-bottom:1px solid var(--line)}
+  #gapr td{border:0;padding:0}
+  .gt thead{display:none}
+  #gapr td[data-l]::before{content:attr(data-l) ": ";color:var(--muted);font-weight:400}
+  .gt td.num{text-align:left;padding:0}
   .eco summary .more{margin-left:0}
   .seg{display:flex;width:100%}.seg button{flex:1 1 auto;justify-content:center}
   .find{width:100%}
   .card .row{grid-template-columns:minmax(0,1fr);gap:0}
   .card .hd .due{margin-left:0;flex-basis:100%}
   #dialogs thead{display:none}
-  #dialogs tbody tr{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--s4) var(--s8);padding:var(--s8) 0;border-bottom:1px solid var(--line)}
+  #dialogs tbody tr{display:grid;grid-template-columns:auto auto auto minmax(0,1fr);gap:var(--s4) var(--s8);padding:var(--s8) 0;border-bottom:1px solid var(--line)}
   #dialogs tbody tr:hover,#dialogs tbody tr.on{background:var(--rose)}
   #dialogs td{border:0;padding:0;background:none!important}
   #dialogs td:nth-child(2){grid-column:1/-1;grid-row:1;overflow-wrap:break-word}
-  #dialogs td:nth-child(4),#dialogs td:nth-child(5){display:none}
+  #dialogs td:nth-child(5),#dialogs td:nth-child(6){display:none}
+  #dialogs td:nth-child(7){text-align:right}
   #dialogs td.empty{grid-column:1/-1}
 }
 /* Зоны нажатия на телефоне и сенсорном экране не меньше 44px */
@@ -176,7 +226,25 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
   <div class="kpi" id="kpi"></div>
   <details class="eco" id="eco"><summary id="ecosum"><b>Экономика</b><span class="more">расчет и допущения</span></summary>
     <div class="body"><div class="res" id="ecores"></div><div class="in" id="ecoin"></div><p class="warn" id="ecowarn" role="alert" hidden></p></div></details>
+  <section class="ba" id="ba" aria-labelledby="bah"><h2 id="bah">Было → стало</h2><div class="rows" id="barows"></div></section>
   <div class="bar"><p><span id="cat"></span><br><span id="learn"></span></p><button type="button" class="btn op" id="upd">Обновить каталог сейчас</button><button type="button" class="btn op" id="exp">Выгрузить журнал диалогов (CSV)</button></div>
+  <div class="blocks" id="insights">
+    <section class="blk wide" id="gaps" aria-labelledby="gh">
+      <div class="head"><h2 id="gh">Чего нет в каталоге<small id="gn"></small></h2></div>
+      <p class="why">Сигнал спроса для категорийных менеджеров и контента магазина: что просят клиенты, а агент не смог закрыть каталогом.</p>
+      <table class="gt"><thead><tr><th>Запрос</th><th class="num">Сколько раз</th><th>Откуда</th><th>Пример</th></tr></thead><tbody id="gapr"></tbody></table>
+      <button type="button" class="btn gmore" id="gapmore" hidden></button>
+    </section>
+    <section class="blk" id="reasons" aria-labelledby="rh">
+      <div class="head"><h2 id="rh">Причины передач<small id="rn"></small></h2></div>
+      <dl class="rs" id="rsl"></dl>
+    </section>
+    <section class="blk" id="probs" aria-labelledby="ph">
+      <div class="head"><h2 id="ph">Проблемные диалоги<small id="pn"></small></h2></div>
+      <p class="rules" id="prules"></p>
+      <ul class="pl" id="pl"></ul>
+    </section>
+  </div>
   <div class="work">
     <section id="queue" aria-labelledby="qh">
       <div class="head"><h2 id="qh">Обращения к менеджеру<small id="handn" aria-live="polite"></small></h2>
@@ -185,9 +253,9 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
     </section>
     <section id="dialogs" aria-labelledby="dlh">
       <div class="head"><h2 id="dlh">Диалоги<small id="rown"></small></h2>
-        <div class="seg" role="group" aria-label="Какие диалоги показать" id="rseg"><button type="button" data-r="all" aria-pressed="true">Все</button><button type="button" data-r="handoff" aria-pressed="false">Менеджеру</button><button type="button" data-r="agent" aria-pressed="false">Агент</button><button type="button" data-r="quote" aria-pressed="false">С КП</button></div>
+        <div class="seg" role="group" aria-label="Какие диалоги показать" id="rseg"><button type="button" data-r="all" aria-pressed="true">Все</button><button type="button" data-r="handoff" aria-pressed="false">Менеджеру</button><button type="button" data-r="agent" aria-pressed="false">Агент</button><button type="button" data-r="quote" aria-pressed="false">С КП</button><button type="button" data-r="bad" aria-pressed="false">Проблемные</button></div>
         <input type="search" class="find" id="find" placeholder="Поиск по первому сообщению" aria-label="Поиск по первому сообщению клиента"></div>
-      <table><thead><tr><th>Обновлен, МСК</th><th>Первое сообщение</th><th>Итог</th><th class="num">Ходов</th><th class="num">Токенов</th><th class="num">Стоимость</th></tr></thead><tbody id="rows"></tbody></table>
+      <table><thead><tr><th>Обновлен, МСК</th><th>Первое сообщение</th><th>Итог</th><th class="num">Оценка</th><th class="num">Ходов</th><th class="num">Токенов</th><th class="num">Стоимость</th></tr></thead><tbody id="rows"></tbody></table>
     </section>
     <aside class="detail" id="detail" aria-label="Панель диалога"><span class="empty">Выберите обращение или диалог: откроется переписка, ответ клиенту и каждый шаг агента.</span></aside>
   </div>
