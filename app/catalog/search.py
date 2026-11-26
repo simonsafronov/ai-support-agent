@@ -629,6 +629,10 @@ def search_products(query: str, vendor: str | None = None, category_id: int | No
 
     found, match = _collect(conn, q, where, params)
     result = {"query": query, "total": found.relevant(), "match": match, "products": found.top(limit)}
+    if match == "none":
+        result["note"] = ("По этим словам в каталоге ничего нет. Общее название класса ПО в названиях товаров "
+                          "встречается редко: повторите поиск по названию конкретного продукта этого класса или "
+                          "найдите раздел через browse_categories.")
     if match in ("partial", "fuzzy"):
         result["note"] = "Точного совпадения нет: в найденном совпала только часть слов запроса или похожие слова."
         if q.absent:
@@ -930,7 +934,12 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
     result.update({key: value for key, value in optional.items() if value})
     if len(rows) > len(result["offers"]):
         result["shown"] = (f"показаны {len(result['offers'])} из {len(rows)}, от дешевых к дорогим; "
-                           "остальные откроются, если сузить фильтром из clarify или словом в text")
+                           "остальные откроются, если сузить фильтром из clarify или словом в text. "
+                           "Вилку цен называйте по all_matching, а не по показанным")
+        priced = [r["price"] for r in rows if r["price"] is not None]
+        result["all_matching"] = {"price_min": _money(min(priced)) if priced else None,
+                                  "price_max": _money(max(priced)) if priced else None,
+                                  "without_price": len(rows) - len(priced)}
     if not rows and all_rows:
         result.update(_relaxed(all_rows, filters, order, limit))
     return result

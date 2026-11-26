@@ -387,3 +387,19 @@ def test_live_search_says_when_word_is_not_in_catalog():
     assert res["match"] in ("partial", "fuzzy", "none")
     if res["match"] != "none":
         assert "rupost" in res["note"]
+
+
+def test_price_range_covers_all_matching_not_only_shown():
+    """Вилка цен по всем подходящим вариантам, а не по шести показанным."""
+    pid = search_products("Kaspersky Endpoint Security", limit=1)["products"][0]["product_id"]
+    res = get_product(pid, limit=6)
+    assert res["matching"] > len(res["offers"]) and "all_matching" in res["shown"]
+    prices = [o["price"] for o in get_product(pid, limit=100)["offers"] if o["price"] is not None]
+    if res["matching"] <= 100:
+        assert res["all_matching"]["price_min"] == min(prices) and res["all_matching"]["price_max"] == max(prices)
+    assert res["all_matching"]["price_max"] >= max(o["price"] or 0 for o in res["offers"])
+
+
+def test_empty_search_tells_how_to_search_further():
+    res = search_products("зщшгнекуц", limit=3)
+    assert res["match"] == "none" and "названию конкретного продукта" in res["note"]

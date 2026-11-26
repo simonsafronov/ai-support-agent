@@ -67,13 +67,24 @@ def save_facts(ctx, facts: dict) -> dict:
     """Запоминает сказанное клиентом о себе. Ключи: поля FACT_FIELDS или их русские названия."""
     saved = {}
     for k, v in facts.items():
-        key = _FACT_KEYS.get(str(k).strip().lower())
-        if key and str(v).strip():
-            saved[key] = str(v).strip()[:300]
+        key, v = _FACT_KEYS.get(str(k).strip().lower()), str(v).strip()
+        if key and v and not (key == "контакт" and "[" in v):  # метку вместо контакта не пишем: настоящий уже записан
+            saved[key] = v[:300]
     if saved:
         ctx.facts.update(saved)
         store.update_session(ctx.session_id, facts=ctx.facts)
+        ticket = store.open_handoff(ctx.session_id)
+        if ticket:  # обращение уже у менеджера: новое от клиента дописывается в него без вызова модели
+            extra = "; ".join(f"{k}: {v}" for k, v in saved.items() if k != "контакт" and v not in ticket["summary"])
+            store.update_handoff(ticket["id"], ticket["summary"] + (f"\nКлиент дополнил: {extra}." if extra else ""),
+                                 saved.get("контакт") or ticket["contact"])
     return {"saved": saved, "known": ctx.facts}
+
+
+def _contact(ctx, given: str) -> str:
+    """Модель видит вместо почты и телефона метки: настоящий контакт подставляется из памяти диалога."""
+    real = ctx.facts.get("контакт", "")
+    return real if real and (not given or "[" in given) else given
 
 
 def _calc_total(ctx, items: list[dict]):
@@ -104,13 +115,15 @@ def _calc_total(ctx, items: list[dict]):
 
 
 def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", payment: str = "", contact: str = ""):
-    res = kp.make_quote(ctx.session_id, customer=customer, items=items, inn=inn, payment=payment, contact=contact)
+    res = kp.make_quote(ctx.session_id, customer=customer, items=items, inn=inn, payment=payment,
+                        contact=_contact(ctx, contact))
     if res.get("ok"):
         ctx.events.append({"type": "quote", **{k: res[k] for k in ("number", "url", "total")}})
     return res
 
 
 def _handoff(ctx, reason: str, summary: str, contact: str = ""):
+    contact = _contact(ctx, contact)
     old = store.open_handoff(ctx.session_id)
     if old:  # обращение уже у менеджера: дополняем его, а не заводим второе
         store.update_handoff(old["id"], summary or old["summary"], contact or old["contact"])
@@ -119,8 +132,9 @@ def _handoff(ctx, reason: str, summary: str, contact: str = ""):
     hid = store.add_handoff(ctx.session_id, reason, summary, contact)
     ctx.events.append({"type": "handoff", "id": hid, "reason": reason})
     return {"ok": True, "ticket": hid,
-            "note": "Обращение передано менеджеру. Скажите клиенту, что менеджер ответит в рабочее время, "
-                    "и уточните контакт для связи, если его еще нет."}
+            "note": "Обращение передано менеджеру. Скажите клиенту, что менеджер ответит в рабочее время"
+                    + (": контакт клиента в обращении есть." if contact
+                       else ", и попросите почту или телефон для связи.")}
 
 
 TOOLS = [

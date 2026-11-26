@@ -27,13 +27,14 @@ ASK = {  # о чем агент должен спросить -> по каким
     "term": r"срок|на год|года|лет|месяц|бессрочн",
     "license_type": r"продлен|нов[аоу][яйю]|подписк|первичн|тип лицензи",
     "org_type": r"организаци|юрлиц|юридическ|физлиц|физическ|коммерческ|государствен|образовательн|частн",
-    "version": r"верси|редакци|выпуск",
+    "version": r"верси|редакци|выпуск|релиз",
     "platform": r"платформ|операционн|windows|linux|macos|\bос\b",
-    "task": r"задач|для чего|что именно|какие функции|что нужно|что требуется",
+    "task": r"задач|для чего|что именно|какие функции|что нужно|что требуется|какой продукт|на что|что подобрать",
     "budget": r"бюджет|ориентир по цене|сумм",
     "infrastructure": r"инфраструктур|сервер|облак|операционн|почтов|windows|linux|где развернут",
     "contact": r"почт|телефон|контакт|e-mail|email|связаться",
 }
+REQUEST = re.compile(r"\?|напишите|укажите|назовите|уточните|подскажите|сообщите")  # вопрос или просьба уточнить
 DISCOUNT = re.compile(r"(дадим|дам|сделаем|сделаю|предоставим|предоставлю|получите|гарантиру\w+)\s+(вам\s+)?скидк", re.I)
 
 
@@ -66,7 +67,8 @@ def check(case: dict, run: dict) -> dict:
     out["ответил_сам"] = all(r != loop.FALLBACK for r in replies)
     out["нужный_инструмент"] = any(t in tools for t in exp["tools_any"]) if exp["tools_any"] else None
     out["упомянул_ожидаемое"] = any(m in low for m in exp["mention_any"]) if exp["mention_any"] else None
-    out["передача_менеджеру"] = ("handoff" in events) if exp["handoff"] else ("handoff" not in events)
+    # "any": по данным каталога и справки верны оба исхода (ответа в них нет, передать менеджеру допустимо)
+    out["передача_менеджеру"] = None if exp["handoff"] == "any" else ("handoff" in events) == bool(exp["handoff"])
     out["черновик_кп"] = ("quote" in events) if exp["quote"] else None
 
     # цены: любая сумма в ответах должна быть в данных инструментов этого диалога или в словах клиента
@@ -81,7 +83,7 @@ def check(case: dict, run: dict) -> dict:
     ask = [a for a in exp["ask_about"] if a in ASK]
     if ask:  # в первом ответе должен быть вопрос хотя бы об одном недостающем параметре
         first = replies[0].lower()
-        out["уточнил_недостающее"] = "?" in first and any(re.search(ASK[a], first) for a in ask)
+        out["уточнил_недостающее"] = bool(REQUEST.search(first)) and any(re.search(ASK[a], first) for a in ask)
     else:
         out["уточнил_недостающее"] = None
     if "more_than_one_question_per_message" in exp["must_not"]:

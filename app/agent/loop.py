@@ -26,6 +26,14 @@ _NUMBER = re.compile(r"\d[\d\s\u00a0\u202f]*(?:[.,]\d{1,2})?")
 _MARK = re.compile(r"\[\[(product|offer):\s*([\w-]+)\]\]")
 _CHOICES = re.compile(r"\[\[choices:\s*(.+?)\]\]", re.S)
 _FACTS = re.compile(r"\[\[facts:\s*(.+?)\]\]", re.S)
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_PHONE = re.compile(r"(?<![\w+])(?:\+7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?!\d)")
+
+
+def mask_contacts(text: str) -> tuple[str, list[str]]:
+    """Почта и телефон клиента в модель не уходят: вместо них метки, сами значения видит только оператор."""
+    found = _EMAIL.findall(text) + _PHONE.findall(text)
+    return _PHONE.sub("[телефон]", _EMAIL.sub("[email]", text)), found
 
 
 def _num(s: str) -> float | None:
@@ -138,6 +146,8 @@ def render(text: str) -> tuple[str, list[dict], list[str]]:
                                   "url": p.get("url")})
         except (ValueError, KeyError, TypeError):
             pass
+    titles = {(c["type"], str(c["id"])): c["title"] for c in cards}
+    text = re.sub(_MARK.pattern + r"(?=\s*\()", lambda m: titles.get((m.group(1), m.group(2)), ""), text)
     choices = []
     m = _CHOICES.search(text)
     if m:
@@ -162,7 +172,8 @@ def take_facts(text: str) -> dict:
 
 def _history(session_id: str) -> list[dict]:
     msgs = store.messages(session_id, limit=HISTORY_MESSAGES)
-    return [{"role": m["role"], "content": m["content"]} for m in msgs if m["role"] in ("user", "assistant")]
+    return [{"role": m["role"], "content": mask_contacts(m["content"])[0] if m["role"] == "user" else m["content"]}
+            for m in msgs if m["role"] in ("user", "assistant")]
 
 
 def cost_rub(prompt_tokens: int, completion_tokens: int) -> float:
@@ -180,6 +191,11 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     store.add_message(sid, "user", text)
 
     ctx = tools.ToolContext(sid, facts=dict(s["facts"]))
+    contacts = mask_contacts(text)[1]
+    if contacts:  # контакт запоминается кодом: модель видит только метку, менеджер получает настоящий адрес
+        known_contacts = [c for c in ctx.facts.get("контакт", "").split(", ") if c]
+        tools.save_facts(ctx, {"contact": ", ".join(dict.fromkeys(known_contacts + contacts))})
+        s["facts"] = dict(ctx.facts)
     items = s["items"]
     known = {round(o["price"]) for o in items.get("offers", []) if o.get("price")}
     known.update(items.get("prices", []))  # суммы из прошлых ходов: итог расчета или КП можно повторить
@@ -225,8 +241,9 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             msgs.append({"role": "assistant", "content": res.text})
             msgs.append({"role": "user", "content":
                          "[Служебная проверка, клиент этого не видит] В ответе названы суммы, которых нет в данных "
-                         f"каталога: {', '.join(bad)}. Перепишите ответ клиенту: цены только из результатов "
-                         "инструментов; где цены нет, напишите 'цена по запросу'."})
+                         f"каталога: {', '.join(bad)}. Перепишите ответ клиенту: суммы только из результатов "
+                         "инструментов этого диалога. Сумму из справки или свой расчет уберите; итог за несколько "
+                         "лицензий получите через calc_total."})
             continue
         reply = res.text if not bad else _MONEY.sub("цена по запросу", res.text)
         break

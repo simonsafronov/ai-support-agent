@@ -217,3 +217,27 @@ def test_second_handoff_updates_the_same_ticket():
         "Спасибо, менеджер напишет на эту почту."]))
     assert second["trace"][0]["output"]["updated"] and not second["events"]      # второго обращения нет
     assert store.open_handoff(sid)["contact"] == "it@romashka.ru"
+
+
+def test_contact_is_hidden_from_model_and_reaches_manager():
+    llm = Scripted([
+        {"name": "handoff_to_manager", "args": {"reason": "скидка", "summary": "Просит скидку", "contact": "[email]"}},
+        "Передал запрос менеджеру, он ответит в рабочее время.",
+        "Менеджер учтет это.\n[[facts: users=40]]",
+    ])
+    res = loop.run_turn(None, "Нужна скидка, пишите на ivanov@romashka.example или +7 (912) 345-67-89", llm=llm)
+    seen = " ".join(m["content"] or "" for call in llm.calls for m in call)
+    assert "ivanov@" not in seen and "345-67-89" not in seen
+    assert "[email]" in seen and "[телефон]" in seen and "контакт: получен, скрыт защитой" in llm.calls[0][0]["content"]
+    ticket = store.open_handoff(res["session_id"])
+    assert ticket["contact"] == "ivanov@romashka.example, +7 (912) 345-67-89"
+    # следующий ход: модель знает, что контакт есть, а новое от клиента попадает в то же обращение без вызова модели
+    loop.run_turn(res["session_id"], "Нас 40 человек, запасная почта petrov@romashka.example", llm=llm)
+    ticket = store.open_handoff(res["session_id"])
+    assert "petrov@romashka.example" in ticket["contact"] and "пользователей: 40" in ticket["summary"]
+    assert store.messages(res["session_id"])[0]["content"].count("ivanov@romashka.example") == 1  # оператор видит как есть
+
+
+def test_marker_used_instead_of_name_gets_the_name(offer):
+    clean, cards, _ = loop.render(f"Есть варианты, например [[offer:{offer['offer_id']}]] (цена в карточке).")
+    assert cards and cards[0]["title"] in clean and "например (" not in clean
