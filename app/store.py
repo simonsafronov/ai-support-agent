@@ -191,7 +191,7 @@ def add_quote(session_id: str, number: str, customer: str, items: list[dict], to
 
 
 def last_quote(session_id: str) -> dict | None:
-    row = db().execute("SELECT id, number, customer, total FROM quotes WHERE session_id=? ORDER BY id DESC LIMIT 1",
+    row = db().execute("SELECT id, number, customer, total, items_json FROM quotes WHERE session_id=? ORDER BY id DESC LIMIT 1",
                        (session_id,)).fetchone()
     return dict(row) if row else None
 

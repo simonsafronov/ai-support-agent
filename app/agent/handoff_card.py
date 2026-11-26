@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -54,13 +55,16 @@ def build(h: dict, now: float | None = None) -> dict:
     quote = store.last_quote(sid)
     calc = store.last_total(sid)
     done = h["status"] in ("answered", "returned")
+    shown = [{"id": o["id"], "name": o["name"], "price": o.get("price")} for o in items.get("offers", [])[:5]]
+    in_quote = [{"id": o.get("offer_id"), "name": o["name"], "price": o.get("price"), "qty": o.get("qty")}
+                for o in json.loads(quote["items_json"] or "[]")] if quote else []
     return {
         "priority": level, "priority_name": PRIORITY_NAME[level], "sla_minutes": SLA_MINUTES[level],
         "sla_due": due, "overdue": not done and now > due,
         "flags": [name for name, rx in FLAGS if re.search(rx, text.lower())],
         "client": {k: facts[k] for k in CLIENT_FIELDS if facts.get(k)},
         "needs": {k: facts[k] for k in NEED_FIELDS if facts.get(k)},
-        "offers": [{"id": o["id"], "name": o["name"], "price": o.get("price")} for o in items.get("offers", [])[:5]],
+        "offers": in_quote or shown,  # есть КП: позиции из него, иначе последние показанные клиенту
         "quote": {"number": quote["number"], "total": quote["total"], "customer": quote["customer"],
                   "url": f"/quotes/{quote['number']}.pdf"} if quote else None,
         "calc_total": calc,

@@ -176,10 +176,16 @@ def take_facts(text: str) -> dict:
     return facts
 
 
-def _history(session_id: str) -> list[dict]:
+def _history(session_id: str, contacts: str = "") -> list[dict]:
+    """Прошлые реплики для модели. Контакт клиента скрыт и в ответах агента; адреса магазина из справки остаются."""
+    def hide(text: str) -> str:
+        for c in filter(None, contacts.split(", ")):
+            text = text.replace(c, "[email]" if "@" in c else "[телефон]")
+        return text
+
     msgs = store.messages(session_id, limit=HISTORY_MESSAGES)
-    return [{"role": m["role"], "content": for_model(m["content"]) if m["role"] == "user"
-             else mask_contacts(m["content"])[0]} for m in msgs if m["role"] in ("user", "assistant")]
+    return [{"role": m["role"], "content": for_model(m["content"]) if m["role"] == "user" else hide(m["content"])}
+            for m in msgs if m["role"] in ("user", "assistant")]
 
 
 def for_model(text: str) -> str:
@@ -212,8 +218,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     ctx = tools.ToolContext(sid, facts=dict(s["facts"]))
     contacts = mask_contacts(text)[1]
     if contacts:  # контакт запоминается кодом: модель видит только метку, менеджер получает настоящий адрес
-        known_contacts = [c for c in ctx.facts.get("контакт", "").split(", ") if c]
-        tools.save_facts(ctx, {"contact": ", ".join(dict.fromkeys(known_contacts + contacts))})
+        tools.save_facts(ctx, {"contact": ", ".join(contacts)})
         s["facts"] = dict(ctx.facts)
     items = s["items"]
     known = {float(o["price"]) for o in items.get("offers", []) if o.get("price")}
@@ -224,7 +229,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     s["quote"] = store.last_quote(sid)
     previous = store.previous_session(s["client_id"], sid) if turn == 1 else None
     msgs = [{"role": "system", "content": prompts.system_prompt(s, page_hint(page_url or s.get("page_url") or ""),
-                                                                 previous)}] + _history(sid)
+                                                                 previous)}] + _history(sid, ctx.facts.get("контакт", ""))
     trace, usage, reply, corrected = [], [0, 0, 0, 0], "", False
     started, called = time.monotonic(), set()
     vocabulary = set(_FIELD.findall(prompts.SYSTEM + json.dumps(tools.specs())))  # имена, которые модель видит

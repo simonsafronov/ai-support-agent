@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from app import store
@@ -79,12 +80,33 @@ FACT_FIELDS = {  # что агент запоминает о клиенте: к�
 _FACT_KEYS = {**FACT_FIELDS, **{v.lower(): v for v in FACT_FIELDS.values()}}
 
 
+_CONTACT_LIKE = re.compile(r"@|(?:\d[\s()-]*){7,}")
+
+
+def merge_contact(known: str, given: str) -> str:
+    """Контакт клиента: то, что код сам вынул из его сообщений, плюс новое, похожее на контакт.
+
+    Модель настоящих почты и телефона не видит, поэтому ее слова ("почта получена", метка [email]) контакт
+    не заменяют: менеджер получает адрес, который написал клиент.
+    """
+    parts = [c for c in known.split(", ") if c]
+    for c in given.split(", "):
+        c = c.strip()
+        if c and "[" not in c and _CONTACT_LIKE.search(c) and c not in parts:
+            parts.append(c)
+    return ", ".join(parts)
+
+
 def save_facts(ctx, facts: dict) -> dict:
     """Запоминает сказанное клиентом о себе. Ключи: поля FACT_FIELDS или их русские названия."""
     saved = {}
     for k, v in facts.items():
         key, v = _FACT_KEYS.get(str(k).strip().lower()), str(v).strip()
-        if key and v and not (key == "контакт" and "[" in v):  # метку вместо контакта не пишем: настоящий уже записан
+        if key == "контакт":
+            v = merge_contact(ctx.facts.get("контакт", ""), v)
+            if v == ctx.facts.get("контакт", ""):
+                continue
+        if key and v:
             saved[key] = v[:300]
     if saved:
         ctx.facts.update(saved)
@@ -97,8 +119,7 @@ def save_facts(ctx, facts: dict) -> dict:
 
 def _contact(ctx, given: str) -> str:
     """Модель видит вместо почты и телефона метки: настоящий контакт подставляется из памяти диалога."""
-    real = ctx.facts.get("контакт", "")
-    return real if real and (not given or "[" in given) else given
+    return merge_contact(ctx.facts.get("контакт", ""), given or "")
 
 
 def _calc_total(ctx, items: list[dict]):

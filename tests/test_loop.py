@@ -78,6 +78,24 @@ def test_amount_named_by_client_is_allowed():
     assert not res["trace"] and "300 000" in res["reply"]
 
 
+def test_model_words_do_not_replace_the_client_contact():
+    llm = Scripted([
+        {"name": "handoff_to_manager", "args": {"reason": "скидка", "summary": "Просит скидку",
+                                                "contact": "почта получена"}},
+        "Передал менеджеру. Наш адрес: store@softline.ru, ваш zakupki@romashka.example записан. "
+        "[[facts: contact=почта получена; users=25]]",
+        "Менеджер ответит в рабочее время.",
+    ])
+    res = loop.run_turn(None, "Нужна скидка, пишите на zakupki@romashka.example", llm=llm)
+    ticket = store.open_handoff(res["session_id"])
+    assert ticket["contact"] == "zakupki@romashka.example"
+    row = dict(store.db().execute("SELECT * FROM handoffs WHERE id=?", (ticket["id"],)).fetchone())
+    assert handoff_card.build(row)["client"]["контакт"] == "zakupki@romashka.example"
+    loop.run_turn(res["session_id"], "Спасибо", llm=llm)
+    said = llm.calls[-1][-2]["content"]  # прошлый ответ агента в истории: адрес магазина виден, адрес клиента скрыт
+    assert "store@softline.ru" in said and "zakupki@" not in said and "[email]" in said
+
+
 def test_field_names_are_sent_back_for_rewrite():
     llm = Scripted(["Вендор российский (поле russian_vendor), отметки in_ru_registry нет.",
                     "В каталоге вендор отмечен как российский, номера в реестре нет."])

@@ -1,10 +1,12 @@
 """Перенос диалогов прогона на стенд: экран оператора показывает их как обычные диалоги.
 
-    python -m eval.to_stand eval/runs/full4     # каталог прогона: в нем или в его подкаталогах лежат app.sqlite
+    python -m eval.to_stand eval/runs/full5            # каталог прогона: в нем или в подкаталогах лежат app.sqlite
+    python -m eval.to_stand eval/runs/full5 --replace  # сначала убрать со стенда диалоги прошлых прогонов
 
 Диалоги, шаги агента и обращения копируются как есть. Черновики КП формируются заново кодом стенда, чтобы
 номер, файл PDF и запись в базе совпадали: в прогоне, разбитом на части, номера КП у частей пересекаются.
-Повторный запуск уже перенесенные диалоги не трогает.
+Контакт клиента в памяти диалога и в обращении берется из его сообщений тем же кодом, что на стенде.
+Повторный запуск уже перенесенные диалоги не трогает. Диалоги живых посетителей стенда не затрагиваются.
 """
 from __future__ import annotations
 
@@ -13,10 +15,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from app import store
+from app import config, store
+from app.agent import loop, tools
 from app.quote import kp
 
 TABLES = ("messages", "steps", "handoffs")
+RUN_CLIENTS = "client_id LIKE 'eval-%' OR client_id = 'demo'"   # диалоги, которые создает прогон, а не посетитель
 
 
 def _columns(con: sqlite3.Connection, table: str) -> list[str]:
@@ -37,17 +41,43 @@ def _requote(src: sqlite3.Connection, dst: sqlite3.Connection, session: sqlite3.
                        "ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
     if not old or not step:
         return 0
-    args, facts = json.loads(step["input_json"]), json.loads(session["facts_json"])
+    args = json.loads(step["input_json"])
+    facts = json.loads(dst.execute("SELECT facts_json FROM sessions WHERE id=?", (sid,)).fetchone()[0] or "{}")
     res = kp.make_quote(sid, facts.get("компания") or args.get("customer", ""), args.get("items") or [],
                         inn=facts.get("ИНН", ""), kpp=facts.get("КПП", ""), payment=args.get("payment", ""),
                         contact=facts.get("контакт", ""))
     if not res.get("ok"):
         return 0
-    for table, column in (("messages", "meta_json"), ("messages", "content"), ("steps", "output_json")):
+    for table, column in (("messages", "meta_json"), ("messages", "content"), ("steps", "output_json"),
+                          ("handoffs", "summary")):
         dst.execute(f"UPDATE {table} SET {column}=REPLACE({column}, ?, ?) WHERE session_id=?",
                     (old["number"], res["number"], sid))
     dst.commit()
     return 1
+
+
+def _contact(dst: sqlite3.Connection, sid: str):
+    """Контакт клиента из его сообщений: в карточке обращения менеджер видит адрес, а не слова модели о нем."""
+    said = [m["content"] for m in dst.execute("SELECT content FROM messages WHERE session_id=? AND role='user' "
+                                              "ORDER BY id", (sid,))]
+    contact = tools.merge_contact("", ", ".join(c for text in said for c in loop.mask_contacts(text)[1]))
+    facts = json.loads(dst.execute("SELECT facts_json FROM sessions WHERE id=?", (sid,)).fetchone()[0] or "{}")
+    facts.pop("контакт", None)
+    if contact:
+        facts["контакт"] = contact
+    dst.execute("UPDATE sessions SET facts_json=? WHERE id=?", (json.dumps(facts, ensure_ascii=False), sid))
+    dst.execute("UPDATE handoffs SET contact=? WHERE session_id=?", (contact, sid))
+
+
+def clear() -> int:
+    """Убирает со стенда диалоги прошлых прогонов вместе с их черновиками КП."""
+    dst = store.db()
+    sessions = [r[0] for r in dst.execute(f"SELECT id FROM sessions WHERE {RUN_CLIENTS}")]
+    for sid in sessions:
+        for (number,) in dst.execute("SELECT number FROM quotes WHERE session_id=?", (sid,)).fetchall():
+            (config.QUOTES_DIR / f"{number}.pdf").unlink(missing_ok=True)
+        store.drop_session(sid)
+    return len(sessions)
 
 
 def load(run_dir: Path) -> dict:
@@ -62,6 +92,7 @@ def load(run_dir: Path) -> dict:
             _copy(src, dst, "sessions", "id=?", (session["id"],))
             for table in TABLES:
                 _copy(src, dst, table, "session_id=?", (session["id"],))
+            _contact(dst, session["id"])
             dst.commit()
             counts["dialogs"] += 1
             counts["quotes"] += _requote(src, dst, session)
@@ -70,6 +101,8 @@ def load(run_dir: Path) -> dict:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if a != "--replace"]
+    if len(args) != 1:
         sys.exit(__doc__)
-    print(json.dumps(load(Path(sys.argv[1])), ensure_ascii=False))
+    removed = clear() if "--replace" in sys.argv else 0
+    print(json.dumps({"removed": removed, **load(Path(args[0]))}, ensure_ascii=False))

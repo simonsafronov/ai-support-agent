@@ -24,7 +24,7 @@ function card(h, now) {
   const left = c.sla_due - now;
   const due = done ? STATUS[h.status] : left < 0 ? `просрочено на ${span(left)}` : `ответить до ${left > 12 * 3600 ? dt(c.sla_due) : hm(c.sla_due)}, осталось ${span(left)}`;
   const kv = (o) => Object.entries(o).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ");
-  const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}: ${o.price ? rub(o.price) : "цена по запросу"}`).join("<br>");
+  const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}`).join("<br>");
   const money = [c.calc_total ? `расчет ${rub(c.calc_total)}` : "", c.quote ? `<a href="${esc(c.quote.url)}" target="_blank" rel="noopener">черновик ${esc(c.quote.number)}</a> на ${rub(c.quote.total)}` : ""].filter(Boolean).join(" · ");
   const rows = [
     ["Нужно", esc(h.summary)],
@@ -66,6 +66,8 @@ async function load() {
   if (st.detail) return;  // допущение вне допустимых границ: экран остается прежним
   operator = st.role === "operator";
   $("demo").hidden = operator;
+  $("snote").textContent = st.stand_note || "";
+  $("snote").hidden = !st.stand_note;
   document.querySelectorAll(".op").forEach((e) => (e.hidden = !operator));
   const lu = cat.last_update || {};
   const upd = cat.updating ? "идет обновление каталога" : !lu.finished ? `обновление с фида каждый день в ${cat.update_hour_msk}:00 МСК`
@@ -111,7 +113,7 @@ async function show(id) {
       for (const s of d.steps.filter((x) => x.turn === turn)) {
         if (s.kind === "llm") {
           const tc = s.output.tool_call;
-          html += `<div class="st"><b>Модель</b> ${esc(s.name)} · ${s.prompt_tokens}+${s.completion_tokens} токенов · ${s.seconds.toFixed(1).replace(".", ",")} с${tc ? " → вызывает " + esc(tc.name) : " → отвечает клиенту"}</div>`;
+          html += `<div class="st"><b>Модель</b> ${esc(s.name)} · ${s.prompt_tokens}+${s.completion_tokens} токенов${s.seconds ? " · " + s.seconds.toFixed(1).replace(".", ",") + " с" : ""}${tc ? " → вызывает " + esc(tc.name) : " → отвечает клиенту"}</div>`;
         } else {
           html += `<div class="st ${esc(s.kind)}"><b>${esc(s.name)}</b> ${esc(JSON.stringify(s.input))}<pre>${esc(JSON.stringify(s.output).slice(0, 1500))}</pre></div>`;
         }

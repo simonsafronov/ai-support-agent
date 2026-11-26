@@ -385,7 +385,7 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
-            "handoffs": _handoffs(), "added_cases": len(cases.load()),
+            "handoffs": _handoffs(), "added_cases": len(cases.load()), "stand_note": config.STAND_NOTE,
             "economy": economy.calc(dialogs, handoff, total, minutes, rub_hour, card_share, volume),
             "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": time.time()})
 
