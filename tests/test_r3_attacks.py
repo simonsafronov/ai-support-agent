@@ -138,6 +138,7 @@ def test_cases_option_runs_the_attack_set_and_the_default_stays_the_main_set(tmp
     assert eval_run.load_cases(ROOT / "eval" / "cases.jsonl")[:63] == main_cases()
     assert eval_run.load_cases(ATTACKS) == _cases()
     monkeypatch.setattr(config, "DAILY_BUDGET_RUB", 0)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "scripted")  # иначе прогон пометит мост стенда из .env как законченный
     monkeypatch.setattr(loop, "get_llm", lambda: Scripted([]))  # "Готово." на каждый вопрос
     monkeypatch.setattr(sys, "argv", ["eval.run", "--cases", str(ATTACKS), "--out", str(tmp_path), "--limit", "3"])
     eval_run.main()
