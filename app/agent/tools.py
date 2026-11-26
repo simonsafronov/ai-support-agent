@@ -213,12 +213,10 @@ def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", kpp: 
 
 def _handoff(ctx, reason: str, summary: str, contact: str = ""):
     contact = _contact(ctx, contact)
-    old = store.open_handoff(ctx.session_id)
-    if old:  # обращение уже у менеджера: дополняем его, а не заводим второе
-        store.update_handoff(old["id"], summary or old["summary"], contact or old["contact"])
-        return {"ok": True, "ticket": old["id"], "updated": True,
+    hid, created = store.handoff(ctx.session_id, reason, summary, contact)
+    if not created:  # обращение уже у менеджера: оно дополнено, второе не заводится
+        return {"ok": True, "ticket": hid, "updated": True,
                 "note": "Обращение уже у менеджера, сводка и контакт в нем обновлены."}
-    hid = store.add_handoff(ctx.session_id, reason, summary, contact)
     ctx.events.append({"type": "handoff", "id": hid, "reason": reason})
     return {"ok": True, "ticket": hid,
             "note": "Обращение передано менеджеру. Скажите клиенту, что менеджер ответит в рабочее время"
