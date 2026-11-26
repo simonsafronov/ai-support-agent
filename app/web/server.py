@@ -409,6 +409,7 @@ STREAM_POLL, STREAM_WAIT = 0.1, 20  # секунд: как часто поток
 @app.post("/api/chat")
 def chat(body: ChatIn):
     """Ответ потоком строк JSON: сначала шаги агента (какой инструмент вызван), в конце ответ клиенту."""
+    received = time.monotonic()  # срок хода идет с приема сообщения: ожидание места у модели входит в него
     q: queue.Queue = queue.Queue()
     text = body.message.strip()
     # диалог заводится здесь, а не в цикле агента: при любом сбое известно, куда записать ответ и обращение
@@ -416,11 +417,8 @@ def chat(body: ChatIn):
 
     def work():
         try:
-            with session_lock(sid), _slots:
-                try:
-                    res = loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=q.put)
-                except Exception as e:  # клиент получает ответ, а менеджер обращение при любом сбое
-                    res = failed_turn(sid, text, e)
+            with session_lock(sid):
+                res = turn_in_slot(sid, text, body, received, q.put)
             q.put({"type": "reply", **public_reply(res)})
         except Exception as e:  # не записалось и обращение: ответ клиенту все равно уходит
             q.put({"type": "reply", "session_id": sid, "reply": loop.FALLBACK, "cards": [], "choices": [],
@@ -451,8 +449,29 @@ def chat(body: ChatIn):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event) -> dict:
+    """Ход агента на свободном месте у модели (MAX_PARALLEL_TURNS) в срок TURN_DEADLINE с приема сообщения.
+
+    Место не освободилось до срока: ход не начинается, клиент получает ответ о передаче, а менеджер обращение,
+    как при сбое модели. Место получено: циклу агента остается срок минус время ожидания (llm.Limited).
+    """
+    until = received + config.TURN_DEADLINE if config.TURN_DEADLINE else None
+    if not _slots.acquire(timeout=None if until is None else max(0.0, until - time.monotonic())):
+        return failed_turn(sid, text, TimeoutError(f"нет свободного места у модели за {config.TURN_DEADLINE:.0f} с"))
+    try:
+        return loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=on_event,
+                             llm=llm.Limited(loop.get_llm(), until) if until else None)
+    except Exception as e:  # клиент получает ответ, а менеджер обращение при любом сбое
+        return failed_turn(sid, text, e)
+    finally:
+        _slots.release()
+
+
 def failed_turn(sid: str, text: str, error: Exception) -> dict:
-    """Ход оборвался не по вине модели (ошибку модели цикл агента обрабатывает сам): ответ и обращение менеджеру."""
+    """Ход оборвался не по вине модели или не начался до конца срока: ответ и обращение менеджеру.
+
+    Ошибку модели цикл агента обрабатывает сам.
+    """
     last = store.messages(sid, limit=1)
     if not last or (last[0]["role"], last[0]["content"]) != ("user", text):
         store.add_message(sid, "user", text)  # сбой случился раньше, чем сообщение клиента попало в журнал
@@ -463,12 +482,13 @@ def failed_turn(sid: str, text: str, error: Exception) -> dict:
                                      contact)
         if created:
             events.append({"type": "handoff", "id": hid, "reason": "сбой при ответе агента"})
-    store.add_step(sid, sum(1 for m in store.messages(sid) if m["role"] == "user"), "error", type(error).__name__,
-                   {}, {"error": str(error)})
+    name = "deadline" if isinstance(error, TimeoutError) else type(error).__name__  # срок хода вышел
+    store.add_step(sid, sum(1 for m in store.messages(sid) if m["role"] == "user"), "error", name, {},
+                   {"error": str(error)})
     meta = {"cards": [], "choices": [], "events": events}
     store.add_message(sid, "assistant", loop.FALLBACK, meta)
     return {"session_id": sid, "reply": loop.FALLBACK, **meta,
-            "trace": [{"kind": "error", "name": type(error).__name__, "output": str(error)}]}
+            "trace": [{"kind": "error", "name": name, "output": str(error)}]}
 
 
 class CallIn(BaseModel):

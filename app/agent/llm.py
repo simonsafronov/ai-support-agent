@@ -212,6 +212,23 @@ class Scripted:
         return LLMResult(text=step, prompt_tokens=100, completion_tokens=20, model="scripted")
 
 
+class Limited:
+    """Модель со сроком хода, который начался раньше цикла агента: с приема сообщения, вместе с очередью к модели.
+
+    until: конец хода по time.monotonic(). Запрос ждет не дольше остатка до него; остатка нет, значит запрос
+    не уходит, и цикл агента кончает ход как при сбое модели: ответ о передаче и обращение менеджеру.
+    """
+
+    def __init__(self, llm, until: float):
+        self.llm, self.until = llm, until
+
+    def chat(self, messages: list[dict], tools: list[dict], time_left: float | None = None, **kw) -> LLMResult:
+        left = self.until - time.monotonic()
+        if left <= 0:
+            raise LLMError("срок хода вышел: ожидание места у модели и прошлые шаги заняли его целиком")
+        return self.llm.chat(messages, tools, time_left=left if time_left is None else min(time_left, left), **kw)
+
+
 class Bridge:
     """Режим разработки без ключа модели: запрос кладется файлом в каталог, ответ ждем файлом оттуда же.
 

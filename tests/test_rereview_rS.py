@@ -1,10 +1,14 @@
-"""Повторное ревью: режим просмотра без рабочих диалогов, две доли без менеджера, срок хода вместе с очередью к модели."""
+"""Повторное ревью: режим просмотра без рабочих диалогов, две доли без менеджера, срок хода с очередью к модели."""
+import json
+import threading
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app import store
 from app.agent import loop
-from app.agent.llm import Scripted
+from app.agent.llm import LLMError, Limited, Scripted
 from app.web import server
 
 client = TestClient(server.app)
@@ -144,3 +148,74 @@ def test_dialog_handed_after_the_agent_is_one_request():
     st = client.get("/api/admin/stats", headers=KEY).json()
     assert (st["closed_dialogs"], st["dialogs"], st["requests"]) == (0, 1, 1)
     assert st["without_human_share"] == st["requests_without_human_share"] == 0
+
+
+# --- срок хода считается с приема сообщения, вместе с ожиданием места у модели ---
+
+class Recording(Scripted):
+    """Модель-сценарий, которая запоминает, сколько секунд хода ей осталось на каждый запрос."""
+
+    def __init__(self, steps):
+        super().__init__(steps)
+        self.time_left = []
+
+    def chat(self, messages, tools, **kw):
+        self.time_left.append(kw.get("time_left"))
+        return super().chat(messages, tools, **kw)
+
+
+@pytest.fixture
+def one_slot(monkeypatch) -> threading.BoundedSemaphore:
+    """Одно место у модели, и его держит другой ход."""
+    slots = threading.BoundedSemaphore(1)
+    slots.acquire()
+    monkeypatch.setattr(server, "_slots", slots)
+    return slots
+
+
+def _reply(r) -> dict:
+    return json.loads(r.text.strip().splitlines()[-1])
+
+
+def test_slot_busy_longer_than_the_turn_gives_handoff_reply_on_time(monkeypatch, one_slot):
+    monkeypatch.setattr(server.config, "TURN_DEADLINE", 1.0)
+    model = Scripted(["Здравствуйте."])
+    monkeypatch.setattr(server.loop, "get_llm", lambda: model)
+    started = time.monotonic()
+    r = client.post("/api/chat", json={"message": "Нужен Kaspersky на 10 ПК", "client_id": "w3-rS-slot"})
+    took = time.monotonic() - started
+    reply = _reply(r)
+    assert 1.0 <= took < 2.0  # около срока хода, а не пока место не освободится
+    assert reply["reply"] == loop.FALLBACK and model.calls == []  # ход не начинался, модель не вызывалась
+    assert reply["trace"] == [{"kind": "error", "name": "deadline", "output": "ход занял слишком много времени"}]
+    rows = store.db().execute("SELECT id, reason FROM handoffs WHERE session_id=?", (reply["session_id"],)).fetchall()
+    assert [tuple(x) for x in rows] == [(reply["events"][0]["id"], "сбой при ответе агента")]  # заявка одна
+    history = client.get(f"/api/session/{reply['session_id']}", params={"client_id": "w3-rS-slot"}).json()
+    assert [(m["role"], m["content"]) for m in history["messages"]] == [("user", "Нужен Kaspersky на 10 ПК"),
+                                                                        ("assistant", loop.FALLBACK)]
+    one_slot.release()
+    assert one_slot.acquire(timeout=0)  # место, которое ход так и не получил, не потеряно и не занято дважды
+
+
+def test_after_waiting_for_a_slot_the_loop_gets_the_rest_of_the_turn(monkeypatch, one_slot):
+    monkeypatch.setattr(server.config, "TURN_DEADLINE", 3.0)
+    model = Recording(["Здравствуйте, чем помочь?"])
+    monkeypatch.setattr(server.loop, "get_llm", lambda: model)
+    threading.Timer(1.0, one_slot.release).start()  # другой ход освобождает место через секунду
+    reply = _reply(client.post("/api/chat", json={"message": "Добрый день", "client_id": "w3-rS-wait"}))
+    assert reply["reply"] == "Здравствуйте, чем помочь?"
+    (left,) = model.time_left
+    assert 1.5 < left <= 2.0  # срок 3 с минус секунда ожидания места
+
+
+def test_model_is_not_called_after_the_turn_time_is_over():
+    model = Recording(["Готово."])
+    assert Limited(model, time.monotonic() + 30).chat([], [], time_left=50).text == "Готово."
+    assert 29 < model.time_left[-1] <= 30  # запрос ждет не дольше остатка хода
+    with pytest.raises(LLMError, match="срок хода вышел"):
+        Limited(model, time.monotonic() - 1).chat([], [], time_left=50)
+    assert len(model.time_left) == 1
+    # в цикле агента это обычный сбой модели: клиент получает ответ о передаче, менеджер одну заявку
+    res = loop.run_turn(None, "Нужен счет", client_id="w3-rS-late", llm=Limited(Scripted([]), time.monotonic() - 1))
+    assert res["reply"] == loop.FALLBACK
+    assert store.db().execute("SELECT COUNT(*) FROM handoffs WHERE session_id=?", (res["session_id"],)).fetchone()[0] == 1
