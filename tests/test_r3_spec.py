@@ -244,3 +244,16 @@ def test_get_product_takes_the_quantity_under_the_name_the_catalog_used_in_clari
         assert got["ignored_args"] == ["color"]  # неизвестный фильтр модель видит, а не принимает за примененный
     finally:
         agent_tools.BY_NAME["get_product"] = original
+
+
+@pytest.mark.needs_data
+def test_hidden_price_tiers_are_named_so_the_model_asks_for_the_quantity():
+    """Шесть показанных вариантов это большие ступени, дешевые за штуку: малые названы в shown, чтобы модель не
+    решила, что на 10 штук цены нет (живой тест стенда, KES Стандартный на 10 компьютеров)."""
+    from app.catalog import search as catalog
+    res = catalog.get_product("3953", filters={"term_months": 12, "license_type": "Полная версия",
+                                               "org_type": "Коммерческая"}, limit=6)
+    assert "10-14" in res["shown"] and "quantity" in res["shown"]
+    small = catalog.get_product("3953", filters={"term_months": 12, "license_type": "Полная версия",
+                                                 "org_type": "Коммерческая", "qty": 10}, limit=6)
+    assert [(o["qty_min"], o["qty_max"]) for o in small["offers"]] == [(10, 14)]

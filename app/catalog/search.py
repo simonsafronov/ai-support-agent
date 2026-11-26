@@ -1068,6 +1068,14 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
                               if mixed else "; ") +
                            "остальные откроются, если сузить фильтром из clarify или словом в text. "
                            "Вилку цен называйте по all_matching, а не по показанным")
+        # ступени цены по количеству, которые не вошли в показанные: дешевые за штуку большие ступени вытесняют
+        # малые, и модель решает, что на 10 штук цены нет, хотя ее откроет quantity
+        hidden = sorted({(r["qty_min"] or 1, r["qty_max"]) for r in rows[len(result["offers"]):] if r["qty_min"] or r["qty_max"]},
+                        key=lambda t: t[0])
+        if hidden:
+            result["shown"] += (". Не показаны ступени цены по количеству: "
+                                + ", ".join(f"{a}-{b}" if b else f"от {a}" for a, b in hidden)
+                                + "; вариант под количество клиента откроет фильтр quantity")
         priced = [r["price"] for r in rows if r["price"] is not None]
         result["all_matching"] = {"price_min": _money(min(priced)) if priced else None,
                                   "price_max": _money(max(priced)) if priced else None,
