@@ -147,3 +147,50 @@ def test_swap_in_one_sentence_goes_back_to_the_model_and_then_is_cut():
     assert "это цены других позиций" in llm.calls[1][-1]["content"]
     res = loop.run_turn(session_with(EDITIONS), "Сколько стоят редакции?", llm=Scripted([SWAPPED, SWAPPED]))
     assert "20 000" not in res["reply"] and "10 000" not in res["reply"] and guards(res) == [("price", "cut")]
+
+
+# --- Сумма в чужой валюте ---------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("reply", [
+    "Редакция А стоит 10 000 долларов.",
+    "Редакция А стоит $10 000.",
+    "Редакция А стоит 10 000 $.",
+    "Редакция А стоит 10 000 €.",
+    "Редакция А стоит 10 000 евро.",
+    "Редакция А стоит 10 000 USD.",
+    "Редакция А стоит 10 000 eur.",
+    "Редакция А стоит 10 000 у.е.",
+    "Редакция А стоит 10 тыс. долларов.",
+    "Цены от 10 000 до 20 000 долларов.",
+])
+def test_foreign_currency_is_not_a_known_price(reply):
+    """Зачем: повторное ревью. Каталог рублевый, "10 000 долларов" при цене 10 000 руб. проходило как известная
+    сумма, потому что число совпало."""
+    positions = prices.load_positions(None, EDITIONS)
+    assert prices.unknown(reply, KNOWN, (), positions), reply
+    assert prices.misplaced(reply, positions) == []  # не "цена другой позиции": такой суммы в каталоге нет вовсе
+    assert not re.search(r"\d", prices.mask_unknown(reply, KNOWN, (), positions).replace("Редакция А", ""))
+
+
+def test_ruble_sums_are_checked_as_before():
+    positions = prices.load_positions(None, EDITIONS)
+    for reply in ("Редакция А стоит 10 000 руб.", "Редакция А стоит 10 000 ₽.", "Редакция А стоит 10000р.",
+                  "Редакция А стоит 10 000 RUB.", "Редакция А стоит 10 тыс. рублей."):
+        assert prices.unknown(reply, KNOWN, (), positions) == [], reply
+    assert prices.unknown("Редакция А стоит 12 345 руб.", KNOWN, (), positions) == ["12 345 руб."]
+
+
+def test_client_amount_in_foreign_currency_can_be_repeated_but_not_asserted():
+    """Сумму в валюте, которую назвал сам клиент, агент вправе повторить как его слова, но не выдать за цену."""
+    said = prices.client_amounts("Бюджет 5000 долларов, что можно взять?")
+    for reply in ("В ваш бюджет 5000 долларов укладывается Редакция А за 10 000 руб.",
+                  "Вы назвали бюджет $5000, цены в каталоге в рублях: Редакция А стоит 10 000 руб."):
+        assert prices.unknown(reply, KNOWN, said) == [], reply
+    assert prices.unknown("Редакция А стоит 5000 долларов.", KNOWN, said) == ["5000 долларов"]
+    assert prices.unknown("Редакция А стоит 7000 долларов.", KNOWN, said) == ["7000 долларов"]
+
+
+def test_foreign_currency_goes_back_to_the_model():
+    llm = Scripted(["Редакция А стоит 10 000 долларов.", "Редакция А стоит 10 000 ₽."])
+    res = loop.run_turn(session_with(EDITIONS), "Сколько стоит редакция А?", llm=llm)
+    assert res["reply"] == "Редакция А стоит 10 000 ₽." and guards(res) == [("price", "rewritten")]
+    assert "10 000 долларов" in llm.calls[1][-1]["content"] and "других позиций" not in llm.calls[1][-1]["content"]

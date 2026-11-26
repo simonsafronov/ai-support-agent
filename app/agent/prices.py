@@ -6,6 +6,7 @@
 
 Суммой считается число с валютой (рубли, доллары, евро), с множителем ("100 тысяч рублей", "99К руб."),
 обе границы диапазона "от A до B руб." и число без валюты сразу после слов "итого", "стоит", "цена", "сумма".
+Каталог рублевый: "10 000 долларов" не становится известной суммой оттого, что в каталоге есть цена 10 000 руб.
 Там же проверка скидки словами: обещать скидку больше своей агент не вправе.
 """
 from __future__ import annotations
@@ -21,6 +22,7 @@ _NUM = rf"\d{{1,3}}(?:[{_SP}.,'’`]\d{{3}})+(?:[.,]\d{{1,2}})?(?!\d)|\d+(?:[.,]
 _RUB = r"(?:₽|руб(?:лей|ля|ль|\.)?|р\.|р(?![а-яёa-z])|ru[br]\b)"
 _FOREIGN = r"(?:\$|€|usd\b|eur\b|евро\b|доллар\w*|у\.\s?е\.?)"
 _CUR = rf"(?:{_RUB}|{_FOREIGN})"
+ABROAD = re.compile(_FOREIGN, re.I)  # каталог рублевый: суммы в другой валюте в данных инструментов нет
 # множитель: слово через пробел ("100 тысяч", "1,2 млн") или буква вплотную к числу ("99К");
 # "5 000 к оплате" не множитель
 _MULT = r"((?<=\d)[кk](?![а-яёa-z0-9])|\s*(?:тыс(?:яч[аи]?|\.)?|млн\.?|миллион(?:а|ов)?|млрд\.?))"
@@ -210,8 +212,9 @@ def _bad(text: str, known, said, positions=None, named=()) -> list[tuple[int, in
     marks = [m.span() for m in FACTS_MARK.finditer(text)]
     hidden = lambda a, b: any(x <= a and b <= y for x, y in marks)  # внутри метки [[facts: ...]]
     for a, b, values in mentions(text):
+        abroad = bool(ABROAD.search(text[a:b]))  # "10 000 долларов" при цене 10 000 руб. это не цена из каталога
         for v in values:
-            if v < 1 or _is_known(v, known) or hidden(a, b):
+            if v < 1 or (_is_known(v, known) and not abroad) or hidden(a, b):
                 continue
             if _is_known(v, said) and not _asserts_price(_sentence_at(text, a)):
                 continue  # клиент сам назвал эту сумму, и ответ повторяет ее как его слова, а не как цену товара
@@ -407,7 +410,8 @@ def price_pairs(text: str, positions) -> list[tuple[int, int, float, str]]:
         if not _UNIT_PRICE.search(sentence) or any(x <= start < y for x, y in hidden):
             continue
         refs = _named(sentence, positions)
-        sums = [(a, b, v) for a, b, values in mentions(sentence) for v in values if v >= 1]
+        sums = [(a, b, v) for a, b, values in mentions(sentence) if not ABROAD.search(sentence[a:b])  # см. _bad
+                for v in values if v >= 1]
         if not refs or not sums:
             continue
         # количество из фразы: цена позиции на него тоже своя; номер в метке [[offer:2]] не количество
