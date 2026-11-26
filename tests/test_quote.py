@@ -122,7 +122,8 @@ def test_sums_vat_and_pdf(offers, storage):
     assert res["vat_total"] == float(vat_of(plain_sum))
     assert res["has_price_on_request"] is True
     assert res["customer"] == "ООО «Ромашка»"
-    assert res["note"] == "Черновик КП сформирован, его проверит менеджер."
+    assert res["note"].startswith("Черновик КП сформирован, его проверит менеджер.")
+    assert res["customer_missing"] == ["КПП"]
 
     assert re.fullmatch(r"КП-\d{8}-0001", res["number"])
     assert res["url"] == f"/quotes/{res['number']}.pdf"
@@ -296,7 +297,7 @@ def test_catalog_search_is_used_and_rounding_is_to_kopecks(monkeypatch):
 def test_quote_without_customer_name_is_still_a_draft(offers, storage):
     """Клиент не назвал организацию: черновик все равно собирается, менеджер уточнит название."""
     res = kp.make_quote("s1", "  ", [{"offer_id": offers["plain"]["id"], "qty": 1}])
-    assert res["ok"] and res["customer"] == kp.NO_CUSTOMER and "не указано" in res["note"]
+    assert res["ok"] and res["customer"] == kp.NO_CUSTOMER and "название организации" in res["note"]
 
 
 def test_second_quote_in_dialog_updates_the_same_draft(offers, storage):
@@ -307,3 +308,22 @@ def test_second_quote_in_dialog_updates_the_same_draft(offers, storage):
     assert [r[0] for r in rows] == ["ООО Ромашка"]
     third = kp.make_quote("s-upd", customer="", items=[{"offer_id": offers["registry"]["id"], "qty": 5}])
     assert third["customer"] == "ООО Ромашка"  # название, названное раньше, при правке количества не теряется
+
+
+def test_customer_block_takes_name_inn_and_kpp(offers, storage):
+    item = [{"offer_id": offers["plain"]["id"], "qty": 2}]
+    res = kp.make_quote("s1", "ООО «Ромашка»", item, inn="7701 234 567", kpp="770101001")
+    assert res["ok"] and res["customer_missing"] == []
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert squeeze("Куда: ООО «Ромашка», ИНН 7701234567, КПП 770101001") in text
+
+
+def test_missing_and_malformed_requisites_are_named(offers, storage):
+    item = [{"offer_id": offers["plain"]["id"], "qty": 1}]
+    res = kp.make_quote("s1", "", item, inn="12345", kpp="77")
+    assert res["ok"] and res["customer_missing"] == ["название организации", "ИНН", "КПП"]
+    assert "ИНН и КПП в черновик не попал" in res["note"] and "не хватает" in res["note"]
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "12345" not in text and "КПП" not in text
+    sole = kp.make_quote("s2", "ИП Иванов И.И.", item, inn="770123456789", kpp="770101001")
+    assert sole["customer_missing"] == [] and "КПП" not in squeeze(pdf_pages(sole["file"])[0])

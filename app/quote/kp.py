@@ -169,10 +169,26 @@ def _error(text: str) -> dict:
 NO_CUSTOMER = "Заказчик уточняется"  # клиент не назвал организацию: черновик все равно нужен менеджеру
 
 
+INN_RE = re.compile(r"\d{10}|\d{12}")  # юрлицо 10 цифр, ИП 12
+KPP_RE = re.compile(r"\d{4}[\dA-Z]{2}\d{3}")
+
+
+def requisites(customer: str, inn: str, kpp: str) -> tuple[str, str, list[str]]:
+    """Реквизиты графы «Заказчик»: ИНН и КПП только правильной длины, плюс список того, чего не хватает."""
+    inn, kpp = re.sub(r"\D", "", str(inn or "")), re.sub(r"\s", "", str(kpp or "")).upper()
+    inn = inn if INN_RE.fullmatch(inn) else ""
+    kpp = kpp if KPP_RE.fullmatch(kpp) and len(inn) != 12 else ""
+    missing = [name for name, ok in (("название организации", _clean(customer) not in ("", NO_CUSTOMER)),
+                                     ("ИНН", bool(inn)), ("КПП", bool(kpp) or len(inn) == 12)) if not ok]
+    return inn, kpp, missing
+
+
 def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "", payment: str = "",
-               contact: str = "", delivery: str = "") -> dict:
+               contact: str = "", delivery: str = "", kpp: str = "") -> dict:
     """Собирает черновик КП: проверяет позиции, считает суммы и НДС, пишет PDF и запись в хранилище."""
     customer = _clean(customer) or NO_CUSTOMER
+    given_inn, given_kpp = _clean(inn), _clean(kpp)
+    inn, kpp, _ = requisites(customer, inn, kpp)
     if not isinstance(items, list) or not items:
         return _error("Нет позиций для КП. Передайте в items хотя бы одну позицию: offer_id и qty.")
     if len(items) > MAX_ITEMS:
@@ -214,7 +230,7 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
     on_request = any(ln["price"] is None for ln in lines)
     today = datetime.now(MSK).date()
     quote = {
-        "customer": customer, "inn": _clean(inn), "contact": _clean(contact),
+        "customer": customer, "inn": inn, "kpp": kpp, "contact": _clean(contact),
         "payment": _clean(payment) or DEFAULT_PAYMENT, "delivery": _clean(delivery) or DEFAULT_DELIVERY,
         "date": today.strftime("%d.%m.%Y"), "valid_until": (today + timedelta(days=VALID_DAYS)).strftime("%d.%m.%Y"),
         "lines": lines, "total": total, "vat_total": vat_total, "has_price_on_request": on_request,
@@ -242,13 +258,23 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         else:
             store.add_quote(session_id, number, customer, out_items, float(total), str(path))
 
+    missing = requisites(customer, inn, kpp)[2]
+    wrong = [name for name, given, kept in (("ИНН", given_inn, inn), ("КПП", given_kpp, kpp)) if given and not kept
+             and not (name == "КПП" and len(inn) == 12)]
+    note = QUOTE_NOTE
+    if wrong:
+        note += (f" {' и '.join(wrong)} в черновик не попал: в ИНН должно быть 10 цифр (у ИП 12), в КПП 9 знаков. "
+                 "Уточните у клиента.")
+    if missing:
+        note += (f" В графе «Заказчик» не хватает: {', '.join(missing)}. Попросите их одним сообщением один раз; "
+                 "клиент не дал, черновик остается как есть, реквизиты уточнит менеджер.")
     return {"ok": True, "number": number, "updated": bool(prev), "contact_in_quote": bool(quote["contact"]),
+            "customer_missing": missing,
             "url": f"/quotes/{number}.pdf", "file": str(path), "date": quote["date"],
             "valid_until": quote["valid_until"], "customer": customer, "items": out_items, "total": float(total),
             "vat_total": float(vat_total), "has_price_on_request": on_request,
             "needs_availability_check": [ln["name"] for ln in lines if not ln["available"] and ln["price"] is not None],
-            "note": QUOTE_NOTE + (" Наименование заказчика не указано: менеджер уточнит его перед отправкой."
-                                  if customer == NO_CUSTOMER else "")}
+            "note": note}
 
 
 # --- PDF -------------------------------------------------------------------------------------------------------------
@@ -339,7 +365,8 @@ def _letterhead_next(canv, doc):
 
 def _render(q: dict) -> bytes:
     """PDF черновика КП по структуре шаблона заказчика."""
-    to = f"Куда: {escape(q['customer'])}" + (f", ИНН {escape(q['inn'])}" if q["inn"] else "")
+    to = (f"Куда: {escape(q['customer'])}" + (f", ИНН{NBSP}{escape(q['inn'])}" if q["inn"] else "")
+          + (f", КПП{NBSP}{escape(q['kpp'])}" if q.get("kpp") else ""))
     phone_glued = re.sub(r"(?<=[\d()+-]) (?=[\d(])", NBSP, q["contact"])  # номер телефона не рвется на строки
     contact = Paragraph(f"Контакт заказчика: {escape(phone_glued)}", S_TO) if q["contact"] else Spacer(1, 12)
     head = _plain([[Spacer(1, 42.3), Paragraph("<br/>".join(ADDRESS), S_ADDRESS)],

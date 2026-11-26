@@ -70,13 +70,13 @@ def _kb_search(ctx, query: str):
 
 
 FACT_FIELDS = {  # что агент запоминает о клиенте: ключ -> как показывать в контексте и оператору
-    "company": "компания", "inn": "ИНН", "org_type": "тип организации", "users": "пользователей",
+    "company": "компания", "inn": "ИНН", "kpp": "КПП", "org_type": "тип организации", "users": "пользователей",
     "devices": "устройств", "os": "ОС и инфраструктура", "task": "задача", "budget": "бюджет",
     "term": "срок лицензии", "contact": "контакт", "other": "прочее",
 }
 
 
-_FACT_KEYS = {**{k: v for k, v in FACT_FIELDS.items()}, **{v: v for v in FACT_FIELDS.values()}}
+_FACT_KEYS = {**FACT_FIELDS, **{v.lower(): v for v in FACT_FIELDS.values()}}
 
 
 def save_facts(ctx, facts: dict) -> dict:
@@ -130,8 +130,14 @@ def _calc_total(ctx, items: list[dict]):
             else "Цены из каталога, с НДС где он применим."}
 
 
-def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", payment: str = "", contact: str = ""):
-    res = kp.make_quote(ctx.session_id, customer=customer, items=items, inn=inn, payment=payment,
+def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", kpp: str = "", payment: str = "",
+                contact: str = ""):
+    """Реквизиты графы «Заказчик» помнит диалог: названные раньше подставляются сами, новые запоминаются."""
+    given = {k: v for k, v in (("company", customer), ("inn", inn), ("kpp", kpp)) if str(v or "").strip()}
+    if given:
+        save_facts(ctx, given)
+    res = kp.make_quote(ctx.session_id, customer=ctx.facts.get("компания", ""), items=items,
+                        inn=ctx.facts.get("ИНН", ""), kpp=ctx.facts.get("КПП", ""), payment=payment,
                         contact=_contact(ctx, contact))
     if res.get("ok"):
         ctx.events.append({"type": "quote", **{k: res[k] for k in ("number", "url", "total")}})
@@ -223,14 +229,16 @@ TOOLS = [
      }, ["items"])},
     {"name": "make_quote", "handler": _make_quote,
      "description": "Сформировать черновик коммерческого предложения (PDF по шаблону Softline) для проверки "
-                    "менеджером, когда вариант и количество понятны. Название организации не обязательно. "
+                    "менеджером, когда вариант и количество понятны. В графу «Заказчик» идут название "
+                    "организации, ИНН и КПП: передайте те, что клиент назвал, без них черновик тоже формируется. "
                     "Повторный вызов в том же диалоге обновляет тот же черновик.",
      "parameters": _obj({
          "customer": {"type": "string", "description": "наименование заказчика, если клиент его назвал"},
          "items": {"type": "array", "description": "позиции КП",
                    "items": _obj({"offer_id": {"type": "integer"}, "qty": {"type": "integer"}},
                                  ["offer_id", "qty"])},
-         "inn": {"type": "string"},
+         "inn": {"type": "string", "description": "ИНН заказчика: 10 цифр, у ИП 12"},
+         "kpp": {"type": "string", "description": "КПП заказчика: 9 знаков, у ИП его нет"},
          "payment": {"type": "string", "description": "условия оплаты, если клиент назвал"},
          "contact": {"type": "string", "description": "почта или телефон клиента"},
      }, ["items"])},

@@ -298,3 +298,16 @@ def test_client_text_reaches_model_without_markers_and_budget_stops_spending(mon
     store.add_step("x", 1, "llm", "m", {}, {}, 1000, 1000, 1.0)
     stopped = loop.run_turn(None, "Еще вопрос", llm=Scripted(["не должен вызываться"]))
     assert stopped["reply"] == loop.FALLBACK and stopped["usage"]["llm_calls"] == 0
+
+
+def test_quote_requisites_are_remembered_between_calls(offer):
+    """Название, ИНН и КПП клиент дает по частям: графа «Заказчик» собирается из всего, что уже названо."""
+    from app.agent import tools
+    sid = store.get_session(None)["id"]
+    ctx = tools.ToolContext(sid)
+    item = {"items": [{"offer_id": offer["offer_id"], "qty": 2}]}
+    first = tools.call(ctx, "make_quote", {**item, "customer": "ООО Ромашка"})
+    assert first["customer_missing"] == ["ИНН", "КПП"]
+    second = tools.call(ctx, "make_quote", {**item, "inn": "7701234567", "kpp": "770101001"})
+    assert second["customer"] == "ООО Ромашка" and second["customer_missing"] == [] and second["updated"]
+    assert store.get_session(sid)["facts"] == {"компания": "ООО Ромашка", "ИНН": "7701234567", "КПП": "770101001"}
