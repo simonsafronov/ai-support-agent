@@ -27,6 +27,8 @@ CATALOG_DB = Path(env("CATALOG_DB", str(ROOT / "data/db/catalog.sqlite")))
 KB_DB = Path(env("KB_DB", str(ROOT / "data/db/kb.sqlite")))
 APP_DB = Path(env("APP_DB", str(ROOT / "data/db/app.sqlite")))
 QUOTES_DIR = Path(env("QUOTES_DIR", str(ROOT / "data/quotes")))
+# кейсы, которые оператор добавил в проверочный набор со стенда: в data, чтобы пережить пересборку контейнера
+CASES_ADDED = Path(env("CASES_ADDED", str(ROOT / "data/cases_added.jsonl")))
 
 # Модель: gigachat | openai (любой OpenAI-совместимый сервис, в том числе on-prem через vLLM) |
 # bridge (разработка без ключа: запросы к модели идут файлами через BRIDGE_DIR, см. app/agent/bridge.py)

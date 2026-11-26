@@ -253,6 +253,7 @@ def test_economy_separates_measurements_from_assumptions():
 def test_failed_dialog_becomes_a_regression_case(tmp_path, monkeypatch):
     from app import cases
     monkeypatch.setattr(cases, "ADDED", tmp_path / "cases_added.jsonl")
+    monkeypatch.setattr(cases, "OLD", tmp_path / "old_cases_added.jsonl")  # файл прежнего места не мешает
     sid, _ = _handoff_dialog()
     assert client.post(f"/api/admin/session/{sid}/case", json={"handoff": False}).status_code == 403
     r = client.post(f"/api/admin/session/{sid}/case", headers=KEY,

@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import queue
 import re
 import secrets
@@ -28,6 +29,7 @@ from app.catalog import search as catalog, update as catalog_update
 from app.kb import answers, search as kb
 
 STATIC = Path(__file__).parent / "static"
+log = logging.getLogger("server")
 
 
 @contextlib.asynccontextmanager
@@ -118,8 +120,19 @@ def _daily_update():
         now = datetime.datetime.now(MSK)
         run_at = now.replace(hour=config.FEED_UPDATE_HOUR, minute=0, second=0, microsecond=0)
         time.sleep(((run_at - now).total_seconds() - 1) % 86400 + 1)
+        _daily_work()
+
+
+def _daily_work():
+    """Работа раз в сутки. Сбой пишется в журнал, а поток живет до следующих суток."""
+    try:
         store.purge(config.RETENTION_DAYS)  # диалоги с контактами клиентов не хранятся дольше срока
+    except Exception:
+        log.exception("purge")
+    try:
         update_catalog()
+    except Exception:
+        log.exception("catalog update")
 
 
 def is_operator(request: Request) -> bool:
@@ -501,8 +514,29 @@ class AnswerIn(BaseModel):
     teach: bool = False
 
 
+REPEAT_SEC = 10  # тот же ответ на то же обращение за это время считается повтором (двойной клик, повтор запроса)
+_answered: dict[tuple[int, str], tuple[float, dict]] = {}
+_answer_lock = threading.Lock()
+
+
 def manager_answer(handoff_id: int, answer: str, teach: bool = False) -> dict | None:
-    """Ответ менеджера с экрана оператора или из Telegram: клиент видит его в чате, общий ответ становится знанием."""
+    """Ответ менеджера с экрана оператора или из Telegram: клиент видит его в чате, общий ответ становится знанием.
+
+    Повтор того же текста по тому же обращению в течение REPEAT_SEC второго сообщения клиенту не дает.
+    """
+    key, now = (handoff_id, answer), time.time()
+    with _answer_lock:
+        for k in [k for k, (ts, _) in _answered.items() if now - ts > REPEAT_SEC]:
+            del _answered[k]
+        if key in _answered:
+            return _answered[key][1]
+        done = _manager_answer(handoff_id, answer, teach)
+        if done is not None:
+            _answered[key] = (now, done)
+        return done
+
+
+def _manager_answer(handoff_id: int, answer: str, teach: bool) -> dict | None:
     h = store.db().execute("SELECT * FROM handoffs WHERE id=?", (handoff_id,)).fetchone()
     if h is None:
         return None
@@ -521,6 +555,9 @@ def admin_answer(handoff_id: int, body: AnswerIn):
     return done
 
 
+FORMULA = ("=", "+", "-", "@", "\t", "\r")  # с этого Excel начинает формулу: такая ячейка идет с апострофом
+
+
 @app.get("/api/admin/export.csv", dependencies=[Depends(admin)])
 def admin_export():
     """Журнал всех вопросов клиентов и ответов агента для контроля: одна строка на сообщение."""
@@ -532,6 +569,7 @@ def admin_export():
     handed = {r[0] for r in con.execute("SELECT DISTINCT session_id FROM handoffs")}
     out = io.StringIO()
     w = csv.writer(out, delimiter=";")
+    cell = lambda v: "'" + v if isinstance(v, str) and v[:1] in FORMULA else v
     w.writerow(["время (МСК)", "диалог", "кто", "текст", "инструменты хода", "диалог передан менеджеру"])
     turn = {}
     for m in con.execute("SELECT session_id, ts, role, content, meta_json FROM messages ORDER BY id"):
@@ -539,9 +577,9 @@ def admin_export():
         if m["role"] == "user":
             turn[sid] = turn.get(sid, 0) + 1
         who = "клиент" if m["role"] == "user" else ("менеджер" if '"from": "manager"' in m["meta_json"] else "агент")
-        w.writerow([datetime.datetime.fromtimestamp(m["ts"], MSK).strftime("%d.%m.%Y %H:%M:%S"), sid, who,
-                    m["content"], tools.get((sid, turn.get(sid, 0)), "") if who == "агент" else "",
-                    "да" if sid in handed else "нет"])
+        w.writerow(map(cell, [datetime.datetime.fromtimestamp(m["ts"], MSK).strftime("%d.%m.%Y %H:%M:%S"), sid,
+                              who, m["content"], tools.get((sid, turn.get(sid, 0)), "") if who == "агент" else "",
+                              "да" if sid in handed else "нет"]))
     return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="dialogs.csv"'})
 

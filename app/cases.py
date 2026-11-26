@@ -1,7 +1,8 @@
 """Диалог стенда -> кейс проверочного набора.
 
 Оператор видит диалог, где агент ошибся, и одной кнопкой отправляет его в набор, отметив, как должно было быть.
-Кейсы копятся в eval/cases_added.jsonl и проигрываются вместе с основным набором при каждом прогоне.
+Кейсы копятся в data/cases_added.jsonl (настройка CASES_ADDED) и проигрываются вместе с основным набором
+при каждом прогоне.
 """
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ import json
 from app import config, store
 from app.agent import loop
 
-ADDED = config.ROOT / "eval" / "cases_added.jsonl"
+ADDED = config.CASES_ADDED
+OLD = config.ROOT / "eval" / "cases_added.jsonl"  # прежнее место: читается, пока его кейсы не перейдут в ADDED
 
 
 def from_session(session_id: str, handoff: bool | str, quote: bool, note: str = "") -> dict | None:
@@ -29,11 +31,18 @@ def from_session(session_id: str, handoff: bool | str, quote: bool, note: str = 
 def add(case: dict) -> int:
     """Дописывает кейс в набор; повторная отправка того же диалога заменяет прежний кейс. Возвращает размер набора."""
     cases = [c for c in load() if c["id"] != case["id"]] + [case]
+    ADDED.parent.mkdir(parents=True, exist_ok=True)
     ADDED.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cases), encoding="utf-8")
     return len(cases)
 
 
 def load() -> list[dict]:
-    if not ADDED.exists():
-        return []
-    return [json.loads(line) for line in ADDED.read_text(encoding="utf-8").splitlines() if line.strip()]
+    """Кейсы со стенда: из прежнего файла и из нового, при совпадении номера берется новый."""
+    found = {}
+    for f in (OLD, ADDED):
+        if f.exists():
+            for line in f.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    c = json.loads(line)
+                    found[c["id"]] = c
+    return list(found.values())

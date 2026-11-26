@@ -230,9 +230,13 @@ def tokens_since(ts: float) -> tuple[int, int]:
 
 
 def purge(days: int) -> int:
-    """Удаляет диалоги старше days дней вместе с шагами, обращениями и КП. Знания из ответов менеджеров остаются."""
+    """Удаляет диалоги старше days дней вместе с шагами, обращениями, КП и их файлами. Знания из ответов менеджеров
+    остаются."""
     con = db()
     old = [r[0] for r in con.execute("SELECT id FROM sessions WHERE updated_at<?", (time.time() - days * 86400,))]
     for sid in old:
+        # в PDF черновика название компании и ИНН клиента: файл уходит вместе с диалогом
+        for (number,) in con.execute("SELECT number FROM quotes WHERE session_id=?", (sid,)).fetchall():
+            (config.QUOTES_DIR / f"{number}.pdf").unlink(missing_ok=True)
         drop_session(sid)
     return len(old)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import threading
 import time
 
@@ -28,6 +29,7 @@ API = "https://api.telegram.org"
 SETTLE, FRESH, WATCH = 3.0, 900.0, 3600.0  # секунд: дать ходу закончиться; не слать старое; сколько обновлять карточку
 EVERY, LONG_POLL = 2.0, 25
 STATUS = {"new": "ждет ответа", "taken": "в работе", "answered": "ответ дан", "returned": "возвращено агенту"}
+LIMIT, MAX_OFFERS = 3900, 12  # знаков в карточке (Telegram берет до 4096), позиций в ней
 HOWTO = "Ответьте на это сообщение: клиент увидит ответ в чате сайта."
 HELLO = ("Сюда приходят обращения из чата магазина. Ответьте на карточку обращения реплаем, и клиент увидит "
          "ответ в чате сайта.")
@@ -47,8 +49,11 @@ def _db():
     return con
 
 
-def call(method: str, files: dict | None = None, **params):
-    """Вызов Telegram Bot API. Возвращает result или None: сбой Telegram не должен ронять чат магазина."""
+def call(method: str, files: dict | None = None, refusal: bool = False, **params):
+    """Вызов Telegram Bot API. Возвращает result или None: сбой Telegram не должен ронять чат магазина.
+
+    С refusal=True отказ Telegram (связь есть, запрос не принят) возвращается как False, а не None.
+    """
     try:
         url = f"{API}/bot{config.TG_TOKEN}/{method}"
         timeout = LONG_POLL + 10 if method == "getUpdates" else 15
@@ -57,7 +62,7 @@ def call(method: str, files: dict | None = None, **params):
         body = r.json()
         if not body.get("ok"):
             log.warning("telegram %s: %s", method, body.get("description"))
-            return None
+            return False if refusal else None
         return body["result"]
     except (httpx.HTTPError, ValueError) as e:
         log.warning("telegram %s: %s", method, type(e).__name__)
@@ -68,15 +73,23 @@ def _rub(x) -> str:
     return f"{float(x):,.2f}".replace(",", " ").replace(".", ",") + " руб."
 
 
+def _cut(text, n: int) -> str:
+    text = str(text)
+    return text if len(text) <= n else text[:n - 1].rstrip() + "…"
+
+
 def card_text(h: dict, card: dict) -> str:
-    """Текст карточки для Telegram (HTML): то же, что видит менеджер на экране оператора."""
-    e = html.escape
+    """Текст карточки для Telegram (HTML): то же, что видит менеджер на экране оператора.
+
+    Длинные поля укорачиваются до разметки, поэтому теги всегда целые, а карточка не длиннее LIMIT знаков.
+    """
+    e = lambda text, n=300: html.escape(_cut(text, n))
     head = f"<b>Обращение №{h['id']}</b>: {STATUS.get(h['status'], h['status'])}"
     if h.get("assignee"):
-        head += f", {e(h['assignee'])}"
+        head += f", {e(h['assignee'], 60)}"
     lines = [head, f"Срочность {card['priority_name']}, срок реакции {card['sla_minutes']} мин"]
     if card["flags"]:
-        lines.append("Пометки: " + ", ".join(card["flags"]))
+        lines.append("Пометки: " + e(", ".join(card["flags"])))
     lines.append("")
     client = ", ".join(f"{k} {v}" if k in ("ИНН", "КПП") else str(v) for k, v in card["client"].items()
                        if k != "контакт")
@@ -84,26 +97,44 @@ def card_text(h: dict, card: dict) -> str:
         lines.append(f"<b>Клиент:</b> {e(client)}")
     contact = h.get("contact") or card["client"].get("контакт")
     if contact:
-        lines.append(f"<b>Контакт:</b> {e(str(contact))}")
+        lines.append(f"<b>Контакт:</b> {e(contact)}")
     lines.append(f"<b>Причина:</b> {e(h['reason'] or '')}")
     if h.get("summary"):
-        lines.append(f"<b>Запрос:</b> {e(h['summary'])}")
+        lines.append(f"<b>Запрос:</b> {e(h['summary'], 1000)}")
     for k, v in card["needs"].items():
-        lines.append(f"{e(k[:1].upper() + k[1:])}: {e(str(v))}")
+        lines.append(f"{e(k[:1].upper() + k[1:], 60)}: {e(v, 200)}")
     if card["offers"]:
         lines.append("<b>Позиции:</b>")
-        for o in card["offers"]:
+        for o in card["offers"][:MAX_OFFERS]:
             qty = f", {o['qty']} шт." if o.get("qty") else ""
             price = f", {_rub(o['price'])}" if o.get("price") else ", цена по запросу"
-            lines.append(f"- {e(o['name'])}{qty}{price}")
+            lines.append(f"- {e(o['name'], 150)}{qty}{price}")
+        if len(card["offers"]) > MAX_OFFERS:
+            lines.append(f"и еще {len(card['offers']) - MAX_OFFERS}")
     if card["quote"]:
-        lines.append(f"<b>Черновик {e(card['quote']['number'])}:</b> {_rub(card['quote']['total'])}")
+        lines.append(f"<b>Черновик {e(card['quote']['number'], 60)}:</b> {_rub(card['quote']['total'])}")
     elif card["calc_total"]:
         lines.append(f"<b>Сумма по расчету:</b> {_rub(card['calc_total'])}")
     if card["last_message"]:
-        lines.append(f"<b>Последнее сообщение:</b> {e(card['last_message'])}")
-    lines += ["", HOWTO]
-    return "\n".join(lines)[:4000]
+        lines.append(f"<b>Последнее сообщение:</b> {e(card['last_message'], 800)}")
+    tail = ["", HOWTO]
+    while len("\n".join(lines + tail)) > LIMIT:  # строки целые: каждая закрывает свои теги сама
+        lines.pop()
+        tail = ["…полностью на экране оператора", "", HOWTO]
+    return "\n".join(lines + tail)
+
+
+def plain(text: str) -> str:
+    """Карточка без разметки: теги убраны, сущности раскодированы."""
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
+def _card_call(method: str, text: str, **params):
+    """Карточка с разметкой. Если Telegram ее не принял, тот же текст один раз уходит без разметки."""
+    res = call(method, refusal=True, text=text, parse_mode="HTML", **params)
+    if res is False:
+        res = call(method, text=plain(text), **params)
+    return res
 
 
 def _buttons(h: dict) -> dict:
@@ -151,7 +182,7 @@ def sync() -> int:
     for h in map(dict, fresh):
         card = handoff_card.build(h, now)
         text = card_text(h, card)
-        sent = call("sendMessage", chat_id=config.TG_CHAT, text=text, parse_mode="HTML", reply_markup=_buttons(h))
+        sent = _card_call("sendMessage", text, chat_id=config.TG_CHAT, reply_markup=_buttons(h))
         if sent is None:
             continue  # Telegram не ответил: попробуем на следующем круге, пока обращение свежее
         con.execute("INSERT OR REPLACE INTO tg_cards(handoff_id, chat_id, message_id, text, quote, ts) "
@@ -166,8 +197,8 @@ def sync() -> int:
         card = handoff_card.build(h, now)
         text, quote = card_text(h, card), t["quote"]
         if text != t["text"]:
-            call("editMessageText", chat_id=t["chat_id"], message_id=t["message_id"], text=text, parse_mode="HTML",
-                 reply_markup=_buttons(h))
+            _card_call("editMessageText", text, chat_id=t["chat_id"], message_id=t["message_id"],
+                       reply_markup=_buttons(h))
             done += 1
         if card["quote"] and _quote_mark(card) != quote:
             quote = _send_quote(h, card, t["message_id"]) or quote
