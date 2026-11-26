@@ -1,0 +1,295 @@
+"""Тесты черновика КП: суммы и НДС, проверки входа, PDF, нумерация.
+
+Идут на реальном каталоге data/db/catalog.sqlite (нет базы: тесты пропускаются).
+Хранилище приложения и каталог с PDF на время теста направлены во временную папку.
+"""
+from __future__ import annotations
+
+import re
+import sqlite3
+import sys
+import threading
+import types
+from datetime import datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
+
+import pytest
+from pypdf import PdfReader
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:  # чтобы тест находил пакет app и при запуске .venv/bin/pytest
+    sys.path.insert(0, str(ROOT))
+
+from app import config, store  # noqa: E402
+from app.quote import kp  # noqa: E402
+
+pytestmark = pytest.mark.skipif(not config.CATALOG_DB.exists(), reason=f"нет базы каталога {config.CATALOG_DB}")
+
+CENT = Decimal("0.01")
+
+
+def money(value) -> Decimal:
+    return Decimal(str(value)).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def vat_of(amount: Decimal) -> Decimal:
+    return (amount * 22 / 122).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def ru(value) -> str:
+    """Число так, как оно стоит в PDF, без пробелов между разрядами: 1054.17 -> «1054,17»."""
+    return f"{money(value):.2f}".replace(".", ",")
+
+
+def pdf_pages(path) -> list[str]:
+    return [page.extract_text() for page in PdfReader(path).pages]
+
+
+def squeeze(text: str) -> str:
+    """Текст без пробелов и переносов: сравнение не зависит от того, как PDF разбит на строки."""
+    return re.sub(r"\s+", "", text)
+
+
+@pytest.fixture(autouse=True)
+def storage(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "APP_DB", tmp_path / "app.sqlite")
+    monkeypatch.setattr(config, "QUOTES_DIR", tmp_path / "quotes")
+    monkeypatch.setattr(store, "_local", threading.local())  # свое соединение с базой на каждый тест
+    yield tmp_path
+    con = getattr(store._local, "con", None)
+    if con is not None:
+        con.close()
+
+
+@pytest.fixture(scope="module")
+def catalog():
+    con = sqlite3.connect(config.CATALOG_DB)
+    con.row_factory = sqlite3.Row
+    yield con
+    con.close()
+
+
+@pytest.fixture(scope="module")
+def offers(catalog):
+    """Три реальные позиции: из реестра отечественного ПО с ценой, обычная с ценой, с ценой по запросу."""
+    def pick(*wheres):
+        for where in wheres:
+            row = catalog.execute("SELECT id, name, vendor_code, price, registry_no, available FROM offers "
+                                  f"WHERE {where} ORDER BY id LIMIT 1").fetchone()
+            if row:
+                return dict(row)
+        pytest.skip("в каталоге нет подходящей позиции")
+
+    foreign = "(registry_no IS NULL OR registry_no = '')"
+    return {
+        "registry": pick("price > 0 AND registry_no <> ''"),
+        "plain": pick(f"price > 0 AND price <> CAST(price AS INTEGER) AND {foreign}", f"price > 0 AND {foreign}"),
+        "request": pick("price IS NULL"),
+    }
+
+
+@pytest.fixture(scope="module")
+def missing_id(catalog):
+    return catalog.execute("SELECT MAX(id) FROM offers").fetchone()[0] + 1000
+
+
+def quote_rows() -> list:
+    return store.db().execute("SELECT * FROM quotes ORDER BY id").fetchall()
+
+
+def test_sums_vat_and_pdf(offers, storage):
+    reg, plain, req = offers["registry"], offers["plain"], offers["request"]
+    res = kp.make_quote("s1", "ООО «Ромашка»",
+                        [{"offer_id": reg["id"], "qty": 3}, {"offer_id": plain["id"], "qty": 7},
+                         {"offer_id": req["id"], "qty": 2}],
+                        inn="7701234567", contact="buh@romashka.example")
+    assert res["ok"] is True, res
+    reg_sum, plain_sum = money(reg["price"]) * 3, money(plain["price"]) * 7
+    by_id = {item["offer_id"]: item for item in res["items"]}
+
+    assert by_id[reg["id"]] == {"offer_id": reg["id"], "name": by_id[reg["id"]]["name"],
+                                "vendor_code": reg["vendor_code"] or "", "qty": 3, "price": float(money(reg["price"])),
+                                "sum": float(reg_sum), "vat": "Без НДС", "available": bool(reg["available"])}
+    assert by_id[plain["id"]]["price"] == float(money(plain["price"]))
+    assert by_id[plain["id"]]["sum"] == float(plain_sum)
+    assert by_id[plain["id"]]["vat"] == float(vat_of(plain_sum))
+    assert (by_id[req["id"]]["price"], by_id[req["id"]]["sum"], by_id[req["id"]]["vat"]) == (None, None, None)
+    for src in (reg, plain, req):  # названия из каталога, у обрезанных в фиде снята только висящая запятая
+        assert by_id[src["id"]]["name"] == " ".join(src["name"].split()).strip(" ,;")
+
+    assert res["total"] == float(reg_sum + plain_sum)  # позиция по запросу в итог не входит
+    assert res["vat_total"] == float(vat_of(plain_sum))
+    assert res["has_price_on_request"] is True
+    assert res["customer"] == "ООО «Ромашка»"
+    assert res["note"] == "Черновик КП сформирован, его проверит менеджер."
+
+    assert re.fullmatch(r"КП-\d{8}-0001", res["number"])
+    assert res["url"] == f"/quotes/{res['number']}.pdf"
+    date = datetime.strptime(res["date"], "%d.%m.%Y")
+    assert res["number"].split("-")[1] == date.strftime("%Y%m%d")
+    assert datetime.strptime(res["valid_until"], "%d.%m.%Y") == date + timedelta(days=14)
+
+    pdf = Path(res["file"])
+    assert pdf == storage / "quotes" / f"{res['number']}.pdf" and pdf.stat().st_size > 10_000
+    pages = pdf_pages(pdf)
+    assert len(pages) == 1
+    text = squeeze(pages[0])
+    assert squeeze("Куда: ООО «Ромашка», ИНН 7701234567") in text
+    assert squeeze("Контакт заказчика: buh@romashka.example") in text
+    assert squeeze(f"Исх. № {res['number']} от {res['date']}.") in text
+    assert "Итого" + ru(reg_sum + plain_sum) + ru(vat_of(plain_sum)) in text
+    assert ru(plain_sum) in text and ru(reg_sum) in text
+    assert text.count("позапросу") == 3 and "БезНДС" in text  # цена, сумма и строка под таблицей
+    for phrase in ("Уважаемый заказчик!", "Артикул", "Наименование", "В т.ч. НДС",
+                   "Позиции с ценой по запросу рассчитает менеджер.",
+                   "НДС рассчитан автоматически, проверяет менеджер.",
+                   "Условия оплаты: Предоплата.", f"Срок поставки: {kp.DEFAULT_DELIVERY}.",
+                   f"Срок действия коммерческого предложения - до {res['valid_until']}.",
+                   "Черновик коммерческого предложения.",
+                   "Подготовлен ИИ-консультантом Softline Store, требует проверки менеджером.",
+                   "Бондаренко Александр", "Директор департамента"):
+        assert squeeze(phrase) in text, phrase
+
+    (row,) = quote_rows()
+    assert (row["session_id"], row["number"], row["customer"], row["total"], row["file"]) == \
+           ("s1", res["number"], "ООО «Ромашка»", res["total"], str(pdf))
+
+
+def test_only_offer_id_and_qty_are_taken_from_the_model(offers):
+    plain = offers["plain"]
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": str(plain["id"]), "qty": 2.0, "price": 1, "sum": 2,
+                                           "name": "Подмена", "vendor_code": "FAKE", "vat": 0}],
+                        payment="постоплата 30 дней.", delivery="5 рабочих дней")
+    assert res["ok"] is True, res
+    (item,) = res["items"]
+    assert item["name"] != "Подмена" and item["vendor_code"] == (plain["vendor_code"] or "")
+    assert (item["qty"], item["price"], item["sum"]) == (2, float(money(plain["price"])),
+                                                         float(money(plain["price"]) * 2))
+    assert res["total"] == item["sum"] and res["has_price_on_request"] is False
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert squeeze("Куда: ООО Тест") in text and "ИНН" not in text and "Контактзаказчика" not in text
+    assert squeeze("Условия оплаты: постоплата 30 дней.") in text
+    assert squeeze("Срок поставки: 5 рабочих дней.") in text
+    assert "Подмена" not in text and "FAKE" not in text and "рассчитаетменеджер" not in text
+
+
+def test_errors_do_not_create_pdf(offers, missing_id, storage):
+    good = {"offer_id": offers["plain"]["id"], "qty": 1}
+    cases = [
+        (dict(customer="", items=[good]), "заказчик"),
+        (dict(customer="   ", items=[good]), "заказчик"),
+        (dict(customer="ООО Тест", items=[]), "позици"),
+        (dict(customer="ООО Тест", items=None), "позици"),
+        (dict(customer="ООО Тест", items=[{**good, "qty": 0}]), "qty"),
+        (dict(customer="ООО Тест", items=[{**good, "qty": -3}]), "qty"),
+        (dict(customer="ООО Тест", items=[{**good, "qty": 2.5}]), "qty"),
+        (dict(customer="ООО Тест", items=[{**good, "qty": "много"}]), "qty"),
+        (dict(customer="ООО Тест", items=[{**good, "qty": True}]), "qty"),
+        (dict(customer="ООО Тест", items=[{"offer_id": good["offer_id"]}]), "qty"),
+        (dict(customer="ООО Тест", items=[{"qty": 1}]), "offer_id"),
+        (dict(customer="ООО Тест", items=[good, {"offer_id": missing_id, "qty": 1}]), str(missing_id)),
+        (dict(customer="ООО Тест", items=[good] * 31), "30"),
+    ]
+    for kwargs, expected in cases:
+        res = kp.make_quote("s1", **kwargs)
+        assert res["ok"] is False and set(res) == {"ok", "error"}, (kwargs, res)
+        assert expected in res["error"] and re.search("[а-яё]", res["error"]), (kwargs, res)
+    assert not list(storage.rglob("*.pdf"))
+    assert quote_rows() == []
+
+
+def test_missing_offer_is_named(offers, missing_id):
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": missing_id, "qty": 1}, {"offer_id": missing_id + 1, "qty": 2}])
+    assert res["ok"] is False
+    assert f"offer_id {missing_id} не найден" in res["error"] and f"offer_id {missing_id + 1} не найден" in res["error"]
+
+
+def test_thirty_items_continue_on_next_page_with_table_header(catalog, storage):
+    ids = [r[0] for r in catalog.execute("SELECT id FROM offers WHERE price > 0 AND vendor_code <> '' "
+                                         "ORDER BY LENGTH(name) DESC, id LIMIT 30")]
+    assert len(ids) == 30
+    res = kp.make_quote("s1", "ООО «Тридцать позиций»", [{"offer_id": i, "qty": n} for n, i in enumerate(ids, 1)])
+    assert res["ok"] is True, res
+    assert len(res["items"]) == 30
+    expected = sum(money(catalog.execute("SELECT price FROM offers WHERE id=?", (i,)).fetchone()[0]) * n
+                   for n, i in enumerate(ids, 1))
+    assert res["total"] == float(expected)
+
+    pages = [squeeze(p) for p in pdf_pages(res["file"])]
+    assert len(pages) >= 2
+    assert "Уважаемыйзаказчик!" in pages[0] and all("Уважаемыйзаказчик!" not in p for p in pages[1:])
+    assert all(res["number"] in p for p in pages)
+    (total_page,) = [n for n, p in enumerate(pages) if "Итого" in p]
+    assert total_page >= 1
+    for page in pages[:total_page + 1]:  # шапка таблицы повторяется на каждой странице с позициями
+        assert "Артикул" in page and "Наименование" in page and squeeze("Сумма, руб.") in page
+    for item in res["items"]:  # ни одна позиция не потерялась при переносе
+        assert sum(p.count(squeeze(item["vendor_code"])) for p in pages) >= 1
+    # итог не отрывается от последней позиции и сноски; условия, плашка и подпись идут одним блоком
+    assert "Итого" + ru(expected) in pages[total_page] and ru(res["items"][-1]["sum"]) in pages[total_page]
+    assert squeeze("НДС рассчитан автоматически") in pages[total_page]
+    (terms_page,) = [p for p in pages if squeeze("Цена указана с учетом") in p]
+    assert squeeze("Черновик коммерческого предложения.") in terms_page and squeeze("Бондаренко А.С.") in terms_page
+
+
+def test_numbers_grow_and_special_characters_are_safe(offers, storage):
+    item = [{"offer_id": offers["registry"]["id"], "qty": 1}]
+    first = kp.make_quote("s1", 'ЗАО "Альфа & Омега" <тест>', item, inn="7700000000")
+    second = kp.make_quote("s2", "ИП Иванов И.И.", item)
+    assert first["ok"] and second["ok"], (first, second)
+    assert first["number"].endswith("-0001") and second["number"].endswith("-0002")
+    assert Path(first["file"]).exists() and Path(second["file"]).exists()
+    assert [r["number"] for r in quote_rows()] == [first["number"], second["number"]]
+    text = squeeze(pdf_pages(first["file"])[0])
+    assert squeeze('Куда: ЗАО "Альфа & Омега" <тест>, ИНН 7700000000') in text
+    assert second["vat_total"] == 0.0 and second["has_price_on_request"] is False
+    assert "Итого" + ru(second["total"]) + "БезНДС" in squeeze(pdf_pages(second["file"])[0])
+
+
+def test_offer_is_read_from_table_when_catalog_search_is_missing(offers, missing_id, monkeypatch):
+    monkeypatch.setitem(sys.modules, "app.catalog.search", None)  # импорт модуля поиска падает
+    plain = offers["plain"]
+    found = kp._offer(plain["id"])
+    assert (found["offer_id"], found["name"], found["vendor_code"], found["price"], found["registry_no"]) == \
+           (plain["id"], plain["name"], plain["vendor_code"], plain["price"], plain["registry_no"])
+    assert kp._offer(missing_id) is None
+    assert kp.make_quote("s1", "ООО Тест", [{"offer_id": plain["id"], "qty": 4}])["total"] == \
+           float(money(plain["price"]) * 4)
+
+
+def test_unavailable_catalog_and_oversized_text_are_reported(offers, storage, monkeypatch):
+    item = [{"offer_id": offers["plain"]["id"], "qty": 1}]
+    res = kp.make_quote("s1", "ООО «Длинное название» " * 300, item)
+    assert res["ok"] is False and "слишком длинный текст" in res["error"]
+
+    monkeypatch.setitem(sys.modules, "app.catalog.search", None)
+    monkeypatch.setattr(config, "CATALOG_DB", storage / "no-catalog.sqlite")
+    res = kp.make_quote("s1", "ООО Тест", item)
+    assert res["ok"] is False and "Каталог сейчас недоступен" in res["error"]
+    assert not (storage / "no-catalog.sqlite").exists()  # чтение каталога не создает пустую базу
+    assert not list(storage.rglob("*.pdf")) and quote_rows() == []
+
+
+def test_catalog_search_is_used_and_rounding_is_to_kopecks(monkeypatch):
+    fake_offers = {
+        1: {"offer_id": 1, "name": "Лицензия А", "vendor_code": "A-1", "price": 100, "registry_no": None},
+        2: {"offer_id": 2, "name": "Лицензия Б", "vendor_code": "B-2", "price": 0.99, "registry_no": ""},
+        3: {"offer_id": 3, "name": "Отечественная ОС", "vendor_code": None, "price": 999.99, "registry_no": "1999"},
+        4: {"offer_id": 4, "name": "Цена по запросу", "vendor_code": "D-4", "price": None, "registry_no": None},
+    }
+    fake = types.ModuleType("app.catalog.search")
+    fake.get_offer = lambda offer_id: fake_offers.get(offer_id) or {"error": "offer_not_found", "offer_id": offer_id}
+    monkeypatch.setitem(sys.modules, "app.catalog.search", fake)
+
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 1}, {"offer_id": 2, "qty": 3},
+                                           {"offer_id": 3, "qty": 2}, {"offer_id": 4, "qty": 5}])
+    assert res["ok"] is True, res
+    assert [(i["name"], i["price"], i["sum"], i["vat"]) for i in res["items"]] == [
+        ("Лицензия А", 100.0, 100.0, 18.03),      # 100 * 22 / 122 = 18.0327...
+        ("Лицензия Б", 0.99, 2.97, 0.54),         # 2.97 * 22 / 122 = 0.5355...
+        ("Отечественная ОС", 999.99, 1999.98, "Без НДС"),
+        ("Цена по запросу", None, None, None),
+    ]
+    assert res["total"] == 2102.95 and res["vat_total"] == 18.57 and res["has_price_on_request"] is True
+    assert kp.VAT_RATE == Decimal("22")
