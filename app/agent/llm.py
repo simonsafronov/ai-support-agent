@@ -100,8 +100,9 @@ class GigaChat:
         body = {"model": self.model, "messages": self._to_wire(messages), "temperature": temperature,
                 "max_tokens": max_tokens}
         if tools:
-            body["functions"] = [{"name": t["name"], "description": t["description"],
-                                  "parameters": t["parameters"]} for t in tools]
+            body["functions"] = [{"name": t["name"], "description": t["description"], "parameters": t["parameters"],
+                                  **({"few_shot_examples": t["examples"]} if t.get("examples") else {})}
+                                 for t in tools]
             body["function_call"] = "auto"
         t0 = time.time()
         data = _post(self.client, f"{self.BASE_URL}/chat/completions",

@@ -206,8 +206,33 @@ TOOLS = [
 BY_NAME = {t["name"]: t for t in TOOLS}
 
 
+# Примеры "реплика клиента -> аргументы": GigaChat принимает их вместе с описанием функции
+EXAMPLES = {
+    "search_products": [
+        {"request": "сколько стоит кес на 30 компов", "params": {"query": "Kaspersky Endpoint Security"}},
+        {"request": "нужен российский антивирус для организации",
+         "params": {"query": "антивирус для бизнеса", "russian_only": True}},
+        {"request": "оформите кп на kl4863rapfs 40 штук", "params": {"query": "KL4863RAPFS"}},
+    ],
+    "get_product": [
+        {"request": "на 50 пользователей на год, новая лицензия",
+         "params": {"product_id": "3935", "nodes": 50, "term_months": 12, "license_type": "Полная версия"}},
+    ],
+    "kb_search": [
+        {"request": "как я получу лицензию после оплаты", "params": {"query": "доставка электронной лицензии"}},
+        {"request": "цены с ндс?", "params": {"query": "НДС"}},
+    ],
+    "handoff_to_manager": [
+        {"request": "мы бюджетники, нужна скидка и закупка по 44-фз, почта zakupki@school.ru",
+         "params": {"reason": "госзакупка и скидка", "summary": "Бюджетное учреждение, закупка по 44-ФЗ, "
+                    "просит скидку. Продукт пока не назван.", "contact": "zakupki@school.ru"}},
+    ],
+}
+
+
 def specs() -> list[dict]:
-    return [{k: t[k] for k in ("name", "description", "parameters")} for t in TOOLS]
+    return [{**{k: t[k] for k in ("name", "description", "parameters")}, "examples": EXAMPLES.get(t["name"], [])}
+            for t in TOOLS]
 
 
 def call(ctx: ToolContext, name: str, args: dict) -> dict:
