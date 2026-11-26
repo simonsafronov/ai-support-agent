@@ -149,9 +149,11 @@ def test_sums_vat_and_pdf(offers, storage):
     assert squeeze(f"Исх. № {res['number']} от {res['date']}.") in text
     assert "Итого" + ru(reg_sum + plain_sum) + ru(vat_of(plain_sum)) in text
     assert ru(plain_sum) in text and ru(reg_sum) in text
-    assert text.count("позапросу") == 3 and "БезНДС" in text  # цена, сумма и строка под таблицей
-    for phrase in ("Уважаемый заказчик!", "Артикул", "Наименование", "В т.ч. НДС",
-                   "Позиции с ценой по запросу рассчитает менеджер.",
+    assert text.count("позапросу") == 1 and "БезНДС" in text  # позиция по запросу стоит блоком под таблицей
+    article = f", арт. {req['vendor_code']}" if req["vendor_code"] else ""
+    assert text.index("Итого") < text.index(squeeze(kp.ON_REQUEST_HEAD)) < text.index(squeeze("Цена указана"))
+    assert squeeze(f"{by_id[req['id']]['name']}{article}, 2 шт.") in text
+    for phrase in ("Уважаемый заказчик!", "Наименование", "В т.ч. НДС", kp.ON_REQUEST_HEAD,
                    "НДС рассчитан автоматически, проверяет менеджер.",
                    "Условия оплаты: Предоплата.", f"Срок поставки: {kp.DEFAULT_DELIVERY}.",
                    f"Срок действия коммерческого предложения - до {res['valid_until']}.",
@@ -408,3 +410,70 @@ def test_stand_quote_is_rebuilt_with_the_discount_given_in_the_dialog(monkeypatc
     assert again["number"] == first["number"] and len(quote_rows()) == 1
     assert "Скидка5%−100,00" in squeeze(pdf_pages(again["file"])[0])
     assert to_stand.requote(store.get_session(None, "eval-c01")["id"]) is None  # в диалоге КП не было
+
+
+
+def number(text: str) -> Decimal:
+    """Число из ячейки PDF: «−1 054,17» -> Decimal("-1054.17")."""
+    return Decimal(text.replace(kp.MINUS, "-").replace(kp.NBSP, "").replace(",", "."))
+
+
+@pytest.fixture
+def printed(monkeypatch):
+    """Ячейки таблицы последнего собранного КП: ровно тот текст, который уходит в PDF."""
+    seen, render = {}, kp._render
+    monkeypatch.setattr(kp, "_render", lambda q: seen.update(cells=kp.table_cells(q)) or render(q))
+    return seen
+
+
+@pytest.mark.parametrize("discount", [0, 5, 2.5])
+def test_printed_table_adds_up(monkeypatch, printed, discount):
+    """Арифметика напечатанного: цена на количество дает сумму строки, столбцы сходятся с итогом."""
+    fake_catalog(monkeypatch, {
+        1: {"offer_id": 1, "name": "Лицензия А", "vendor_code": "A-1", "price": 6150, "registry_no": "1999"},
+        2: {"offer_id": 2, "name": "Лицензия Б", "vendor_code": "B-2", "price": 13566, "registry_no": None},
+        3: {"offer_id": 3, "name": "Лицензия В", "vendor_code": "C-3", "price": 7703.1, "registry_no": None},
+        4: {"offer_id": 4, "name": "Цена по запросу", "vendor_code": "D-4", "price": None, "registry_no": None}})
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 25}, {"offer_id": 2, "qty": 3},
+                                           {"offer_id": 3, "qty": 17}, {"offer_id": 4, "qty": 10}],
+                        discount_percent=discount)
+    cells = printed["cells"]
+    items = [c for c in cells if c["kind"] == "item"]
+    assert [c["name"] for c in items] == ["Лицензия А", "Лицензия Б", "Лицензия В"]  # позиция по запросу вне таблицы
+    for c in items:
+        assert number(c["price"]) * int(c["qty"]) == number(c["sum"]), c
+    rows_sum = sum(number(c["sum"]) for c in items)
+    rows_vat = sum(number(c["vat"]) for c in items if c["vat"] != kp.NO_VAT)
+    total = cells[-1]
+    assert (total["kind"], number(total["sum"]), number(total["vat"])) == \
+           ("total", Decimal(str(res["total"])), Decimal(str(res["vat_total"])))
+    if discount:
+        before, off = [c for c in cells if c["kind"] == "subtotal"]
+        assert (number(before["sum"]), number(before["vat"])) == (rows_sum, rows_vat)
+        assert number(off["sum"]) < 0 and number(off["vat"]) < 0
+        assert number(before["sum"]) + number(off["sum"]) == number(total["sum"])
+        assert number(before["vat"]) + number(off["vat"]) == number(total["vat"])
+    else:
+        assert (rows_sum, rows_vat) == (number(total["sum"]), number(total["vat"]))
+        assert all(c["kind"] != "subtotal" for c in cells)
+
+
+def test_long_sums_are_printed_in_full_in_one_line(monkeypatch, printed):
+    """Суммы от миллиона: число целиком, с первой цифрой, в одну строку в своей колонке."""
+    fake_catalog(monkeypatch, {1: {"offer_id": 1, "name": "Лицензия А", "vendor_code": "A-1", "price": 1234567.89,
+                                   "registry_no": None}})
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 9}], discount_percent=5)
+    full = money("1234567.89") * 9
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "A-1ЛицензияА9" + ru("1234567.89") + ru(full) + ru(vat_of(full)) in text
+    assert "Суммабезскидки" + ru(full) + ru(vat_of(full)) in text
+    assert "Итого" + ru(res["total"]) + ru(res["vat_total"]) in text and res["total"] > 10_000_000
+
+    widths = kp.column_widths(True)
+    for cell in printed["cells"]:
+        for key in ("qty", "price", "sum", "vat"):
+            if cell.get(key):
+                room = widths[key] - 2 * kp.PAD
+                para = kp._fit(cell[key], room, kp.S_NUM_BOLD)
+                para.wrap(room, 1000)
+                assert len(para.blPara.lines) == 1 and para.getActualLineWidths0()[0] <= room + 0.01, cell

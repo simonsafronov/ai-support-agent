@@ -49,6 +49,7 @@ DRAFT_TITLE = "Черновик коммерческого предложени�
 DRAFT_TEXT = "Подготовлен ИИ-консультантом Softline Store, требует проверки менеджером."
 VAT_FOOTNOTE = "НДС рассчитан автоматически, проверяет менеджер."
 ON_REQUEST_LINE = "Позиции с ценой по запросу рассчитает менеджер."
+ON_REQUEST_HEAD = "Позиции с ценой по запросу, в итог не входят, их рассчитает менеджер:"
 UNAVAILABLE_LINE = "Наличие позиций, которых сейчас нет в продаже на сайте, подтвердит менеджер."
 
 MSK = timezone(timedelta(hours=3))  # дата КП по московскому времени
@@ -97,6 +98,7 @@ S_TOTAL = _style("total", "Inter-Bold", 9, alignment=TA_CENTER)
 S_SUBTOTAL = _style("subtotal", alignment=TA_CENTER)
 S_FOOTNOTE = _style("footnote", size=7, alignment=TA_RIGHT, textColor=GREY)
 S_TERMS = _style("terms", leading=12.5, leftIndent=43.1)
+S_REQUEST = _style("request", leading=12.5, leftIndent=55.1, bulletIndent=43.1)
 S_DRAFT = _style("draft", size=9, leading=13)
 S_SIGN = _style("sign", size=9.3, leading=14)
 
@@ -359,16 +361,20 @@ def column_widths(with_article: bool) -> dict:
     return widths
 
 
-def _items_table(q: dict) -> Table:
-    lines = q["lines"]
-    widths = column_widths(any(ln["vendor_code"] for ln in lines))
-    inner = {key: w - 2 * PAD for key, w in widths.items()}
+def _split(q: dict) -> tuple[list[dict], list[dict]]:
+    """Позиции таблицы и позиции по запросу: вторые идут блоком под таблицей, чтобы итог читался однозначно.
 
-    def row(**cells) -> list:
-        return [cells.get(key, "") for key in widths]
+    Когда цены нет ни у одной позиции, все остаются в таблице: итога в рублях в таком КП нет.
+    """
+    priced = [ln for ln in q["lines"] if ln["sum"] is not None]
+    return (priced, [ln for ln in q["lines"] if ln["sum"] is None]) if priced else (q["lines"], [])
 
-    def money_cells(amount: str, vat: str, style: ParagraphStyle) -> dict:
-        return {"sum": _fit(amount, inner["sum"], style), "vat": _fit(vat, inner["vat"], style)}
+
+def table_cells(q: dict) -> list[dict]:
+    """Текст ячеек таблицы строка за строкой, как он будет напечатан: позиции, строки скидки, итог."""
+    lines = _split(q)[0]
+    off = q["list_total"] - q["total"]  # скидка в рублях: тогда позиции идут по ценам каталога
+    shown = [ln["list"] if off else ln for ln in lines]
 
     def vat_text(rows: list[dict], vat_sum: Decimal, sign: str = "") -> str:
         """НДС итоговой строки: сумма, а когда складывать нечего, «Без НДС» или прочерк."""
@@ -377,30 +383,51 @@ def _items_table(q: dict) -> Table:
             return sign + _fmt(vat_sum)
         return NO_VAT if all(v == NO_VAT for v in vats) else "—"
 
-    has_sum = any(ln["sum"] is not None for ln in lines)
-    off = q["list_total"] - q["total"]  # скидка в рублях: в документе позиции идут по ценам каталога
-    shown = [ln["list"] if off else ln for ln in lines]
-    data = [row(**{key: Paragraph(title.replace(" ", NBSP), S_HEAD) for key, title in HEAD})]
+    cells = []
     for ln, cell in zip(lines, shown):
         priced = cell["price"] is not None
-        vat = _fmt(cell["vat"]) if isinstance(cell["vat"], Decimal) else (cell["vat"] or "—")
-        code = _wrap_code(ln["vendor_code"] or "—", inner["code"], S_CODE) if "code" in inner else ""
-        data.append(row(code=code,
-                        name=Paragraph(escape(ln["name"]), S_NAME), qty=_fit(str(ln["qty"]), inner["qty"], S_QTY),
-                        price=_fit(_fmt(cell["price"]) if priced else ON_REQUEST, inner["price"], S_NUM),
-                        **money_cells(_fmt(cell["sum"]) if priced else ON_REQUEST, vat, S_NUM)))
-    extra = []
+        cells.append({"kind": "item", "code": ln["vendor_code"] or "—", "name": ln["name"], "qty": str(ln["qty"]),
+                      "price": _fmt(cell["price"]) if priced else ON_REQUEST,
+                      "sum": _fmt(cell["sum"]) if priced else ON_REQUEST,
+                      "vat": _fmt(cell["vat"]) if isinstance(cell["vat"], Decimal) else (cell["vat"] or "—")})
     if off:
-        extra = [row(name=Paragraph("Сумма без скидки", S_SUBTOTAL),
-                     **money_cells(_fmt(q["list_total"]), vat_text(shown, q["list_vat_total"]), S_NUM)),
-                 row(name=Paragraph(f"Скидка {_percent(q['discount'])}%", S_SUBTOTAL),
-                     **money_cells(MINUS + _fmt(off), vat_text(shown, q["list_vat_total"] - q["vat_total"], MINUS),
-                                   S_NUM))]
-    data += extra
-    data.append(row(name=Paragraph("Итого", S_TOTAL),
-                    **money_cells(_fmt(q["total"]) if has_sum else ON_REQUEST, vat_text(lines, q["vat_total"]),
-                                  S_NUM_BOLD)))
+        cells += [{"kind": "subtotal", "name": "Сумма без скидки", "sum": _fmt(q["list_total"]),
+                   "vat": vat_text(shown, q["list_vat_total"])},
+                  {"kind": "subtotal", "name": f"Скидка {_percent(q['discount'])}%", "sum": MINUS + _fmt(off),
+                   "vat": vat_text(shown, q["list_vat_total"] - q["vat_total"], MINUS)}]
+    has_sum = any(ln["sum"] is not None for ln in lines)
+    cells.append({"kind": "total", "name": "Итого", "sum": _fmt(q["total"]) if has_sum else ON_REQUEST,
+                  "vat": vat_text(lines, q["vat_total"])})
+    return cells
+
+
+def column_widths(with_article: bool) -> dict:
+    """Ширины колонок; без артикулов графа «Артикул» не печатается, ее место занимает наименование."""
+    widths = dict(COLS)
+    if not with_article:
+        widths["name"] += widths.pop("code")
+    return widths
+
+
+NAME_STYLE = {"item": S_NAME, "subtotal": S_SUBTOTAL, "total": S_TOTAL}
+
+
+def _items_table(q: dict) -> Table:
+    cells = table_cells(q)
+    widths = column_widths(any(c["kind"] == "item" and c["code"] != "—" for c in cells))
+    inner = {key: w - 2 * PAD for key, w in widths.items()}
+
+    def flow(kind: str, key: str, text: str):
+        if key == "code":
+            return _wrap_code(text, inner[key], S_CODE)
+        if key == "name":
+            return Paragraph(escape(text), NAME_STYLE[kind])
+        return _fit(text, inner[key], S_QTY if key == "qty" else S_NUM_BOLD if kind == "total" else S_NUM)
+
+    data = [[Paragraph(title.replace(" ", NBSP), S_HEAD) for key, title in HEAD if key in widths]]
+    data += [[flow(c["kind"], key, c[key]) if c.get(key) else "" for key in widths] for c in cells]
     data.append([Paragraph(VAT_FOOTNOTE, S_FOOTNOTE)] + [""] * (len(widths) - 1))
+    tail = 3 + sum(c["kind"] == "subtotal" for c in cells)  # последняя позиция, строки скидки, итог и сноска
     return Table(data, colWidths=list(widths.values()), repeatRows=1, style=[
         ("GRID", (0, 0), (-1, -2), 0.5, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -411,9 +438,18 @@ def _items_table(q: dict) -> Table:
         ("SPAN", (0, -1), (-1, -1)),
         ("LEFTPADDING", (0, -1), (-1, -1), 0), ("RIGHTPADDING", (0, -1), (-1, -1), 0),
         ("TOPPADDING", (0, -1), (-1, -1), 3), ("BOTTOMPADDING", (0, -1), (-1, -1), 0),
-        # последняя позиция, строки скидки, итог и сноска не отрываются друг от друга
-        ("NOSPLIT", (0, -3 - len(extra)), (-1, -1)),
+        ("NOSPLIT", (0, -tail), (-1, -1)),  # не отрываются друг от друга
     ])
+
+
+def _on_request_block(q: dict) -> list:
+    """Позиции по запросу списком под таблицей: наименование, артикул и количество."""
+    rows = _split(q)[1]
+    if not rows:
+        return []
+    items = [Paragraph(escape(f"{ln['name']}{', арт. ' + ln['vendor_code'] if ln['vendor_code'] else ''}, "
+                              f"{ln['qty']} шт."), S_REQUEST, bulletText="•") for ln in rows]
+    return [Paragraph(ON_REQUEST_HEAD, S_TERMS), *items, Spacer(1, 8)]
 
 
 def _plain(children: list, widths: tuple, extra: list) -> Table:
@@ -449,8 +485,9 @@ def _render(q: dict) -> bytes:
                   [("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (0, 0), 14.5),
                    ("RIGHTPADDING", (1, 0), (1, 0), 6.5)])
 
+    below = _on_request_block(q)
     terms = ["Цена указана с учетом всех налогов, сборов, и других обязательных платежей."]
-    if q["has_price_on_request"]:
+    if q["has_price_on_request"] and not below:
         terms.append(ON_REQUEST_LINE)
     if q.get("has_unavailable"):
         terms.append(UNAVAILABLE_LINE)
@@ -471,7 +508,7 @@ def _render(q: dict) -> bytes:
              Spacer(1, 11.8),
              Paragraph(f"{SELLER} предлагает Вашему вниманию коммерческое предложение на следующих условиях:",
                        S_INTRO),
-             Spacer(1, 11.1), _items_table(q), Spacer(1, 6),
+             Spacer(1, 11.1), _items_table(q), Spacer(1, 6), *below,
              KeepTogether([*(Paragraph(escape(t), S_TERMS) for t in terms), Spacer(1, 22), draft, Spacer(1, 30),
                            sign])]
 
