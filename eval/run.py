@@ -66,7 +66,8 @@ def check(case: dict, run: dict) -> dict:
 
     out["ответил_сам"] = all(r != loop.FALLBACK for r in replies)
     out["нужный_инструмент"] = any(t in tools for t in exp["tools_any"]) if exp["tools_any"] else None
-    out["упомянул_ожидаемое"] = any(m in low for m in exp["mention_any"]) if exp["mention_any"] else None
+    plain = re.sub(r'[«»"“”„]', "", low)  # название в кавычках ("«Альт Виртуализация» 11") это то же название
+    out["упомянул_ожидаемое"] = any(m in plain for m in exp["mention_any"]) if exp["mention_any"] else None
     # "any": по данным каталога и справки верны оба исхода (ответа в них нет, передать менеджеру допустимо)
     out["передача_менеджеру"] = None if exp["handoff"] == "any" else ("handoff" in events) == bool(exp["handoff"])
     out["черновик_кп"] = ("quote" in events) if exp["quote"] else None

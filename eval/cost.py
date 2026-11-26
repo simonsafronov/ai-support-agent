@@ -14,9 +14,12 @@ import sqlite3
 import sys
 
 from app import config
+from app.agent import prompts, tools
+from app.agent.llm import Bridge
 
 USD = 82.3130   # курс ЦБ на 26.11.2026
-PREFIX = 4221   # токенов в неизменной части запроса: инструкция и описания инструментов
+# токенов в неизменной части запроса (инструкция и описания инструментов), той же оценкой, что в прогоне
+PREFIX = Bridge.tokens(prompts.SYSTEM + json.dumps(tools.specs(), ensure_ascii=False))
 PRICES = {      # руб. за 1 млн токенов: вход, запись в кэш, чтение из кэша, выход
     "Прайс Anthropic": (2 * USD, 2.5 * USD, 0.1 * USD, 10 * USD),
     "Российский посредник": (400.0, 500.0, 20.0, 2000.0),  # цена записи в кэш принята как 125% входа
@@ -63,7 +66,7 @@ def report(db: str) -> dict:
            "in_per_reply": round(sum(p for p, _ in calls) / len(turns)),
            "out_per_reply": round(sum(c for _, c in calls) / len(turns)),
            "replies_per_dialog": round(len(turns) / dialogs, 2), "calls_per_reply": round(len(calls) / len(turns), 2),
-           "prefix_share": round(PREFIX * len(calls) / sum(p for p, _ in calls), 2), "rub": {}}
+           "prefix_tokens": PREFIX, "prefix_share": round(PREFIX * len(calls) / sum(p for p, _ in calls), 2), "rub": {}}
     for name, price in PRICES.items():
         for cache in (False, True):
             t = cost(turns, price, cache)
