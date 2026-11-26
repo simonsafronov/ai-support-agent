@@ -132,3 +132,34 @@ def test_said_at_finds_the_last_place_the_client_wrote_the_value():
     assert tools._said_at(said, "inn", NEW_INN) == (1, 4)
     assert tools._said_at(said, "inn", "7701234567") is None
     assert tools._said_at(["Счет на ООО «Ромашка»"], "company", "ООО Ромашка") == (0, 0)
+
+
+# --- B. Сверка состава КП: эталонной цены нет ---
+
+WANT = [{"code": "KL4863RAPFS", "qty": 40}]
+
+
+def kp_of(price) -> dict:
+    """КП на одну позицию; price None: цена по запросу, строка без суммы."""
+    line = {"offer_id": 4985, "name": "Kaspersky Endpoint Security для бизнеса Стандартный",
+            "vendor_code": "KL4863RAPFS", "qty": 40, "price": price, "sum": None if price is None else price * 40}
+    return {"ok": True, "items": [line], "total": line["sum"] or 0, "discount_percent": 0}
+
+
+def test_missing_reference_price_fails_the_check():
+    """Зачем: каталог не вернул цену (предложения нет, цена пустая), и сверка цены пропускалась без ошибки."""
+    assert quote_check.mismatches(WANT, kp_of(2813.4), lambda _id: None) == [
+        "эталонная цена не найдена: KL4863RAPFS (offer_id 4985), в каталоге нет такого предложения или у него нет цены"]
+
+
+def test_price_on_request_in_quote_and_catalog_is_a_match():
+    assert quote_check.mismatches(WANT, kp_of(None), lambda _id: None) == []
+
+
+def test_reference_price_present_works_as_before():
+    assert quote_check.mismatches(WANT, kp_of(2813.4), lambda _id: 2813.4) == []
+    assert quote_check.mismatches(WANT, kp_of(2813.4), lambda _id: 3000.0) == [
+        "KL4863RAPFS: цена 2813.4, в каталоге 3000.0"]
+    assert quote_check.mismatches(WANT, kp_of(None), lambda _id: 2813.4) == [
+        "KL4863RAPFS: цена 0.0, в каталоге 2813.4"]
+    assert quote_check.mismatches(WANT, kp_of(2813.4)) == []  # без каталога цена не сверяется

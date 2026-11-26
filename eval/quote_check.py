@@ -2,8 +2,9 @@
 
 Проверка "черновик_кп" отвечает только на вопрос, появился ли документ. Эта отвечает, что в нем: у кейса с КП
 в expect задан список quote_items (артикул или слова из названия, количество), и последний успешный make_quote
-диалога сверяется с ним позиция в позицию. Цена каждой строки сверяется с ценой того же предложения в каталоге,
-суммы пересчитываются. Документ на одну лицензию вместо сорока проверку не проходит.
+диалога сверяется с ним позиция в позицию. Цена каждой строки сверяется с ценой того же предложения в каталоге
+(цены в каталоге нет: строка не проходит, кроме цены по запросу), суммы пересчитываются. Документ на одну лицензию
+вместо сорока проверку не проходит.
 """
 from __future__ import annotations
 
@@ -27,8 +28,9 @@ def _is(item: dict, want: dict) -> bool:
 def mismatches(want_items: list[dict], quote: dict | None, catalog_price=None) -> list[str]:
     """Расхождения КП с заказом. Пустой список: состав, количества и суммы верны.
 
-    catalog_price(offer_id) дает цену предложения в каталоге или None, если ее там нет: без функции цена с
-    каталогом не сверяется (так проверяются сохраненные диалоги без базы).
+    catalog_price(offer_id) дает цену предложения в каталоге или None, если ее там нет. Эталона нет, а в КП цена
+    стоит: строка сверку не проходит. Без функции цена с каталогом не сверяется (так проверяются сохраненные диалоги
+    без базы).
     """
     if quote is None:
         return ["КП не сформировано"]
@@ -57,8 +59,15 @@ def arithmetic(quote: dict, catalog_price=None) -> list[str]:
         price, qty = float(i.get("price") or 0), i.get("qty") or 0
         if abs(price * qty - float(i.get("sum") or 0)) > CENT * max(qty, 1):
             bad.append(f"{i.get('vendor_code') or i.get('name')}: сумма строки не равна цене на количество")
-        base = catalog_price(i.get("offer_id")) if catalog_price else None
-        if base is not None and abs(base * (1 - discount / 100) - price) > CENT:
+        if not catalog_price:
+            continue
+        base = catalog_price(i.get("offer_id"))
+        if base is None and i.get("price") is None:  # цена по запросу и в КП, и в каталоге: это совпадение
+            continue
+        if base is None:  # эталона нет: строку не с чем сверить, молча она не проходит
+            bad.append(f"эталонная цена не найдена: {i.get('vendor_code') or i.get('name')} (offer_id "
+                       f"{i.get('offer_id')}), в каталоге нет такого предложения или у него нет цены")
+        elif abs(base * (1 - discount / 100) - price) > CENT:
             bad.append(f"{i.get('vendor_code') or i.get('name')}: цена {price}, в каталоге {base}")
     if abs(sum(float(i.get("sum") or 0) for i in items) - float(quote.get("total") or 0)) > CENT:
         bad.append("итог не равен сумме строк")
