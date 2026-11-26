@@ -906,7 +906,7 @@ _VALUE_SYNONYMS = {  # как клиент называет значение -> 
                  ("юр", "Коммерческая"), ("бизнес", "Коммерческая")),
     "user_type": (("физ", "Физлицо"), ("частн", "Физлицо"), ("дом", "Физлицо"), ("юр", "Юрлицо"),
                   ("орг", "Юрлицо"), ("компан", "Юрлицо")),
-    "license_type": (("нов", "Полная версия"), ("первичн", "Полная версия"), ("полн", "Полная версия"),
+    "license_type": (("полн", "Полная версия"),
                      ("продл", "Продление"), ("подпис", "Подписка"), ("обновл", "Обновление"),
                      ("поддержк", "Техподдержка"), ("миграц", "Миграция")),
 }
@@ -942,9 +942,17 @@ def _value_check(key: str, value):
     return _substring_check((key,), value, empty_passes=key in _EMPTY_PASSES, word_start=key in _WORD_FILTERS)
 
 
+def _asks_new(filters: dict) -> bool:
+    """Клиент просит новую лицензию: в фиде это не одно значение ("Полная версия", "Базовая", "Подписка")."""
+    return norm(str(filters.get("license_type", ""))).startswith(("нов", "первичн"))
+
+
 def _apply_value_filters(rows: list, filters: dict) -> list:
     """Фильтры по сроку, подстрокам параметров, тексту имени или артикула и доступности."""
-    checks = [_value_check(key, filters[key]) for key in _SUBSTRING_FILTERS if key in filters]
+    checks = [_value_check(key, filters[key]) for key in _SUBSTRING_FILTERS
+              if key in filters and not (key == "license_type" and _asks_new(filters))]
+    if _asks_new(filters):  # новая лицензия это любая, кроме продления, обновления, техподдержки и дистрибутива
+        checks.append(lambda row: not _not_new(row["license_type"]))
     term = _as_int(filters.get("term_months"))
     if term is not None:
         checks.append(lambda row: row["term_months"] == term)

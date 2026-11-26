@@ -41,3 +41,12 @@ def test_get_product_puts_renewal_after_new_license():
     assert kinds.index("Продление") == len(kinds) - 1
     only = get_product(pid, {"license_type": "Продление"})["offers"]
     assert [o.get("license_type") for o in only] == ["Продление"]
+
+
+def test_new_license_filter_means_any_purchase_type():
+    """Зачем: фильтр "новая" искал только значение "Полная версия" и давал ноль у продуктов, где новая лицензия
+    записана в фиде как "Базовая" или "Подписка"."""
+    pid = search_products("Кибер Бэкап Стандартный", limit=1)["products"][0]["product_id"]
+    new = get_product(pid, {"license_type": "новая лицензия"})
+    assert new["matching"] == 4 and "Продление" not in [o.get("license_type") for o in new["offers"]]
+    assert "dropped_filter" not in new
