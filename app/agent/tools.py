@@ -58,10 +58,19 @@ FACT_FIELDS = {  # что агент запоминает о клиенте: к�
 }
 
 
-def _note_facts(ctx, **facts):
-    saved = {FACT_FIELDS[k]: str(v) for k, v in facts.items() if k in FACT_FIELDS and v not in (None, "")}
-    ctx.facts.update(saved)
-    store.update_session(ctx.session_id, facts=ctx.facts)
+_FACT_KEYS = {**{k: v for k, v in FACT_FIELDS.items()}, **{v: v for v in FACT_FIELDS.values()}}
+
+
+def save_facts(ctx, facts: dict) -> dict:
+    """Запоминает сказанное клиентом о себе. Ключи: поля FACT_FIELDS или их русские названия."""
+    saved = {}
+    for k, v in facts.items():
+        key = _FACT_KEYS.get(str(k).strip().lower())
+        if key and str(v).strip():
+            saved[key] = str(v).strip()[:300]
+    if saved:
+        ctx.facts.update(saved)
+        store.update_session(ctx.session_id, facts=ctx.facts)
     return {"saved": saved, "known": ctx.facts}
 
 
@@ -70,12 +79,18 @@ def _calc_total(ctx, items: list[dict]):
     lines, total, on_request = [], 0.0, []
     for it in items or []:
         o = catalog.get_offer(int(it["offer_id"]))
-        if not o:
+        if o.get("error"):
             return {"error": f"нет варианта с offer_id {it['offer_id']}"}
         qty = max(1, int(it.get("qty") or 1))
         price = o.get("price")
+        lo, hi = o.get("qty_min"), o.get("qty_max")
+        if o.get("qty_pricing") == "per_unit" and ((lo and qty < lo) or (hi and qty > hi)):
+            return {"error": f"Вариант {o['offer_id']} действует при покупке от {lo} до {hi or 'и больше'} лицензий, "
+                             f"а в расчете {qty}. Найдите вариант под это количество: get_product с qty={qty}."}
         line = {"offer_id": o["offer_id"], "name": o["name"], "qty": qty, "price": price,
                 "sum": round(price * qty, 2) if price else None}
+        if o.get("price_for"):
+            line["price_for"] = o["price_for"]
         if price:
             total += price * qty
         else:
@@ -156,22 +171,6 @@ TOOLS = [
      "parameters": _obj({"query": {"type": "string", "description": "тема существительными, как в справке: "
                                    "'доставка электронной лицензии', 'способы оплаты', 'закрывающие документы'"}},
                         ["query"])},
-    {"name": "note_facts", "handler": _note_facts,
-     "description": "Запомнить, что стало известно о клиенте и его задаче, чтобы не спрашивать повторно. "
-                    "Передавайте только то, что клиент сказал сам.",
-     "parameters": _obj({
-         "company": {"type": "string", "description": "наименование организации"},
-         "inn": {"type": "string"},
-         "org_type": {"type": "string", "description": "коммерческая, государственная, образовательная, физлицо"},
-         "users": {"type": "string", "description": "число пользователей или рабочих мест"},
-         "devices": {"type": "string", "description": "число устройств, узлов, серверов"},
-         "os": {"type": "string", "description": "ОС и инфраструктура: Windows, Linux, облако, свой сервер"},
-         "task": {"type": "string", "description": "какую задачу решает клиент"},
-         "budget": {"type": "string"},
-         "term": {"type": "string", "description": "нужный срок лицензии"},
-         "contact": {"type": "string", "description": "почта или телефон"},
-         "other": {"type": "string", "description": "другое важное для подбора"},
-     })},
     {"name": "calc_total", "handler": _calc_total,
      "description": "Посчитать стоимость: цена варианта на количество и итог по нескольким позициям. Любую сумму, "
                     "кроме цены из каталога, называйте клиенту только после этого инструмента.",
@@ -228,6 +227,34 @@ EXAMPLES = {
                     "просит скидку. Продукт пока не назван.", "contact": "zakupki@school.ru"}},
     ],
 }
+
+
+_DROP_KEYS = {"url", "file", "sample_url", "has_children", "n_available", "qty_pricing", "nodes_min"}
+_ONLY_TRUE = {"in_ru_registry", "russian_vendor", "price_on_request", "price_ambiguous", "has_price_on_request"}
+
+
+def slim(name: str, out):
+    """Ответ инструмента в том виде, в каком его видит модель: без ссылок, путей и пустых полей.
+
+    Признаки реестра и российского вендора остаются, только когда они известны (true): отсутствие
+    отметки в каталоге не значит "не российский". Пустая цена пишется словами, чтобы ее нельзя было
+    принять за ноль. Ссылки остаются только в базе знаний: на них агент ссылается в ответе.
+    """
+    if isinstance(out, list):
+        return [slim(name, v) for v in out]
+    if not isinstance(out, dict):
+        return out
+    res = {}
+    for k, v in out.items():
+        if k == "price" and v is None:
+            res[k] = "по запросу"
+        elif (k in _DROP_KEYS and name != "kb_search") or (k in _ONLY_TRUE and not v):
+            continue
+        elif v is None or v == "" or (v in ([], {}) and k not in ("products", "offers", "results", "categories")):
+            continue
+        else:
+            res[k] = slim(name, v)
+    return res
 
 
 def specs() -> list[dict]:

@@ -25,6 +25,7 @@ _MONEY = re.compile(r"(\d[\d\s  ]*(?:[.,]\d{1,2})?)\s*(?:₽|руб|р\.)", r
 _NUMBER = re.compile(r"\d[\d\s\u00a0\u202f]*(?:[.,]\d{1,2})?")
 _MARK = re.compile(r"\[\[(product|offer):\s*([\w-]+)\]\]")
 _CHOICES = re.compile(r"\[\[choices:\s*(.+?)\]\]", re.S)
+_FACTS = re.compile(r"\[\[facts:\s*(.+?)\]\]", re.S)
 
 
 def _num(s: str) -> float | None:
@@ -141,9 +142,22 @@ def render(text: str) -> tuple[str, list[dict], list[str]]:
     m = _CHOICES.search(text)
     if m:
         choices = [c.strip() for c in m.group(1).split("|") if c.strip()][:5]
-    clean = _CHOICES.sub("", _MARK.sub("", text))
+    clean = _CHOICES.sub("", re.sub(r"[ \t]*" + _MARK.pattern, "", _FACTS.sub("", text)))
+    clean = re.sub(r"(?<!\.)\.\.(?!\.)", ".", clean)             # метка стояла перед точкой: "руб. [[offer:1]]."
+    clean = re.sub(r"[ \t]+([,;])", r"\1", re.sub(r"[ \t]{2,}", " ", clean))
     clean = re.sub(r"[ \t]+\n", "\n", re.sub(r"\n{3,}", "\n\n", clean)).strip()
     return clean, cards, choices
+
+
+def take_facts(text: str) -> dict:
+    """Что модель записала о клиенте меткой [[facts: ключ=значение; ключ=значение]]."""
+    facts = {}
+    for body in _FACTS.findall(text):
+        for part in re.split(r"[;\n|]", body):
+            key, sep, value = part.partition("=")
+            if sep and key.strip() and value.strip():
+                facts[key.strip().lower()] = value.strip()
+    return facts
 
 
 def _history(session_id: str) -> list[dict]:
@@ -200,7 +214,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             store.add_step(sid, turn, "tool", name, args, out)
             trace.append({"kind": "tool", "name": name, "input": args, "output": out})
             msgs.append({"role": "assistant", "content": res.text, "tool_call": res.tool_call, "extra": res.extra})
-            msgs.append({"role": "tool", "name": name, "content": fit_json(out, TOOL_RESULT_LIMIT)})
+            msgs.append({"role": "tool", "name": name, "content": fit_json(tools.slim(name, out), TOOL_RESULT_LIMIT)})
             continue
         bad = unknown_prices(res.text, known)
         if bad and not corrected:
@@ -222,6 +236,12 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             hid = store.add_handoff(sid, "агент не смог ответить", f"Последнее сообщение клиента: {text[:500]}", "")
             ctx.events.append({"type": "handoff", "id": hid, "reason": "агент не смог ответить"})
 
+    facts = take_facts(reply)
+    if facts:  # память о клиенте пишется меткой в ответе: отдельный вызов модели на это не тратится
+        emit({"type": "tool", "name": "note_facts", "args": facts})
+        saved = tools.save_facts(ctx, facts)
+        store.add_step(sid, turn, "tool", "note_facts", facts, saved)
+        trace.append({"kind": "tool", "name": "note_facts", "input": facts, "output": saved})
     clean, cards, choices = render(reply)
     for c in cards:  # показанные карточки тоже считаются известными позициями
         if c["type"] == "offer":
