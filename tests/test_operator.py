@@ -24,7 +24,8 @@ def operator_key(monkeypatch):
 
 
 def _handoff_dialog() -> tuple[str, int]:
-    res = loop.run_turn(None, "Продаете ли вы Articulate 360? Почта ivanov@romashka.example", llm=Scripted([
+    res = loop.run_turn(None, "Продаете ли вы Articulate 360? Почта ivanov@romashka.example", client_id="ivanov",
+                        llm=Scripted([
         {"name": "handoff_to_manager", "args": {"reason": "продукта нет в каталоге", "summary": "Нужен Articulate 360"}},
         "Передал вопрос менеджеру."]))
     return res["session_id"], store.open_handoff(res["session_id"])["id"]
@@ -36,7 +37,7 @@ def test_manager_answer_reaches_client_and_teaches_agent():
         "answer": "Articulate 360 не поставляем. Для разработки курсов предлагаем iSpring Suite.", "teach": True})
     assert r.status_code == 200 and r.json()["teach"]
     # клиент видит ответ в своем чате, обращение закрыто, агент снова ведет диалог сам
-    last = client.get(f"/api/session/{sid}").json()["messages"][-1]
+    last = client.get(f"/api/session/{sid}?client_id=ivanov").json()["messages"][-1]
     assert last["from"] == "manager" and "iSpring" in last["content"]
     assert store.open_handoff(sid) is None and store.get_session(sid)["status"] == "bot"
     # следующий клиент спрашивает о том же: ответ менеджера приходит агенту вместе с результатом поиска
@@ -188,11 +189,12 @@ def test_handoff_card_is_built_by_code_and_sorted_by_urgency(priced_offer):
     assert demo["client"]["контакт"] == "[email]"
 
 
-def test_view_mode_hides_requisites_but_keeps_links(priced_offer):
+def test_view_mode_hides_requisites_and_quote_files(priced_offer):
     res = loop.run_turn(None, "Нужно КП, ИНН 7701234567, КПП 770101001", llm=Scripted([
         {"name": "make_quote", "args": {"items": [{"offer_id": priced_offer["offer_id"], "qty": priced_offer["qty"]}],
                                         "customer": "ООО Ромашка", "inn": "7701234567", "kpp": "770101001"}},
-        "Черновик готов."]))
+        {"name": "handoff_to_manager", "args": {"reason": "просит счет", "summary": "ООО Ромашка просит счет по КП"}},
+        "Черновик готов, передал менеджеру."]))
     sid = res["session_id"]
     full = client.get(f"/api/admin/session/{sid}", headers=KEY).json()
     seen = client.get(f"/api/admin/session/{sid}").json()
@@ -201,6 +203,16 @@ def test_view_mode_hides_requisites_but_keeps_links(priced_offer):
     assert "7701234567" not in text and "770101001" not in text and seen["session"]["facts"]["ИНН"] == "[реквизит]"
     assert seen["session"]["id"] == sid and seen["quotes"][0]["number"] == full["quotes"][0]["number"]
     assert seen["quotes"][0]["total"] == full["quotes"][0]["total"]  # суммы и время остаются числами
+    # в файле КП реквизиты клиента: без ключа ссылки на него нет ни в диалоге, ни в карточке обращения,
+    # а пути файла на сервере нет вовсе; оператор получает подписанную ссылку, она открывается в новой вкладке
+    number = full["quotes"][0]["number"]
+    assert seen["quotes"][0]["url"] == "" and seen["handoffs"][0]["card"]["quote"]["url"] == ""
+    assert "?k=" not in text and str(server.config.QUOTES_DIR) not in text
+    assert client.get(f"/quotes/{number}.pdf").status_code == 404
+    for url in (full["quotes"][0]["url"], full["handoffs"][0]["card"]["quote"]["url"]):
+        assert url.startswith(f"/quotes/{number}.pdf?k=") and client.get(url).status_code == 200
+    card = client.get("/api/admin/stats").json()["handoffs"][0]["card"]["quote"]
+    assert card["url"] == "" and card["number"] == number
 
 
 def test_manager_takes_and_returns_a_request(priced_offer):

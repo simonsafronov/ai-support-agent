@@ -66,19 +66,27 @@ def _j(v) -> str:
     return json.dumps(v, ensure_ascii=False)
 
 
-def get_session(session_id: str | None, client_id: str = "", page_url: str = "") -> dict:
-    """Возвращает диалог, создает новый, если такого нет."""
-    con, now = db(), time.time()
-    row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
+def find_session(session_id: str | None) -> dict | None:
+    """Диалог по номеру или None: чтение ничего не создает, так сервер проверяет, чей это диалог."""
+    row = db().execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone() if session_id else None
     if row is None:
-        session_id = session_id or uuid.uuid4().hex[:16]
-        con.execute("INSERT INTO sessions(id, client_id, created_at, updated_at, page_url) VALUES(?,?,?,?,?)",
-                    (session_id, client_id, now, now, page_url))
-        con.commit()
-        row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+        return None
     s = dict(row)
     s["facts"], s["items"] = json.loads(s.pop("facts_json")), json.loads(s.pop("items_json"))
     return s
+
+
+def get_session(session_id: str | None, client_id: str = "", page_url: str = "") -> dict:
+    """Возвращает диалог, создает новый, если такого нет."""
+    found = find_session(session_id)
+    if found is not None:
+        return found
+    con, now = db(), time.time()
+    session_id = session_id or uuid.uuid4().hex[:16]
+    con.execute("INSERT INTO sessions(id, client_id, created_at, updated_at, page_url) VALUES(?,?,?,?,?)",
+                (session_id, client_id, now, now, page_url))
+    con.commit()
+    return find_session(session_id)
 
 
 def update_session(session_id: str, **fields):

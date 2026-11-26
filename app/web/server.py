@@ -4,6 +4,8 @@ from __future__ import annotations
 import contextlib
 import csv
 import datetime
+import hashlib
+import hmac
 import io
 import json
 import queue
@@ -58,13 +60,27 @@ def too_often(key: str) -> bool:
         return False
 
 
+def client_address(request) -> str:
+    """Адрес клиента для лимита частоты.
+
+    X-Forwarded-For дописывает каждый прокси, а начало списка присылает сам клиент и может подделать.
+    Поэтому берется значение, которое добавил наш прокси: PROXY_HOPS-е с конца. Без прокси или без
+    заголовка берется адрес соединения.
+    """
+    chain = [a.strip() for a in request.headers.get("x-forwarded-for", "").split(",") if a.strip()]
+    if config.PROXY_HOPS and len(chain) >= config.PROXY_HOPS:
+        return chain[-config.PROXY_HOPS]
+    return request.client.host if request.client else "?"
+
+
+LIMITED = ("/api/chat", "/api/chat/handoff", "/api/proof")  # каждый такой запрос запускает ход агента
+
+
 @app.middleware("http")
 async def guard(request, call_next):
     """Лимит сообщений в чат, заголовки безопасности и перепроверка страниц стенда браузером."""
-    if request.url.path in ("/api/chat", "/api/chat/handoff") and request.method == "POST":
-        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        if too_often(forwarded or (request.client.host if request.client else "?")):
-            return JSONResponse({"detail": "слишком много сообщений подряд"}, status_code=429)
+    if request.url.path in LIMITED and request.method == "POST" and too_often(client_address(request)):
+        return JSONResponse({"detail": "слишком много сообщений подряд"}, status_code=429)
     response = await call_next(request)
     if not request.url.path.startswith(("/api/", "/quotes/", "/fonts/")):
         response.headers["Cache-Control"] = "no-cache"
@@ -118,25 +134,122 @@ def admin(request: Request):
 
 
 def view(request: Request, payload: dict) -> dict:
-    """Экран оператора без ключа открыт только на чтение, почта и телефоны клиентов в нем скрыты."""
+    """Экран оператора без ключа открыт только на чтение: контакты, реквизиты и файлы КП в нем скрыты."""
     if is_operator(request):
-        return {**payload, "role": "operator"}
+        return {**sign_links(payload), "role": "operator"}
     return {**_hide(json.loads(json.dumps(payload, ensure_ascii=False, default=str))), "role": "demo"}
 
 
 _REQUISITE = re.compile(r"(?<!\d)(?<!\d[.,])\d{9,12}(?!\d|[.,]\d)")  # ИНН, КПП, ОГРН и номера счетов в тексте
-_KEEP = {"id", "session_id", "number", "url", "file"}  # служебные поля: по ним экран открывает диалог и КП
+_KEEP = {"id", "session_id", "number", "url"}  # служебные поля: по ним экран открывает диалог
+_OPERATOR_ONLY = {"client_id", "file"}  # по client_id чат отдает клиенту его переписку; file это путь на сервере
+_QUOTE_URL = re.compile(r"/quotes/([^/?#\s]+\.pdf)")
 
 
 def _hide(obj, key: str = ""):
-    """Режим просмотра: почта, телефоны и реквизиты клиентов заменяются метками во всех текстах ответа."""
+    """Режим просмотра: почта, телефоны и реквизиты клиентов заменяются метками, ссылок на файлы КП нет."""
     if isinstance(obj, dict):
-        return {k: _hide(v, k) for k, v in obj.items()}
+        return {k: _hide(v, k) for k, v in obj.items() if k not in _OPERATOR_ONLY}
     if isinstance(obj, list):
         return [_hide(v, key) for v in obj]
+    if isinstance(obj, str) and key == "url" and _QUOTE_URL.fullmatch(obj):
+        return ""  # в КП реквизиты клиента: файл открывается только оператору
     if isinstance(obj, str) and key not in _KEEP:
         return _REQUISITE.sub("[реквизит]", loop.mask_contacts(obj)[0])
     return obj
+
+
+_secret = b""
+
+
+def _quote_secret() -> bytes:
+    """Секрет подписи ссылок на КП: ключ оператора, а пока он не задан, случайная строка в data/runtime."""
+    global _secret
+    if config.ADMIN_TOKEN:
+        return config.ADMIN_TOKEN.encode()
+    if not _secret:
+        f = config.ROOT / "data" / "runtime" / "quote_secret"
+        if not f.exists():
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+        _secret = f.read_text(encoding="utf-8").strip().encode()
+    return _secret
+
+
+def quote_key(name: str) -> str:
+    """Подпись имени файла КП. Номера КП идут подряд, поэтому одного имени для доступа к файлу мало."""
+    return hmac.new(_quote_secret(), ("quote:" + name).encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def sign_links(obj, key: str = ""):
+    """Дописывает подпись к ссылкам на КП, которые поставил код (поле url), перед отдачей владельцу или оператору.
+
+    Текст ответа и сообщений не трогается: иначе клиент получил бы подпись к чужому КП, назвав его номер.
+    """
+    if isinstance(obj, dict):
+        return {k: sign_links(v, k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sign_links(v, key) for v in obj]
+    if isinstance(obj, str) and key == "url" and _QUOTE_URL.fullmatch(obj):
+        return f"{obj}?k={quote_key(obj.rsplit('/', 1)[1])}"
+    return obj
+
+
+def _for_knowledge(text: str) -> str:
+    """Текст для общих знаний агента: без контактов, реквизитов и меток, как сообщение клиента для модели."""
+    return _REQUISITE.sub("[реквизит]", loop.for_model(text))
+
+
+def _brief(name: str, out) -> dict:
+    """Итог инструмента для панели «Ход работы агента»: только поля, из которых чат собирает подпись шага.
+
+    Полный ответ инструмента в браузер не уходит: в нем пути файлов на сервере и то, что нашлось в знаниях.
+    """
+    if not isinstance(out, dict):
+        return {}
+    if out.get("error"):
+        return {"error": str(out["error"])[:200]}
+    if name in ("search_products", "find_analogs"):
+        return {"total": out.get("total"),
+                "products": [{"title": p.get("title")} for p in (out.get("products") or [])[:3]]}
+    if name == "get_product":
+        return {"matching": out.get("matching"), "total_offers": out.get("total_offers"),
+                "clarify": (out.get("clarify") or [])[:3]}
+    if name == "browse_categories":
+        return {"categories": [{"name": c.get("name")} for c in (out.get("categories") or [])[:4]]}
+    if name == "kb_search":
+        return {"results": [{"title": r.get("title"), "heading": r.get("heading")}
+                            for r in (out.get("results") or [])[:2]]}
+    if name == "note_facts":
+        return {"saved": out.get("saved") or {}}
+    return {k: out[k] for k in ("ok", "number", "total", "ticket") if k in out}
+
+
+FAILED = {"llm": "модель не ответила", "deadline": "ход занял слишком много времени"}
+
+
+def public_trace(trace: list[dict]) -> list[dict]:
+    """След хода в том виде, в каком его получает браузер клиента. Полный след видит оператор на своем экране."""
+    out = []
+    for t in trace:
+        if t["kind"] == "tool":
+            out.append({"kind": "tool", "name": t["name"], "output": _brief(t["name"], t.get("output"))})
+        elif t["kind"] == "guard":
+            out.append({"kind": "guard", "name": t["name"], "output": t.get("output") if t["name"] == "price" else []})
+        else:  # текст ошибки остается в журнале шагов: в нем бывают пути и внутренние имена
+            out.append({"kind": "error", "name": t["name"], "output": FAILED.get(t["name"], "сбой на сервере")})
+    return out
+
+
+def public_reply(res: dict) -> dict:
+    """Ответ хода для браузера: ссылки на КП подписаны, след шагов сокращен."""
+    return {**res, "events": sign_links(res.get("events", [])), "trace": public_trace(res.get("trace", []))}
+
+
+def own_session(session_id: str | None, client_id: str) -> str | None:
+    """Номер диалога, если это диалог этого клиента. Чужой или придуманный номер не принимается."""
+    s = store.find_session(session_id)
+    return session_id if s and client_id and s["client_id"] == client_id else None
 
 
 _slots = threading.BoundedSemaphore(max(1, config.MAX_PARALLEL_TURNS))  # столько ходов модель обслуживает разом
@@ -150,7 +263,7 @@ def session_lock(key: str) -> threading.Lock:
         if len(_session_locks) > 5000:
             for k in [k for k, lock in _session_locks.items() if not lock.locked()]:
                 del _session_locks[k]
-        return _session_locks.setdefault(key, threading.Lock())  # GigaChat для физлиц работает в один поток: ходы идут по очереди
+        return _session_locks.setdefault(key, threading.Lock())
 
 
 class ChatIn(BaseModel):
@@ -172,17 +285,21 @@ def health():
 def chat(body: ChatIn):
     """Ответ потоком строк JSON: сначала шаги агента (какой инструмент вызван), в конце ответ клиенту."""
     q: queue.Queue = queue.Queue()
+    text = body.message.strip()
+    # диалог заводится здесь, а не в цикле агента: при любом сбое известно, куда записать ответ и обращение
+    sid = own_session(body.session_id, body.client_id) or store.get_session(None, body.client_id, body.page_url)["id"]
 
     def work():
         try:
-            with session_lock(body.session_id or body.client_id or "new"), _slots:
-                res = loop.run_turn(body.session_id, body.message.strip(), client_id=body.client_id,
-                                    page_url=body.page_url, on_event=q.put)
-            q.put({"type": "reply", **res})
-        except Exception as e:  # клиент должен получить ответ при любом сбое
-            q.put({"type": "reply", "session_id": body.session_id, "reply": loop.FALLBACK, "cards": [],
-                   "choices": [], "events": [], "trace": [{"kind": "error", "name": type(e).__name__,
-                                                            "output": str(e)}]})
+            with session_lock(sid), _slots:
+                try:
+                    res = loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=q.put)
+                except Exception as e:  # клиент получает ответ, а менеджер обращение при любом сбое
+                    res = failed_turn(sid, text, e)
+            q.put({"type": "reply", **public_reply(res)})
+        except Exception as e:  # не записалось и обращение: ответ клиенту все равно уходит
+            q.put({"type": "reply", "session_id": sid, "reply": loop.FALLBACK, "cards": [], "choices": [],
+                   "events": [], "trace": public_trace([{"kind": "error", "name": type(e).__name__}])})
         q.put(None)
 
     threading.Thread(target=work, daemon=True).start()
@@ -202,6 +319,24 @@ def chat(body: ChatIn):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def failed_turn(sid: str, text: str, error: Exception) -> dict:
+    """Ход оборвался не по вине модели (ошибку модели цикл агента обрабатывает сам): ответ и обращение менеджеру."""
+    last = store.messages(sid, limit=1)
+    if not last or (last[0]["role"], last[0]["content"]) != ("user", text):
+        store.add_message(sid, "user", text)  # сбой случился раньше, чем сообщение клиента попало в журнал
+    events = []
+    if not store.open_handoff(sid):
+        contact = store.get_session(sid)["facts"].get("контакт") or ", ".join(loop.mask_contacts(text)[1])
+        hid = store.add_handoff(sid, "сбой при ответе агента", f"Последнее сообщение клиента: {text[:500]}", contact)
+        events.append({"type": "handoff", "id": hid, "reason": "сбой при ответе агента"})
+    store.add_step(sid, sum(1 for m in store.messages(sid) if m["role"] == "user"), "error", type(error).__name__,
+                   {}, {"error": str(error)})
+    meta = {"cards": [], "choices": [], "events": events}
+    store.add_message(sid, "assistant", loop.FALLBACK, meta)
+    return {"session_id": sid, "reply": loop.FALLBACK, **meta,
+            "trace": [{"kind": "error", "name": type(error).__name__, "output": str(error)}]}
+
+
 class CallIn(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
     client_id: str = Field(default="", max_length=64)
@@ -214,8 +349,9 @@ CALLED = "Позвал менеджера: он ответит в этом ча�
 @app.post("/api/chat/handoff")
 def call_manager(body: CallIn):
     """Клиент сам зовет менеджера кнопкой: обращение заводит код, модель для этого не вызывается."""
-    with session_lock(body.session_id or body.client_id or "new"):
-        s = store.get_session(body.session_id, body.client_id, body.page_url)
+    own = own_session(body.session_id, body.client_id)  # в чужой диалог обращение не заводится
+    with session_lock(own or body.client_id or "new"):
+        s = store.get_session(own, body.client_id, body.page_url)
         sid, ticket = s["id"], store.open_handoff(s["id"])
         if not ticket:
             asked = [m["content"] for m in store.messages(sid) if m["role"] == "user"]
@@ -230,11 +366,15 @@ def call_manager(body: CallIn):
 
 
 @app.get("/api/session/{session_id}")
-def session(session_id: str):
-    s = store.get_session(session_id)
+def session(session_id: str, client_id: str = Query("", max_length=64)):
+    """История диалога для чата после перезагрузки страницы: только его владельцу, чтение ничего не создает."""
+    s = store.find_session(own_session(session_id, client_id))
+    if s is None:
+        raise HTTPException(404, "нет такого диалога")
     return {"session_id": s["id"], "status": s["status"],
             "messages": [{"role": m["role"], "content": m["content"], "from": m["meta"].get("from", ""),
-                          **{k: m["meta"].get(k, []) for k in ("cards", "choices", "events")}}
+                          "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
+                          "events": sign_links(m["meta"].get("events", []))}
                          for m in store.messages(session_id)]}
 
 
@@ -286,10 +426,13 @@ def admin_session(request: Request, session_id: str):
         raise HTTPException(404, "нет такого диалога")
     s = _session_row(row)
     s["facts"], s["items"] = json.loads(s.pop("facts_json")), json.loads(s.pop("items_json"))
+    # сырые копии *_json не отдаются: рядом лежат разобранные поля, а в строке их не скрыть по имени поля
+    rows = lambda items: [{k: r[k] for k in r.keys() if not k.endswith("_json") and k != "file"} for r in items]
     return view(request, {
-        "session": s, "messages": store.messages(session_id), "steps": store.steps(session_id),
+        "session": s, "messages": rows(store.messages(session_id)), "steps": rows(store.steps(session_id)),
         "handoffs": _handoffs("WHERE session_id=?", (session_id,)),
-        "quotes": [dict(r) for r in con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,))]})
+        "quotes": [{**r, "url": f"/quotes/{r['number']}.pdf"}
+                   for r in rows(con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,)).fetchall())]})
 
 
 def _handoffs(where: str = "", args: tuple = (), limit: int = 50) -> list[dict]:
@@ -352,8 +495,9 @@ def admin_answer(handoff_id: int, body: AnswerIn):
     if h is None:
         raise HTTPException(404, "нет такого обращения")
     asked = [m["content"] for m in store.messages(h["session_id"]) if m["role"] == "user"][-3:]
-    question = loop.mask_contacts(" ".join(asked))[0][:600] + " | " + h["reason"] + ": " + h["summary"]
-    return answers.add(handoff_id, body.answer.strip(), body.teach, question)
+    # вопрос и ответ остаются в знаниях дольше диалога и уходят в модель: контакты и реквизиты из них убираются
+    question = _for_knowledge(" ".join(asked))[:600] + " | " + h["reason"] + ": " + _for_knowledge(h["summary"])
+    return answers.add(handoff_id, body.answer.strip(), body.teach, question, _for_knowledge(body.answer.strip()))
 
 
 @app.get("/api/admin/export.csv", dependencies=[Depends(admin)])
@@ -420,10 +564,12 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
 
 
 @app.get("/quotes/{name}")
-def quote_file(name: str):
+def quote_file(request: Request, name: str, k: str = Query("", max_length=64)):
+    """Файл КП: по подписанной ссылке, которую клиент получил в чате, или с ключом оператора."""
     f = (config.QUOTES_DIR / name).resolve()
-    if f.parent != config.QUOTES_DIR.resolve() or f.suffix != ".pdf" or not f.exists():
-        raise HTTPException(404, "нет такого файла")
+    allowed = is_operator(request) or secrets.compare_digest(k.encode(), quote_key(name).encode())
+    if not allowed or f.parent != config.QUOTES_DIR.resolve() or f.suffix != ".pdf" or not f.exists():
+        raise HTTPException(404, "нет такого файла")  # без подписи ответ тот же, что и для несуществующего номера
     return FileResponse(f, media_type="application/pdf", filename=name)
 
 

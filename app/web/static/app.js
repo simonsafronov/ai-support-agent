@@ -216,7 +216,10 @@ model(); setInterval(model, 30000);
   goods("");
   if (state.session) {
     try {
-      const s = await (await fetch("/api/session/" + state.session)).json();
+      // переписку сервер отдает только владельцу диалога: вместе с номером диалога уходит метка этого браузера
+      const r = await fetch("/api/session/" + encodeURIComponent(state.session) + "?client_id=" + encodeURIComponent(state.client));
+      if (r.status === 404) { state.session = ""; localStorage.removeItem("session"); }
+      const s = r.ok ? await r.json() : {};
       if ((s.messages || []).length) {
         $("starters").hidden = true;
         for (const m of s.messages) m.role === "user" ? add("msg user", esc(m.content)) : showReply({ reply: m.content, cards: m.cards, events: m.events });

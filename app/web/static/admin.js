@@ -25,7 +25,7 @@ function card(h, now) {
   const due = done ? STATUS[h.status] : left < 0 ? `просрочено на ${span(left)}` : `ответить до ${left > 12 * 3600 ? dt(c.sla_due) : hm(c.sla_due)}, осталось ${span(left)}`;
   const kv = (o) => Object.entries(o).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ");
   const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}`).join("<br>");
-  const money = [c.calc_total ? `расчет ${rub(c.calc_total)}` : "", c.quote ? `<a href="${esc(c.quote.url)}" target="_blank" rel="noopener">черновик ${esc(c.quote.number)}</a> на ${rub(c.quote.total)}` : ""].filter(Boolean).join(" · ");
+  const money = [c.calc_total ? `расчет ${rub(c.calc_total)}` : "", c.quote ? `${c.quote.url ? `<a href="${esc(c.quote.url)}" target="_blank" rel="noopener">черновик ${esc(c.quote.number)}</a>` : `черновик ${esc(c.quote.number)}`} на ${rub(c.quote.total)}${c.quote.url ? "" : ", КП доступен оператору"}` : ""].filter(Boolean).join(" · ");
   const rows = [
     ["Нужно", esc(h.summary)],
     ["Клиент", kv(c.client) || "о себе не рассказал, контакт не оставил"],
@@ -126,7 +126,7 @@ async function show(id) {
       for (const c of m.meta.cards || []) html += `<div class="st">Карточка: ${esc(c.title)}${c.price ? ", " + rub(c.price) : ""}</div>`;
     }
   }
-  for (const q of d.quotes) html += `<div class="st tool"><b>КП ${esc(q.number)}</b> ${esc(q.customer)}, итого ${rub(q.total)} · <a href="/quotes/${esc(q.number)}.pdf" target="_blank" rel="noopener">открыть PDF</a></div>`;
+  for (const q of d.quotes) html += `<div class="st tool"><b>КП ${esc(q.number)}</b> ${esc(q.customer)}, итого ${rub(q.total)} · ${q.url ? `<a href="${esc(q.url)}" target="_blank" rel="noopener">открыть PDF</a>` : "КП доступен оператору"}</div>`;
   if (operator) {
     for (const h of d.handoffs.filter((x) => x.status === "new" || x.status === "taken")) html += `<div class="ans" data-h="${h.id}"><div class="who">Ответ менеджера на обращение № ${h.id}</div>
       <div>${h.card.templates.map((t, i) => `<button type="button" class="btn" data-t="${i}">${esc(t.title)}</button>`).join("")}</div>
