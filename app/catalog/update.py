@@ -4,10 +4,11 @@
 открывает новый файл на следующем же запросе (app/catalog/search.py следит за подменой). Фид пришел
 не целиком или сборка упала: рабочая база остается прежней, причина пишется в журнал обновлений.
 
-Запуск: python -m app.catalog.update    Сервер стенда запускает то же раз в сутки (FEED_UPDATE_HOUR).
+Запуск: python -m app.catalog.update    Сервер стенда запускает то же каждые FEED_UPDATE_EVERY_H часов.
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import os
@@ -132,6 +133,20 @@ def last() -> dict:
         return json.loads(STATE.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return {}
+
+
+def prices_at() -> float | None:
+    """Когда цены каталога в последний раз сверены с фидом: конец последнего успешного обновления, а если его не было
+    (или последнее не прошло), время сборки рабочей базы из таблицы meta."""
+    state = last()
+    if state.get("ok") and state.get("finished"):
+        return state["finished"]
+    try:
+        with contextlib.closing(sqlite3.connect(f"{Path(config.CATALOG_DB).resolve().as_uri()}?mode=ro", uri=True)) as con:
+            row = con.execute("SELECT value FROM meta WHERE key='built_at'").fetchone()
+        return time.mktime(time.strptime(row[0], "%Y-%m-%d %H:%M:%S")) if row else None  # ingest пишет местное время сервера
+    except (sqlite3.Error, ValueError):
+        return None
 
 
 if __name__ == "__main__":

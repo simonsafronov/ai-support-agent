@@ -66,7 +66,7 @@ const FIELDS = [
   ["card_share", "card_saves_share", "Сколько времени менеджера снимает готовая карточка, %", "допущение, от 0 до 100", 5, 0, 100],
 ];
 const eco = {};  // допущения, которые оператор поменял на экране, в виде параметров запроса
-const view = { queue: "wait", runOpen: false, rows: "all", find: "" };  // фильтры живут вне load: автообновление их не сбрасывает
+const view = { queue: "wait", runOpen: false, rows: "all", find: "", gaps: false };  // фильтры живут вне load: автообновление их не сбрасывает
 let current = "", from = "", operator = false, data = null, model = {}, shown = 0;
 
 function span(sec) {
@@ -125,7 +125,8 @@ function renderQueue() {
   paint($("hand"), html || `<div class="empty">${empty[view.queue]}</div>`);
 }
 
-const ROWS = { all: () => true, handoff: (s) => s.status === "handoff", agent: (s) => s.status !== "handoff", quote: (s) => s.quotes > 0 };
+const ROWS = { all: () => true, handoff: (s) => s.status === "handoff", agent: (s) => s.status !== "handoff", quote: (s) => s.quotes > 0,
+  bad: (s) => s.score != null && s.score <= data.st.problems.bad_score };
 
 function renderRows() {
   if (!data) return;
@@ -133,10 +134,16 @@ function renderRows() {
   const list = all.filter(ROWS[view.rows]).filter((s) => !q || (s.first || "").toLowerCase().includes(q));
   $("rseg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.r === view.rows));
   $("rown").textContent = list.length === all.length ? "" : `показано ${list.length} из ${all.length}`;
-  paint($("rows"), list.map((s) => `<tr data-id="${esc(s.id)}"><td>${dt(s.updated_at)}</td><td><button type="button" class="open" data-f="d${esc(s.id)}">${esc(cut(s.first || "без сообщений клиента"))}</button></td>
+  const bad = data.st.problems.bad_score;
+  paint($("rows"), list.map((s) => {
+    const low = s.score != null && s.score <= bad, why = (s.problems || []).map((p) => p.label).join("; ");
+    const mark = s.score == null ? "" : `<span class="sc${low ? " bad" : ""}" title="${esc(why || "замечаний нет")}">${s.score}</span>`;
+    const take = operator && low ? (s.in_set ? ' <span class="tag">в наборе</span>' : ` <button type="button" class="btn mini" data-case="${esc(s.id)}" data-f="c${esc(s.id)}">В набор</button>`) : "";
+    return `<tr data-id="${esc(s.id)}"><td>${dt(s.updated_at)}</td><td><button type="button" class="open" data-f="d${esc(s.id)}">${esc(cut(s.first || "без сообщений клиента"))}</button>${low ? `<span class="rsn">${esc(why)}</span>` : ""}</td>
     <td>${s.status === "handoff" ? '<span class="tag h">менеджеру</span>' : '<span class="tag">агент</span>'}${s.quotes ? ' <span class="tag">КП</span>' : ""}</td>
-    <td class="num">${s.turns}</td><td class="num">${num(s.prompt_tokens + s.completion_tokens)}</td><td class="num">${rub(s.cost_rub)}</td></tr>`).join("")
-    || `<tr><td colspan="6" class="empty">${all.length ? "Под выбранный фильтр диалогов нет." : operator ? "Диалогов пока нет. Напишите в чат покупателя." : "Демонстрационных диалогов на стенде нет."}</td></tr>`);
+    <td class="num">${mark}${take}</td><td class="num">${s.turns}</td><td class="num">${num(s.prompt_tokens + s.completion_tokens)}</td><td class="num">${rub(s.cost_rub)}</td></tr>`;
+  }).join("")
+    || `<tr><td colspan="7" class="empty">${all.length ? "Под выбранный фильтр диалогов нет." : operator ? "Диалогов пока нет. Напишите в чат покупателя." : "Демонстрационных диалогов на стенде нет."}</td></tr>`);
 }
 
 // Часы из рублей по ставке часа: строки "снято с менеджеров" и "стоимость снятых часов" сходятся
@@ -186,15 +193,52 @@ function apply(i) {
   load(true);
 }
 
+// Было -> стало: числа считает сервер (app/insights.py), у каждого подпись, чье оно
+function renderBefore(rows) {
+  const part = (cls, label, x) => `<p class="${cls}"><span class="nt">${label}</span><b>${esc(x.value)}</b>${x.note ? `<span class="nt">${esc(x.note)}</span>` : ""}<span class="who">${esc(x.who)}</span></p>`;
+  $("barows").innerHTML = rows.map((r) => `<div class="m"><h3>${esc(r.title)}</h3>${part("was", "Было", r.before)}<span class="arr" aria-hidden="true">↓</span>${part("now", "Стало", r.after)}</div>`).join("");
+}
+
+const GAPS_FIRST = 10;  // строк "Чего нет в каталоге" до кнопки "Показать все"
+function renderGaps(rows) {
+  const shown = view.gaps ? rows : rows.slice(0, GAPS_FIRST);
+  $("gn").textContent = rows.length ? `${num(rows.length)} ${plural(rows.length, ["запрос", "запроса", "запросов"])}` : "";
+  $("gapr").innerHTML = shown.map((r) => `<tr><td><b>${esc(r.query)}</b></td><td class="num" data-l="Сколько раз">${num(r.count)}</td>
+    <td data-l="Откуда">${r.sources.map((x) => `${esc(x.name)}: ${num(x.count)}`).join("<br>")}</td><td class="ex" data-l="Пример">${esc(r.example)}</td></tr>`).join("")
+    || '<tr><td colspan="4" class="empty">Непокрытого спроса пока не набралось.</td></tr>';
+  const more = $("gapmore");
+  more.hidden = rows.length <= GAPS_FIRST;
+  more.textContent = view.gaps ? "Свернуть" : `Показать все ${num(rows.length)}`;
+}
+
+function renderReasons(r) {
+  $("rn").textContent = r.total ? `всего ${num(r.total)}` : "";
+  $("rsl").innerHTML = r.total ? r.items.map((i) => `<dt class="${i.count ? "" : "zero"}">${esc(i.label)}</dt><dd>${num(i.count)}</dd><dd>${Math.round(i.share * 100)}%</dd><dd class="fill" aria-hidden="true"><i style="width:${Math.round(i.share * 100)}%"></i></dd>`).join("")
+    : '<dt class="zero">Передач менеджеру пока нет.</dt>';
+}
+
+function renderProblems(p) {
+  $("pn").textContent = p.rated ? `${num(p.problematic)} из ${num(p.rated)}` : "";
+  const fired = p.by_rule.filter((r) => r.count).map((r) => `${r.label}: ${num(r.count)}`);
+  $("prules").textContent = p.rated ? `Оценка от 1 до 5 по сохраненным шагам, модель не вызывается; проблемный диалог: оценка ${p.bad_score} и ниже. Правила сработали так: ${fired.join("; ") || "ни одно не сработало"}.` : "";
+  paint($("pl"), p.worst.map((w) => `<li data-id="${esc(w.id)}"><span class="sc bad">${w.score}</span><button type="button" class="open" data-f="p${esc(w.id)}">${esc(cut(w.first || "без сообщений клиента", 100))}</button>
+    ${operator ? (w.in_set ? '<span class="tag">в наборе</span>' : `<button type="button" class="btn mini" data-case="${esc(w.id)}" data-f="k${esc(w.id)}">В набор</button>`) : "<span></span>"}
+    <span class="why2">${esc(w.problems.map((x) => x.label).join("; "))}</span></li>`).join("")
+    || `<li class="empty">${p.rated ? "Проблемных диалогов нет." : "Оценивать пока нечего."}</li>`);
+}
+
 get("/api/health").then((h) => { model = h; $("model").textContent = "модель " + h.label + (h.online ? "" : ", сейчас не на связи"); }).catch(() => {});
 
 function catalogLine(cat) {
   const lu = cat.last_update || {};
   const feed = /^(\d{4})-(\d{2})-(\d{2})/.exec(cat.feed_date || "");
-  const upd = cat.updating ? "идет обновление каталога" : !lu.finished ? `обновление с фида каждый день в ${cat.update_hour_msk}:00 МСК`
-    : lu.ok ? `обновлен ${dt(lu.finished)} МСК: добавилось ${num(lu.added ?? 0)}, ушло ${num(lu.removed ?? 0)}, цена изменилась у ${num(lu.price_changed ?? 0)}`
-    : `обновление ${dt(lu.finished)} МСК не прошло, работает прежняя база: ${lu.error}`;
-  return `Каталог: ${num(cat.offers)} предложений, фид от ${feed ? `${feed[3]}.${feed[2]}.${feed[1]}` : cat.feed_date || "нет данных"}; ${upd}.`;
+  const at = cat.prices_at ? `${dt(cat.prices_at)} МСК` : "нет данных";
+  const upd = cat.updating ? "идет обновление каталога" : !lu.finished ? `обновлений с фида не было, цены на ${at} (сборка каталога)`
+    : lu.ok ? `обновлен ${dt(lu.finished)} МСК: цена изменилась у ${num(lu.price_changed ?? 0)}, добавилось ${num(lu.added ?? 0)}, ушло ${num(lu.removed ?? 0)}`
+    : `обновление ${dt(lu.finished)} МСК не прошло, работает прежняя база, цены на ${at}: ${lu.error}`;
+  const next = cat.next_update ? `следующее обновление ${dt(cat.next_update)} МСК, каждые ${num(cat.update_every_h)} ${plural(cat.update_every_h, ["час", "часа", "часов"])}`
+    : "обновление с фида не настроено";
+  return `Каталог: ${num(cat.offers)} предложений, фид от ${feed ? `${feed[3]}.${feed[2]}.${feed[1]}` : cat.feed_date || "нет данных"}; ${upd}; ${next}.`;
 }
 
 // Счетчики обучения: при нулях объясняют, откуда берутся
@@ -240,6 +284,10 @@ async function load(force = false) {
   document.querySelectorAll(".op").forEach((e) => (e.hidden = !operator));
   $("cat").textContent = catalogLine(cat);
   $("learn").textContent = learnLine(st);
+  renderBefore(st.before_after);
+  renderGaps(st.gaps.rows);
+  renderReasons(st.handoff_reasons);
+  renderProblems(st.problems);
   const qu = st.queue, late = qu.overdue > 0;  // счетчики сервер считает по всей открытой очереди, а не по показанным карточкам
   const pct = (v) => v == null ? "нет данных" : Math.round(v * 100) + "%";
   $("kpi").innerHTML = `<a href="#queue" id="towait" class="${late ? "late" : ""}"><b>${num(qu.waiting)}</b><span>ждут менеджера${late ? `, просрочено ${num(qu.overdue)}` : ""}</span></a>` + [
@@ -263,6 +311,8 @@ async function load(force = false) {
 
 // Клик или Enter по карточке или строке открывает диалог; кнопки внутри делают свое
 async function pick(ev, list) {
+  const take = ev.target.closest("button[data-case]");
+  if (take) return addCase(take);
   const el = ev.target.closest("[data-id]");
   if (ev.target.closest("[data-fold]")) { view.runOpen = !view.runOpen; renderQueue(); return; }
   if (!el || ev.target.closest("a")) return;
@@ -272,7 +322,16 @@ async function pick(ev, list) {
   if (!await locked([...b.closest(".act").querySelectorAll("button")], () => post(`/api/admin/handoff/${h}/${b.dataset.do}`, b.dataset.do === "take" ? { who: localStorage.getItem("who") || "менеджер" } : {}))) return;
   await load(); if (current) show(current);
 }
+// Проблемный диалог идет в проверочный набор одним кликом: ожидание по причинам оценки, заметка с оценкой
+async function addCase(btn) {
+  const id = btn.dataset.case, s = [...data.ss.sessions, ...data.st.problems.worst].find((x) => x.id === id);
+  if (!s) return;
+  const note = `Проблемный диалог, оценка ${s.score} из 5: ${s.problems.map((p) => p.label).join("; ")}`;
+  if (await locked([btn], () => post(`/api/admin/session/${id}/case`, { handoff: s.problems.some((p) => p.code === "human") ? true : null, quote: false, note }))) load();
+}
 $("hand").onclick = (ev) => pick(ev, "hand");
+$("pl").onclick = (ev) => pick(ev, "pl");
+$("gapmore").onclick = () => { view.gaps = !view.gaps; renderGaps(data.st.gaps.rows); };
 $("rows").onclick = (ev) => pick(ev, "rows");
 $("qseg").onclick = (ev) => { const b = ev.target.closest("button"); if (b) { view.queue = b.dataset.q; renderQueue(); } };
 $("rseg").onclick = (ev) => { const b = ev.target.closest("button"); if (b) { view.rows = b.dataset.r; renderRows(); } };
@@ -317,7 +376,8 @@ async function show(id, opened = false) {
   const count = (kind) => steps.filter((x) => x.kind === kind).length;
   let html = `<div class="dh"><h2 id="dh" tabindex="-1">Диалог от ${dt(s.created_at)} МСК</h2><button type="button" class="btn back">К списку обращений</button></div>
     <p class="id">№ ${esc(id)}${s.page_url ? " · страница " + esc(s.page_url) : ""}</p>
-    <div class="st">Стоимость ${rub(s.cost_rub)} · вызовов модели ${count("llm")} · инструментов ${count("tool")}${facts ? "<br>Память о клиенте: " + facts : ""}</div>`;
+    <div class="st">Стоимость ${rub(s.cost_rub)} · вызовов модели ${count("llm")} · инструментов ${count("tool")}${facts ? "<br>Память о клиенте: " + facts : ""}</div>
+    ${d.rating ? `<div class="st">Оценка диалога <b>${d.rating.score} из 5</b>: ${d.rating.problems.map((p) => esc(p.label)).join("; ") || "замечаний нет"}</div>` : ""}`;
   if (operator) html += d.handoffs.filter((x) => x.status === "new" || x.status === "taken").map(answerBox).join("");
   html += "<h3>Переписка</h3>";
   let turn = 0;

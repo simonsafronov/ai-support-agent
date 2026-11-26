@@ -1,0 +1,266 @@
+{
+ "source": "Обращения покупателей store.softline.ru: 495 обращений, id с #100625 по #103038 (разбор в docs/chat_analysis.md). Каждый продукт сверен с каталогом стенда на 26.11.2026 (136 290 предложений): в названиях позиций и в поле производителя его нет. Здесь только агрегат: переписки, контакты и названия организаций в репозиторий не входят.",
+ "checked": "26.11.2026",
+ "items": [
+  {
+   "query": "Google Workspace (подписки на googleapps.softline.ru)",
+   "match": [
+    "google workspace",
+    "gmail",
+    "гмайл"
+   ],
+   "count": 19,
+   "example": "сколько стоит самая дешевая подписка месячная ная чтобы была доступна почта на гмайл?"
+  },
+  {
+   "query": "Ноутбуки, моноблоки и ПК конкретных моделей (ASUS Zenbook, Huawei MateBook, OSiO, Aquarius, Inferit Slim)",
+   "match": [
+    "zenbook",
+    "matebook",
+    "osio",
+    "inferit slim",
+    "aquarius mnb"
+   ],
+   "count": 6,
+   "example": "ноутбук asus zenbook duo 14 oled ux8406ca intel core ultra 9 285h"
+  },
+  {
+   "query": "Периферия и аксессуары (МФУ Brother, переходник Dell, транспондер T-Pass, утюг Braun)",
+   "match": [
+    "brother",
+    "t-pass",
+    "braun",
+    "470-acfc"
+   ],
+   "count": 4,
+   "example": "сколько стоит brother mfc l-2700dwr"
+  },
+  {
+   "query": "RuPost",
+   "match": [
+    "rupost",
+    "рупост"
+   ],
+   "count": 3,
+   "example": "изучаю лицензии rupost enterprise, вижу, что они распространяются на 1 пользователя, не очень понимаю, как это должно работать на практике"
+  },
+  {
+   "query": "Veeam",
+   "match": [
+    "veeam"
+   ],
+   "count": 3,
+   "example": "veeam: veeam data platform advanced universal subscription license"
+  },
+  {
+   "query": "Atlassian (Jira, Confluence) и плагины к ним",
+   "match": [
+    "atlassian",
+    "jira",
+    "confluence"
+   ],
+   "count": 2,
+   "example": "можно у вас приобрести плагин ifame для конфлюенс?"
+  },
+  {
+   "query": "PDF-XChange и Foxit PDF Editor",
+   "match": [
+    "pdf-xchange",
+    "foxit"
+   ],
+   "count": 2,
+   "example": "подскажите сейчас возможно приобрести по pdf-xchange pro и foxit pdf editor?"
+  },
+  {
+   "query": "R-Studio",
+   "match": [
+    "r-studio",
+    "r studio",
+    "rstudio"
+   ],
+   "count": 2,
+   "example": "как приобрести ключ к r studio"
+  },
+  {
+   "query": "ViPNet Client",
+   "match": [
+    "vipnet"
+   ],
+   "count": 2,
+   "example": "можно у вас купить дистрибутив vipnet client linux?"
+  },
+  {
+   "query": "Articulate 360",
+   "match": [
+    "articulate"
+   ],
+   "count": 1,
+   "example": "articulate 360 у вас можно приобрести?"
+  },
+  {
+   "query": "Axxon Next",
+   "match": [
+    "axxon"
+   ],
+   "count": 1,
+   "example": "по axxon next хотим приобрести на 5 камер"
+  },
+  {
+   "query": "BarTender (Seagull Scientific)",
+   "match": [
+    "bartender"
+   ],
+   "count": 1,
+   "example": "мне нужно seagull scientific bartender professional. какая цена?"
+  },
+  {
+   "query": "Carbonio",
+   "match": [
+    "carbonio"
+   ],
+   "count": 1,
+   "example": "хочу купить подписку на carbonio"
+  },
+  {
+   "query": "Cursor AI",
+   "match": [
+    "cursor"
+   ],
+   "count": 1,
+   "example": "cursor ai приобретаете лицензию?"
+  },
+  {
+   "query": "Dallas Lock",
+   "match": [
+    "dallas"
+   ],
+   "count": 1,
+   "example": "или dallas lock (с модулем персонального межсетевого экрана, в случае использования программного скзи)"
+  },
+  {
+   "query": "GitLab",
+   "match": [
+    "gitlab"
+   ],
+   "count": 1,
+   "example": "какая цена gitlab unlimited 300 пользователей self hosted в год?"
+  },
+  {
+   "query": "IBM SPSS Statistics",
+   "match": [
+    "spss"
+   ],
+   "count": 1,
+   "example": "сколько стоит академическая лицензия на 30 компьюетров? спсс имею ввиду"
+  },
+  {
+   "query": "Indeed PAM",
+   "match": [
+    "indeed"
+   ],
+   "count": 1,
+   "example": "сколько стоит pam indeed пакет на 50 одновременных подключений ?"
+  },
+  {
+   "query": "JetBrains (PyCharm, DataGrip)",
+   "match": [
+    "jetbrains",
+    "pycharm",
+    "datagrip"
+   ],
+   "count": 1,
+   "example": "foxit phantompdf 47 штук jetbrains datagrip 2 штук jetbrains pycharm"
+  },
+  {
+   "query": "Kerio Control",
+   "match": [
+    "kerio"
+   ],
+   "count": 1,
+   "example": "можете подготовить кп на вот эти по? microsoft windows server 2019 (64-bit) 6 штук kerio control"
+  },
+  {
+   "query": "Normacs",
+   "match": [
+    "normacs"
+   ],
+   "count": 1,
+   "example": "годовое пользование normacs 4.x сколько стоит для юрлица"
+  },
+  {
+   "query": "Paragon Camptune",
+   "match": [
+    "camptune"
+   ],
+   "count": 1,
+   "example": "какая цена лицензии camptune"
+  },
+  {
+   "query": "PyArmor",
+   "match": [
+    "pyarmor"
+   ],
+   "count": 1,
+   "example": "хочу купить корпоративную лицензию pyarmor"
+  },
+  {
+   "query": "Q.Database (Диасофт)",
+   "match": [
+    "q.database",
+    "qdatabase",
+    "диасофт"
+   ],
+   "count": 1,
+   "example": "сориентируйте пожалуйста по стоимости лицензии, на субд q.database"
+  },
+  {
+   "query": "Siemens NX",
+   "match": [
+    "siemens nx"
+   ],
+   "count": 1,
+   "example": "стоимость лицензии siemens nx на 1 чел на год"
+  },
+  {
+   "query": "Softorbits Video Toolkit",
+   "match": [
+    "softorbits"
+   ],
+   "count": 1,
+   "example": "можно ли купить softorbits video toolkit"
+  },
+  {
+   "query": "VK WorkMail",
+   "match": [
+    "workmail"
+   ],
+   "count": 1,
+   "example": "vk workmail пользовательская срочная лицензия на 1 год на право получения обновления. какая будет стоимость и как получить счет?"
+  },
+  {
+   "query": "Vicon boujou",
+   "match": [
+    "boujou"
+   ],
+   "count": 1,
+   "example": "как купить boujou?"
+  },
+  {
+   "query": "WebTutor (Websoft HCM)",
+   "match": [
+    "webtutor",
+    "websoft"
+   ],
+   "count": 1,
+   "example": "сколько будет стоить самая минимальная лицензия на websoft hcm (webtutor)?"
+  },
+  {
+   "query": "Wonderware Historian",
+   "match": [
+    "wonderware"
+   ],
+   "count": 1,
+   "example": "о возможности приобретения лицензии wonderware historian server на 20 000 тегов"
+  }
+ ]
+}

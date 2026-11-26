@@ -292,7 +292,7 @@ def test_quote_file_needs_its_record():
     assert client.get("/quotes/KP-LIVE.pdf").status_code == 404  # без подписи и ключа по-прежнему нельзя
 
 
-def test_daily_thread_starts_without_feed(monkeypatch):
+def test_update_thread_starts_without_feed(monkeypatch):
     started = []
 
     class Thread:
@@ -307,16 +307,16 @@ def test_daily_thread_starts_without_feed(monkeypatch):
     monkeypatch.setattr(server.notify, "start", lambda answer: None)
     with TestClient(server.app):
         pass
-    assert server._daily_update in started
+    assert server._update_loop in started
 
 
-def test_daily_work_without_feed_purges_and_skips_catalog(monkeypatch):
+def test_scheduled_work_without_feed_purges_and_skips_catalog(monkeypatch):
     done = []
     monkeypatch.setattr(server.config, "FEED_URL", "")
     monkeypatch.setattr(server.store, "purge", lambda days: done.append("purge"))
     monkeypatch.setattr(server, "update_catalog", lambda: done.append("catalog"))
-    server._daily_work()
+    server._scheduled_work()
     assert done == ["purge"]
     monkeypatch.setattr(server.config, "FEED_URL", "https://feed.example/f.yml.gz")
-    server._daily_work()
+    server._scheduled_work()
     assert done == ["purge", "purge", "catalog"]

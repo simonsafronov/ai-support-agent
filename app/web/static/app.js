@@ -21,7 +21,7 @@ const WAIT_MS = 180000;  // столько после перезагрузки �
 const state = {
   session: store.getItem("session") || "",
   client: store.getItem("client") || (() => { const c = rid(); store.setItem("client", c); return c; })(),
-  page: "", busy: false, steps: 0, tokens: 0, cost: 0, seen: 0, last: 0, callAfter: false,
+  page: "", pricesAt: 0, busy: false, steps: 0, tokens: 0, cost: 0, seen: 0, last: 0, callAfter: false,
   gen: 0, ctrl: null,  // поколение диалога и прерывание хода: ответ хода из прежнего диалога в новый не попадает
 };
 const starters = $("starters");  // подсказки живут в журнале под приветствием и возвращаются туда в новом диалоге
@@ -130,6 +130,14 @@ function callState(s) {
   b.disabled = !!s; b.dataset.state = s;
 }
 
+// Строка под карточками с ценой: на какое время цены каталога. Время приходит с /api/health
+const MSK = new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+function pricesLine() {
+  if (!state.pricesAt) return "";
+  const p = Object.fromEntries(MSK.formatToParts(new Date(state.pricesAt * 1000)).map((x) => [x.type, x.value]));
+  return `Цены каталога на ${p.day}.${p.month} ${p.hour}:${p.minute} МСК`;
+}
+
 function showReply(r, restoring = false) {
   const log = $("log"), start = log.children.length;
   if (r.reply) {
@@ -138,6 +146,7 @@ function showReply(r, restoring = false) {
     if (mgr) callState("in");
   }
   for (const c of r.cards || []) add("card", card(c)).querySelector(".take")?.addEventListener("click", (e) => send(e.target.dataset.say));
+  if ((r.cards || []).some((c) => c.price || c.price_min)) add("fresh", pricesLine());  // пустая строка заполнится, когда придет время с /api/health
   for (const e of r.events || []) {
     if (e.type === "quote") quote(e);
     if (e.type === "handoff") {
@@ -404,6 +413,8 @@ async function model() {
       : `Модель ${h.label} сейчас не на связи: вопрос сразу уйдет менеджеру.`;
     el.classList.toggle("off", !h.online);
     el.hidden = false;
+    state.pricesAt = h.prices_at || 0;
+    document.querySelectorAll(".fresh:empty").forEach((e) => (e.textContent = pricesLine()));
   } catch (e) { /* подпись не загрузилась: чат работает и без нее */ }
 }
 model(); setInterval(model, 30000);
