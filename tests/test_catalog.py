@@ -333,3 +333,16 @@ def test_text_normalization():
     assert norm("  Сontent  AI Ёж ") == "content ai еж"  # русская "С" в латинском слове
     assert tokens("Dr.Web Р7-Офис 1С:Бухгалтерия КОМПАС-3D") == [
         "dr", "web", "р7", "офис", "1с", "бухгалтерия", "компас", "3d"]
+
+
+def test_article_is_found_inside_a_sentence():
+    result = search_products("здравствуйте, можете оформить кп на артикул: kl4863rapfs 40 лицензий")
+    assert result["products"], result
+    hit = result["products"][0].get("offer_hit") or {}
+    assert (hit.get("vendor_code") or "").lower() == "kl4863rapfs"
+
+
+def test_long_polite_message_still_finds_the_product():
+    result = search_products("добрый день интересует возможность приобретения лицензии kaspersky endpoint "
+                             "security для бизнеса расширенный сроком на 3 года для 100 пользователей")
+    assert "kaspersky endpoint security" in result["products"][0]["title"].lower()

@@ -160,6 +160,9 @@ def _lookalike(word: str) -> str | None:
 
 _NATIVE, _FOREIGN = 1.0, 0.8  # вес совпадения: как написал клиент или другим алфавитом
 _PREFIX_MIN = 4               # короче этого слово ищется только целиком
+_MAX_TOKENS = 40              # столько слов сообщения разбираем
+_FOCUS_FROM = 6               # фраза длиннее этого сужается до слов, которые есть в каталоге
+_FOCUS_KEEP = 12              # столько слов остается в запросе
 
 
 @lru_cache(maxsize=4096)
@@ -199,7 +202,7 @@ class Query:
 
     def __init__(self, text: str):
         self.text = text
-        self.tokens = tokens(text)[:12]
+        self.tokens = tokens(text)[:_MAX_TOKENS]
         self.groups: list[dict] = []
         for i, token in enumerate(self.tokens):
             terms = {term: (prefix, weight) for term, prefix, weight in _variants(token)}
@@ -224,10 +227,31 @@ class Query:
         if len(self.groups) < 2:
             return
         n = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+        known = []
         for i, group in enumerate(self.groups):
             df = conn.execute("SELECT COUNT(*) FROM products_fts WHERE products_fts MATCH ?",
                               (self._group_fts(group),)).fetchone()[0]
+            known.append(df > 0)
             self.weights[i] = math.log(1 + n / (df + 0.5))
+        self._focus(known)
+
+    def _focus(self, known: list[bool]) -> None:
+        """Длинная фраза клиента ("добрый день, подскажите стоимость ...") сужается до слов каталога.
+
+        Слова, которых нет ни в одном названии, вендоре и категории, в длинной фразе это
+        приветствия и просьбы, а не опечатки: они не должны перевешивать название продукта.
+        Из остальных остаются самые редкие. Короткий запрос не трогаем: в нем неизвестное
+        слово скорее опечатка, ее ловит нечеткий шаг.
+        """
+        if len(self.groups) <= _FOCUS_FROM or not any(known):
+            self.groups, self.tokens, self.weights = (
+                self.groups[:_FOCUS_KEEP], self.tokens[:_FOCUS_KEEP], self.weights[:_FOCUS_KEEP])
+            return
+        order = sorted((i for i, ok in enumerate(known) if ok), key=lambda i: -self.weights[i])
+        keep = sorted(order[:_FOCUS_KEEP])
+        self.groups = [self.groups[i] for i in keep]
+        self.tokens = [self.tokens[i] for i in keep]
+        self.weights = [self.weights[i] for i in keep]
 
     @staticmethod
     def _group_fts(group: dict) -> str:
@@ -450,26 +474,40 @@ _PARTIAL_FLOOR = 0.5  # частичное совпадение рядом с п
 _PARTIAL_SHARE = 0.75  # без полного совпадения: не хуже этой доли от лучшего
 
 
+_ARTICLE_RE = re.compile(r"[^\s,;:()\[\]«»\"']+")
+
+
+def _article_words(text: str | None) -> list[str]:
+    """Слова, похожие на артикул: буквы вместе с цифрами, от 5 знаков ("KL4863RAPFS", "LBS-AC-12M-25-A3")."""
+    words = []
+    for word in _ARTICLE_RE.findall(text or ""):
+        word = word.strip(".-/")
+        if (len(word) >= 5 and any(ch.isdigit() for ch in word) and any(ch.isalpha() for ch in word)
+                and word not in words):
+            words.append(word)
+    return words
+
+
 def _find_by_article(conn, text: str, where: str, params: list, found: _Candidates) -> None:
-    """Запрос одним словом с цифрой проверяется как точный артикул варианта.
+    """Слова запроса, похожие на артикул, проверяются как точный артикул варианта.
+
+    Артикул ловится и внутри фразы: "оформить кп на артикул: kl4863rapfs 40 лицензий".
 
     Один артикул бывает у нескольких вариантов и продуктов: в offer_hit попадает
     самый дешевый доступный вариант продукта, все цены артикула в same_code_prices.
     """
-    code = (text or "").strip()
-    if not code or " " in code or not any(ch.isdigit() for ch in code):
-        return
-    hits = conn.execute(
-        f"SELECT o.id, o.name, o.vendor_code, o.price, o.available, o.same_code_prices,"
-        f" o.price_ambiguous, {_PRODUCT_COLS}"
-        " FROM offers o JOIN products p ON p.product_id = o.product_id"
-        f" WHERE o.vendor_code = ? COLLATE NOCASE{where}"
-        " ORDER BY o.available DESC, o.price IS NULL, o.price LIMIT 20", (code, *params))
-    for hit in hits:
-        extra = {"offer_id": hit["id"], "name": hit["name"], "vendor_code": hit["vendor_code"],
-                 "price": _money(hit["price"]), "available": bool(hit["available"])}
-        extra.update(_price_flags(hit))
-        found.add(hit, offer_hit=True, extra=extra)
+    for code in _article_words(text)[:4]:
+        hits = conn.execute(
+            f"SELECT o.id, o.name, o.vendor_code, o.price, o.available, o.same_code_prices,"
+            f" o.price_ambiguous, {_PRODUCT_COLS}"
+            " FROM offers o JOIN products p ON p.product_id = o.product_id"
+            f" WHERE o.vendor_code = ? COLLATE NOCASE{where}"
+            " ORDER BY o.available DESC, o.price IS NULL, o.price LIMIT 20", (code, *params))
+        for hit in hits:
+            extra = {"offer_id": hit["id"], "name": hit["name"], "vendor_code": hit["vendor_code"],
+                     "price": _money(hit["price"]), "available": bool(hit["available"])}
+            extra.update(_price_flags(hit))
+            found.add(hit, offer_hit=True, extra=extra)
 
 
 def _find_all_words(conn, q: Query, where: str, params: list, found: _Candidates) -> None:
