@@ -12,7 +12,7 @@ import time
 from urllib.parse import urlparse
 
 from app import config, store
-from app.agent import prices, prompts, tools
+from app.agent import prices, prompts, spec, tools
 from app.agent.llm import LLMError, get_llm
 from app.catalog import search as catalog
 
@@ -396,6 +396,27 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     cut: dict = {}  # что в ответе убрал код, а не модель: {"price": [суммы], "discount": [фразы]}
     started, called = time.monotonic(), set()
     vocabulary = set(_FIELD.findall(prompts.SYSTEM + json.dumps(tools.specs())))  # имена, которые модель видит
+
+    rows = spec.parse(for_model(text))  # строки списка уходят модели: контакты и реквизиты в них скрыты
+    if rows:  # список позиций: код сопоставляет его с каталогом до модели и записывает как ответ инструмента
+        args = {"items": [{"query": r["query"], "qty": r["qty"] or 1} for r in rows]}
+        emit({"type": "tool", "name": spec.TOOL, "args": args})
+        try:
+            out = spec.match(rows)
+        except Exception as e:  # сбой каталога не роняет ход: модель получает ошибку, как от инструмента
+            out = {"error": f"{type(e).__name__}: {e}"}
+        prices.collect(out, known)
+        prices.collect_named(out, named)
+        prices.collect_positions(out, positions)
+        vocabulary |= field_names(out)
+        _remember_items(items, "get_product", {"offers": [ln for ln in out.get("lines", []) if ln.get("offer_id")]})
+        store.add_step(sid, turn, "tool", spec.TOOL, args, out)
+        trace.append({"kind": "tool", "name": spec.TOOL, "input": args, "output": out})
+        msgs.append({"role": "assistant", "content": "", "tool_call": {"name": spec.TOOL, "args": args}})
+        msgs.append({"role": "tool", "name": spec.TOOL, "content": fit_json(tools.slim(spec.TOOL, out),
+                                                                             spec.RESULT_LIMIT)})
+        if out.get("lines"):
+            ctx.events.append({"type": "spec", "rows": out["lines"], "total": out["total"]})
 
     for step in range(MAX_STEPS if not budget_spent() else 0):
         if config.TURN_DEADLINE and time.monotonic() - started > config.TURN_DEADLINE:
