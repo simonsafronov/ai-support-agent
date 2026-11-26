@@ -384,7 +384,7 @@ $("call").onclick = call;
 $("f").onsubmit = (e) => { e.preventDefault(); submit(); };
 $("t").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } };
 $("t").addEventListener("input", fit);
-starters.querySelectorAll("button").forEach((b) => (b.onclick = () => send(b.textContent)));
+starters.querySelectorAll("button").forEach((b) => (b.onclick = () => send(b.dataset.text || b.textContent)));  // data-text: сценарий длиннее подписи, например список позиций
 $("new").onclick = () => {
   state.gen++; state.ctrl?.abort(); state.ctrl = null; state.callAfter = false; lock(false);
   state.session = ""; store.removeItem("session");
