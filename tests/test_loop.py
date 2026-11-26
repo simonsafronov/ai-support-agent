@@ -177,7 +177,8 @@ def test_calc_total_refuses_quantity_outside_price_tier():
     out = tools.call(tools.ToolContext("s"), "calc_total", {"items": [{"offer_id": 4857, "qty": 120}]})
     if "нет варианта" in out.get("error", ""):
         pytest.skip("в базе нет контрольного варианта")
-    assert "от 50 до 99" in out["error"] and "qty=120" in out["error"]   # цена ступени 50-99 на 120 штук не годится
+    assert "от 50 до 99" in out["error"]                                 # цена ступени 50-99 на 120 штук не годится
+    assert "quantity=120" in out["error"]            # подсказка называет параметр get_product: qty он молча отбрасывал
     ok = tools.call(tools.ToolContext("s"), "calc_total", {"items": [{"offer_id": 4857, "qty": 50}]})
     assert ok["total"] == 197010.0 and ok["lines"][0]["price_for"] == "за 1 лицензию при покупке от 50 до 99"
 
@@ -398,7 +399,7 @@ def test_quote_requisites_are_remembered_between_calls(offer):
     from app.agent import tools
     sid = store.get_session(None)["id"]
     ctx = tools.ToolContext(sid)
-    item = {"items": [{"offer_id": offer["offer_id"], "qty": 2}]}
+    item = {"items": [{"offer_id": offer["offer_id"], "qty": offer["qty_min"] or 2}]}  # количество внутри ступени цены
     first = tools.call(ctx, "make_quote", {**item, "customer": "ООО Ромашка"})
     assert first["customer_missing"] == ["ИНН", "КПП"]
     second = tools.call(ctx, "make_quote", {**item, "inn": "7701234567", "kpp": "770101001"})

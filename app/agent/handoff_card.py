@@ -49,6 +49,14 @@ def asked_discount(messages: list[str]) -> str:
     return f"{max(found):g}%" if found else ""
 
 
+def given_discount(value) -> str:
+    """Скидка, которую дал агент: в карточке не больше его полномочий, что бы ни лежало в памяти диалога."""
+    found = re.search(r"\d+(?:[.,]\d+)?", str(value or ""))
+    if not found:
+        return ""
+    return f"{min(float(found.group().replace(',', '.')), config.AGENT_DISCOUNT_MAX):g}%"
+
+
 def priority(text: str) -> str:
     text = text.lower()
     return next((p for p, rx in PRIORITY if re.search(rx, text)), "low")
@@ -72,6 +80,10 @@ def build(h: dict, now: float | None = None) -> dict:
                 for o in json.loads(quote["items_json"] or "[]")] if quote else []
     flags = [name for name, rx in FLAGS if re.search(rx, text.lower())]
     needs = {SHOWN_AS.get(k, k): facts[k] for k in NEED_FIELDS if facts.get(k)}
+    if "дана скидка" in needs:  # зачем: запись "дана скидка 30%" в карточке менеджер прочтет как обещание клиенту
+        needs["дана скидка"] = given_discount(needs["дана скидка"])
+        if not needs["дана скидка"]:
+            del needs["дана скидка"]
     if "просит скидку" in flags and asked_discount(asked):
         needs["запрошена скидка"] = asked_discount(asked)
     return {

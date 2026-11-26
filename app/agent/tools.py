@@ -97,11 +97,26 @@ def merge_contact(known: str, given: str) -> str:
     return ", ".join(parts)
 
 
-def save_facts(ctx, facts: dict) -> dict:
-    """Запоминает сказанное клиентом о себе. Ключи: поля FACT_FIELDS или их русские названия."""
+MODEL_CANNOT_SET = ("ИНН", "КПП", "контакт")  # их модель не видит: настоящие значения код берет из слов клиента
+
+
+def save_facts(ctx, facts: dict, from_model: bool = False) -> dict:
+    """Запоминает сказанное клиентом о себе. Ключи: поля FACT_FIELDS или их русские названия.
+
+    from_model: факты из метки [[facts: ...]] в ответе модели. Реквизиты и контакт из нее не принимаются
+    (модель видела только метки, значит значение выдумано), скидка не больше полномочий агента.
+    """
     saved = {}
     for k, v in facts.items():
         key, v = _FACT_KEYS.get(str(k).strip().lower()), str(v).strip()
+        if from_model and key in MODEL_CANNOT_SET:
+            continue
+        if from_model and key == "скидка":
+            number = re.search(r"\d+(?:[.,]\d+)?", v)
+            given = kp.allowed_discount(number.group().replace(",", ".")) if number else 0
+            if not given:
+                continue
+            v = f"{float(given):g}%"
         if key == "контакт":
             v = merge_contact(ctx.facts.get("контакт", ""), v)
             if v == ctx.facts.get("контакт", ""):
@@ -149,10 +164,9 @@ def _calc_total(ctx, items: list[dict], discount_percent: float = 0):
             return {"error": f"нет варианта с offer_id {it['offer_id']}"}
         qty = max(1, int(it.get("qty") or 1))
         price = o.get("price")
-        lo, hi = o.get("qty_min"), o.get("qty_max")
-        if o.get("qty_pricing") == "per_unit" and ((lo and qty < lo) or (hi and qty > hi)):
-            return {"error": f"Вариант {o['offer_id']} действует при покупке от {lo} до {hi or 'и больше'} лицензий, "
-                             f"а в расчете {qty}. Найдите вариант под это количество: get_product с qty={qty}."}
+        tier = kp.tier_problem(o, qty)  # та же проверка ступени цены, что в КП
+        if tier:
+            return {"error": tier[0].upper() + tier[1:] + "."}
         line = {"offer_id": o["offer_id"], "name": o["name"], "qty": qty, "price": price,
                 "sum": round(price * qty, 2) if price else None}
         if price and discount:  # цена со скидкой считается так же, как в КП: до копейки, затем на количество
