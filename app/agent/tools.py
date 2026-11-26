@@ -188,6 +188,8 @@ def _calc_total(ctx, items: list[dict], discount_percent: float = 0):
         lines.append(line)
     check = (f" У артикула позиции {', '.join(unsure)} в каталоге несколько цен, в расчете цена выбранного варианта. "
              "Скажите клиенту, что цену этой позиции подтвердит менеджер.") if unsure else ""
+    if sum(1 for ln in lines if ln["sum"]) > 1:  # сумму двух вариантов на выбор модель выдавала за итог заказа
+        check += " total это сумма всех строк: если строки это варианты на выбор, называйте суммы строк, а не total."
     if discount:
         return {"lines": lines, "total": round(total, 2), "discount_percent": discount,
                 "total_without_discount": round(sum(ln["sum_without_discount"] for ln in lines if ln["sum"]), 2),
