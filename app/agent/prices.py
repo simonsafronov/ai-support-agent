@@ -262,10 +262,12 @@ def mask_unknown(text: str, known, said=(), positions=None, named=()) -> str:
 # --- Цена у своей позиции --------------------------------------------------------------------------------------------
 # Обе суммы взяты из каталога, но стоят не у своих позиций: "А стоит 20 000, Б стоит 10 000" при ценах 10 000 и
 # 20 000. Проверка "сумма есть в данных диалога" этого не видит. Здесь узкая проверка привязки: во фразе или пункте
-# списка названа ровно одна известная позиция (метка [[offer:id]], артикул, название варианта или продукта из
-# ответов инструментов) и есть цена за единицу. Если ни одна сумма фразы к этой позиции не относится, а одна из них
-# это цена за единицу другой позиции диалога, цена стоит не у своей позиции. Позицию однозначно определить нельзя
-# (две позиции во фразе, названия нет): проверка молчит, ложная тревога хуже пропуска.
+# списка названа известная позиция (метка [[offer:id]], артикул, название варианта или продукта из ответов
+# инструментов) и есть цена за единицу. Если ни одна сумма фразы к этой позиции не относится, а одна из них это цена
+# за единицу другой позиции диалога, цена стоит не у своей позиции. Названо несколько позиций ("А стоит 20 000 руб.,
+# а Б стоит 10 000 руб."): фраза делится на отрезки от названия до следующего названия, и так же проверяется отрезок
+# с одной суммой и словом о цене. Позицию однозначно определить нельзя (две суммы в отрезке, за суммой метка другой
+# позиции, сравнение "А дороже Б на ...", названия нет): проверка молчит, ложная тревога хуже пропуска.
 OWN, FOREIGN, OTHER = "своя", "чужая", "прочая"
 _ROWS = ("offers", "lines", "items")  # где в ответах инструментов лежат позиции: варианты, строки расчета и КП
 _UNIT_PRICE = re.compile(r"стоит|стоимост|\bцен[аыуе]\b|ценой|\bпо\s+\d|за (?:одну |1 |кажд\w+ )?(?:лицензи|штук|шт\b|"
@@ -324,22 +326,27 @@ _TIGHT = re.compile(r"(?:[\s:;,.()«»\"“”„—–-]|\d+(?:[.,]\d+)?\s*%?|�
                     r"одн[ауы]|кажд\w+|(?:шт|штук\w*|лиценз\w+|пользовател\w+|узл\w+|мест\w*|пк|год\w*|лет|месяц\w*|мес)\.?)*",
                     re.I)
 _QUOTES = "«»\"“”„'"
+# сравнение позиций: сумма в нем это разница, а не цена ("А дороже Б на 5 000 руб.")
+_COMPARE = re.compile(r"дороже|дешевле|разниц|выгодн|эконом|переплат|доплат|больше|меньше|выше|ниже", re.I)
+# метка после новой части фразы с названием подписывает название, а не сумму перед ним: ", Standard [[offer:2]]"
+_SUBJECT = re.compile(r"(?:[,;]|\s(?:и|а))\s+[«\"A-ZА-ЯЁ][^,;]*$")
 
 
 def _plain(s: str) -> str:
     return re.sub(rf"[{_QUOTES}]", "", (s or "").lower().replace("ё", "е")).split()
 
 
-def _named(sentence: str, positions: dict) -> tuple[set, list[tuple[int, int]]]:
-    """Позиции, названные во фразе, если это одна позиция (иначе пустое множество), и места упоминаний."""
-    found, spans = [], []  # по одному множеству id на каждое упоминание
+def _named(sentence: str, positions: dict) -> list[tuple[int, int, set]] | None:
+    """Упоминания известных позиций во фразе по порядку: (начало, конец, id позиций).
+
+    None, если метка называет позицию, про которую ничего не известно: привязку не определить."""
+    found = []
     for m in _REF_MARK.finditer(sentence):
         kind, ident = m.group(1).lower(), m.group(2)
         ids = {i for i, p in positions.items() if (i if kind == "offer" else p["pid"]) == ident}
         if not ids:
-            return set(), []  # названа позиция, про которую ничего не известно: привязку не определить
-        found.append(ids)
-        spans.append(m.span())
+            return None
+        found.append((*m.span(), ids))
     low = sentence.lower().replace("ё", "е")  # длина та же: места совпадают с местами во фразе
     names: dict[tuple, set] = {}
     for i, p in positions.items():
@@ -350,9 +357,8 @@ def _named(sentence: str, positions: dict) -> tuple[set, list[tuple[int, int]]]:
         hit = re.compile(r"(?<![\w-])" + rf"[\s{_QUOTES}]+".join(map(re.escape, words)) + r"(?![\w-])")
         for m in hit.finditer(low):
             low = low[:m.start()] + " " * (m.end() - m.start()) + low[m.end():]
-            found.append(names[words])
-            spans.append(m.span())
-    return (set.intersection(*found) if found else set()), spans
+            found.append((*m.span(), names[words]))
+    return sorted(found, key=lambda f: f[0])
 
 
 def _sentences(text: str):
@@ -367,13 +373,31 @@ def _sentences(text: str):
     yield start, text[start:]
 
 
+def _judge(sentence: str, sums, ids: set, refs, positions: dict, counts: set) -> list[tuple[int, int, float, str]]:
+    """Суммы фразы или ее отрезка про позиции ids: своя, чужая или прочая."""
+    own = set().union(*(positions[i]["sums"] | positions[i]["unit"] for i in ids))
+    own |= {u * q for i in ids for u in positions[i]["unit"] for q in counts}
+    others = {u for i, p in positions.items() if i not in ids for u in p["unit"]}
+    low = 1 - config.AGENT_DISCOUNT_MAX / 100
+    mine = [any(x * low - TOLERANCE <= v <= x + TOLERANCE for x in own) for _, _, v in sums]
+    out = []
+    for (a, b, v), ok in zip(sums, mine):
+        verdict = OWN if ok else OTHER
+        if not any(mine) and _is_known(v, others):
+            prev = max((e for _, e, _ in refs if e <= a), default=0)
+            gap = sentence[prev:a]
+            verdict = FOREIGN if _TIGHT.fullmatch(_REF_MARK.sub(" ", gap)) else OTHER
+        out.append((a, b, v, verdict))
+    return out
+
+
 def price_pairs(text: str, positions) -> list[tuple[int, int, float, str]]:
     """Суммы ответа, у которых однозначно определена позиция: (начало, конец, сумма, своя | чужая | прочая).
 
     Своя: цена за единицу или сумма этой позиции из ответов инструментов, она же со скидкой в пределах своей,
-    цена на названное во фразе количество. Чужая: цена за единицу другой позиции диалога во фразе, где своей
-    суммы нет и между названием и суммой стоят только слова о цене и количестве. Прочая: сумма, про которую по данным позиций
-    сказать нечего (ее сверяет проверка известных сумм).
+    цена на названное во фразе количество. Чужая: цена за единицу другой позиции диалога во фразе или отрезке фразы,
+    где своей суммы нет и между названием и суммой стоят только слова о цене и количестве. Прочая: сумма, про которую
+    по данным позиций сказать нечего (ее сверяет проверка известных сумм).
     """
     out = []
     if not positions or not config.PRICE_BINDING:
@@ -382,23 +406,30 @@ def price_pairs(text: str, positions) -> list[tuple[int, int, float, str]]:
     for start, sentence in _sentences(text):
         if not _UNIT_PRICE.search(sentence) or any(x <= start < y for x, y in hidden):
             continue
-        named, spans = _named(sentence, positions)
+        refs = _named(sentence, positions)
         sums = [(a, b, v) for a, b, values in mentions(sentence) for v in values if v >= 1]
-        if not named or not sums:
+        if not refs or not sums:
             continue
-        counts = {v for v in map(number, NUMBER.findall(sentence)) if v and v == int(v) and 2 <= v <= 100_000}
-        own = set().union(*(positions[i]["sums"] | positions[i]["unit"] for i in named))
-        own |= {u * q for i in named for u in positions[i]["unit"] for q in counts}
-        others = {u for i, p in positions.items() if i not in named for u in p["unit"]}
-        low = 1 - config.AGENT_DISCOUNT_MAX / 100
-        mine = [any(x * low - TOLERANCE <= v <= x + TOLERANCE for x in own) for _, _, v in sums]
-        for (a, b, v), ok in zip(sums, mine):
-            verdict = OWN if ok else OTHER
-            if not any(mine) and _is_known(v, others):
-                prev = max((e for _, e in spans if e <= a), default=0)
-                gap = sentence[prev:a]
-                verdict = FOREIGN if _TIGHT.fullmatch(_REF_MARK.sub(" ", gap)) else OTHER
-            out.append((start + a, start + b, v, verdict))
+        # количество из фразы: цена позиции на него тоже своя; номер в метке [[offer:2]] не количество
+        counts = {v for v in map(number, NUMBER.findall(_REF_MARK.sub(" ", sentence)))
+                  if v and v == int(v) and 2 <= v <= 100_000}
+        common = set.intersection(*(ids for _, _, ids in refs))
+        if common:  # все упоминания про одну позицию
+            judged = _judge(sentence, sums, common, refs, positions, counts)
+        elif _COMPARE.search(sentence):
+            continue
+        else:  # несколько позиций: сумма относится к ближайшему названию перед ней
+            judged = []
+            for k, (_, e, ids) in enumerate(refs):
+                end = refs[k + 1][0] if k + 1 < len(refs) else len(sentence)
+                part = [x for x in sums if e <= x[0] and x[1] <= end]
+                if len(part) != 1 or not _UNIT_PRICE.search(sentence[e:end]):
+                    continue
+                if (_REF_MARK.match(sentence, end) and not refs[k + 1][2] <= ids
+                        and not _SUBJECT.search(sentence[part[0][1]:end])):
+                    continue  # метка за суммой ("18 000 руб. за лицензию [[offer:2]]") подписывает ее другой позицией
+                judged += _judge(sentence, part, ids, refs, positions, counts)
+        out += [(start + a, start + b, v, verdict) for a, b, v, verdict in judged]
     return out
 
 
