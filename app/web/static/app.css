@@ -90,7 +90,7 @@ h2{font-size:var(--f18);font-weight:600}
 .log .card .acts{display:flex;flex-wrap:wrap;gap:var(--s8);margin-left:auto;align-items:center}
 .card a.go{display:inline-block;padding:var(--s4) var(--s16);border-radius:var(--r);background:var(--crimson);color:#fff;text-decoration:none;font-size:var(--f14)}
 .card a.go:hover{background:var(--crimson-dark)}
-.card .take{border:1px solid var(--crimson);border-radius:var(--r);background:#fff;color:var(--crimson);padding:var(--s4) var(--s16)}
+.card .take{border:1px solid var(--crimson);border-radius:var(--r);background:#fff;color:var(--crimson);padding:var(--s4) var(--s16);font-size:var(--f14)}
 .card .take:hover{background:var(--rose)}
 .card.doc{border-color:var(--crimson)}
 .card.doc .sum{font-size:var(--f18);font-weight:600;color:var(--ink)}

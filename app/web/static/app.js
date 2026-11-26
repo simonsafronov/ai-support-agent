@@ -94,18 +94,18 @@ function card(c) {
   const go = url ? `<a class="go" href="${esc(url)}" target="_blank" rel="noopener">Открыть в магазине</a>` : "";
   if (c.type === "offer") {
     const d = c.details && typeof c.details === "object" ? Object.entries(c.details) : [];
-    const pick = "Беру: " + title + (d.length ? " (" + d.map(([, v]) => v).join(", ") + ")" : "");
+    const pick = "Беру: " + title + (c.vendor_code ? ", артикул " + c.vendor_code : "");  // по артикулу агент найдет именно этот вариант
     return `<div class="v">${esc(c.vendor || "")}</div><div class="t">${esc(title)}</div>
       ${d.length ? `<div class="d">${d.map(([k, v]) => esc(k) + ": " + esc(v)).join(" · ")}</div>` : ""}
       <div class="row"><div>${c.price ? `<div class="p">${rub(c.price)}</div>` : `<div class="p req">Цена по запросу</div>`}
-      <span>${c.vendor_code ? "Артикул " + esc(c.vendor_code) : ""}${c.available ? ' <span class="badge">· в продаже</span>' : ""}</span></div>
+      <span>${[c.vendor_code ? "Артикул " + esc(c.vendor_code) : "", c.available ? '<span class="badge">в продаже</span>' : ""].filter(Boolean).join(" · ")}</span></div>
       <span class="acts"><button type="button" class="take" data-say="${esc(pick)}">Выбрать</button>${go}</span></div>`;
   }
   let price = "Цена по запросу";
   if (c.price_min) price = c.price_min === c.price_max ? rub(c.price_min) : `от ${rub(c.price_min)}`;
   return `<div class="v">${esc(c.vendor || "")}</div><div class="t">${esc(title)}</div>
     <div class="row"><div><div class="p${c.price_min ? "" : " req"}">${price}</div>
-    <span>Вариантов: ${esc(c.n_offers ?? "")}${c.in_ru_registry ? ' <span class="badge">· реестр отечественного ПО</span>' : ""}</span></div>
+    <span>Вариантов: ${esc(c.n_offers ?? "")}${c.in_ru_registry ? ' · <span class="badge">реестр отечественного ПО</span>' : ""}</span></div>
     <span class="acts">${go}</span></div>`;
 }
 
@@ -296,7 +296,7 @@ async function send(message) {
   } catch (e) {
     if (gen !== state.gen) return;  // клиент начал новый диалог: прерванный ход молча забыт
     typing.remove(); mine.classList.add("failed");
-    step("guard", "Сбой связи", null, "Ответ не получен");
+    step("guard", e.refused ? "Сервер не принял сообщение" : "Сбой связи", null, "Ответ не получен");
     $("say").textContent = "";
     // сеть, обрыв потока и долгая тишина дают одно сообщение; отказ сервера назван своими словами
     add("msg sys", e.refused ? esc(e.message) : BROKEN);
@@ -410,7 +410,8 @@ model(); setInterval(model, 30000);
 
 // История диалога: переписка, «Ход работы» и счетчики по полям trace и usage, если сервер их отдает
 function history(s) {
-  const msgs = (s.messages || []).filter((m) => m.id > state.last), traced = msgs.some((m) => "trace" in m);
+  const msgs = (s.messages || []).filter((m) => m.id > state.last);
+  const traced = "usage" in s || msgs.some((m) => "trace" in m);  // старый сервер шагов не отдает: панель остается пустой
   msgs.forEach((m, i) => {
     state.last = m.id;
     if (m.role === "user") { add("msg user", esc(m.content)); if (traced) step("turn", said(m.content)); return; }
