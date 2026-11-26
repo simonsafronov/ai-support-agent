@@ -29,13 +29,13 @@ const starters = $("starters");  // подсказки живут в журна�
 const TOOL = {
   search_products: "Поиск в каталоге", get_product: "Варианты лицензий", browse_categories: "Категории каталога",
   find_analogs: "Аналоги", kb_search: "База знаний", note_facts: "Память о клиенте", calc_total: "Расчет суммы",
-  make_quote: "Черновик КП",
+  make_quote: "Черновик КП", match_spec: "Сверка списка с каталогом",
   handoff_to_manager: "Передача менеджеру",
 };
 const WAIT = {
   search_products: "Ищу в каталоге", get_product: "Сверяю варианты лицензий", browse_categories: "Смотрю категории",
   find_analogs: "Подбираю аналоги", kb_search: "Смотрю базу знаний", note_facts: "Записываю детали",
-  calc_total: "Считаю сумму",
+  calc_total: "Считаю сумму", match_spec: "Сверяю список с каталогом",
   make_quote: "Готовлю КП", handoff_to_manager: "Передаю менеджеру",
 };
 // подписи аргументов в «Ходе работы»: что не названо здесь (номера, контакты, сводка), клиенту не показывается
@@ -123,6 +123,29 @@ function quote(e) {
   d.dataset.n = e.number;
 }
 
+// Список позиций клиента, сопоставленный с каталогом: строка клиента, что нашлось, количество, цена, сумма, статус
+const STATUS = { "точно": "ok", "проверьте": "check", "цена по запросу": "req", "нет в каталоге": "none", "не разобрано": "none" };
+
+function specTable(e) {
+  const rows = e.rows || [], counts = { "строк": rows.length };
+  rows.forEach((r) => (counts[r.status] = (counts[r.status] || 0) + 1));
+  const body = rows.map((r) => {
+    const url = safeUrl(r.url), name = esc(r.name || "");
+    const notes = [r.vendor_code ? "Артикул " + esc(r.vendor_code) : "", r.qty_assumed ? "количество не указано, взято 1" : "", esc(r.hint || "")].filter(Boolean).join(" · ");
+    const found = r.name ? `<div class="t">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${name}</a>` : name}</div>` : "";
+    return `<tr><td class="pos"><div class="q">${esc(r.line)}</div>${found}${notes ? `<div class="d">${notes}</div>` : ""}</td>
+      <td class="num" data-l="Кол-во">${esc(r.qty)}</td>
+      <td class="num" data-l="Цена за шт.">${r.price ? rub(r.price) : r.status === "цена по запросу" ? "по запросу" : "—"}</td>
+      <td class="num" data-l="Сумма">${r.sum ? rub(r.sum) : "—"}</td>
+      <td class="st ${STATUS[r.status] || "none"}">${esc(r.status)}</td></tr>`;
+  }).join("");
+  return `<div class="t">Сверка списка с каталогом</div>
+    <div class="d">${Object.entries(counts).map(([k, v]) => `${esc(k)}: ${v}`).join(" · ")}</div>
+    <div class="wrap"><table><thead><tr><th>Строка клиента и что нашлось</th><th class="num">Кол-во</th><th class="num">Цена за шт.</th><th class="num">Сумма</th><th>Статус</th></tr></thead>
+    <tbody>${body}</tbody></table></div>
+    ${e.total ? `<div class="row"><span>Итого по строкам "точно"</span><span class="sum">${rub(e.total)}</span></div>` : ""}`;
+}
+
 // Кнопка в шапке показывает, что обращение у менеджера: "wait" ждет ответа, "in" менеджер уже ответил
 function callState(s) {
   const b = $("call");
@@ -148,6 +171,7 @@ function showReply(r, restoring = false) {
   for (const c of r.cards || []) add("card", card(c)).querySelector(".take")?.addEventListener("click", (e) => send(e.target.dataset.say));
   if ((r.cards || []).some((c) => c.price || c.price_min)) add("fresh", pricesLine());  // пустая строка заполнится, когда придет время с /api/health
   for (const e of r.events || []) {
+    if (e.type === "spec") add("card spec", specTable(e));
     if (e.type === "quote") quote(e);
     if (e.type === "handoff") {
       add("msg sys", Number.isInteger(e.sla_minutes)
@@ -186,6 +210,7 @@ function summary(name, out) {
   }
   if (name === "note_facts") return esc(Object.entries(out.saved || {}).map(([k, v]) => `${k}: ${v}`).join("; "));
   if (name === "calc_total") return out.total ? `Итого ${rub(out.total)}` : "";
+  if (name === "match_spec") return out.total ? `Итого по найденным точно ${rub(out.total)}` : "Точных совпадений нет";
   if (name === "make_quote") return out.ok ? esc(`${out.number}, итого ${rub(out.total)}`) : "";
   if (name === "handoff_to_manager") return out.ticket ? `Обращение № ${esc(out.ticket)}` : "";
   return "";

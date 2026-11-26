@@ -11,6 +11,7 @@ import re
 import time
 
 from app import config, store
+from app.agent import spec
 from app.catalog import search as catalog
 
 # Срочность по теме обращения: первая подошедшая строка. Сроки реакции в минутах задает заказчик.
@@ -152,6 +153,30 @@ def _list_price(item: dict, discount: float) -> dict:
     return {"list_price": listed, "discount_percent": discount} if listed and listed > item["price"] else {}
 
 
+REST = (spec.ABSENT, spec.CHECK, spec.ON_REQUEST, spec.SKIPPED)  # строки списка, которые решает менеджер
+
+
+def spec_rest(session_id: str, quote_items: list[dict]) -> dict:
+    """Строки последнего списка позиций клиента, которых нет в КП: по статусам, с количествами.
+
+    Строка "проверьте", вариант которой клиент подтвердил и агент внес в КП, менеджеру уже не нужна.
+    """
+    step = next((st for st in reversed(store.steps(session_id))
+                 if st["kind"] == "tool" and st["name"] == spec.TOOL), None)
+    if step is None:
+        return {}
+    asked, in_quote, rest = step["input"].get("items") or [], {o.get("offer_id") for o in quote_items}, {}
+    for ln in step["output"].get("lines") or []:
+        if ln["status"] not in REST or (ln.get("offer_id") and ln["offer_id"] in in_quote):
+            continue
+        query = asked[ln["n"] - 1]["query"] if ln["n"] <= len(asked) else ln["line"]
+        code = ln.get("vendor_code") or ""
+        rest.setdefault(ln["status"], []).append(
+            query + (f" ({code})" if code and code.lower() not in query.lower() else "")
+            + (", количество не указано" if ln.get("qty_assumed") else f", {ln['qty']} шт."))
+    return {status: "; ".join(rest[status]) for status in REST if status in rest}
+
+
 def build(h: dict, now: float | None = None) -> dict:
     """h это строка таблицы handoffs. Возвращает карточку: срочность, срок реакции, клиент, запрос, позиции, сумма."""
     now = now or time.time()
@@ -177,6 +202,7 @@ def build(h: dict, now: float | None = None) -> dict:
             del needs["дана скидка"]
     if "просит скидку" in flags and asked_discount(asked):
         needs["запрошена скидка"] = asked_discount(asked)
+    needs.update(spec_rest(sid, quote_items))  # клиент прислал список: что из него не вошло в КП
     return {
         "priority": level, "priority_name": PRIORITY_NAME[level], "sla_minutes": SLA_MINUTES[level],
         "sla_due": due, "overdue": not done and now > due,
