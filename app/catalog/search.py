@@ -740,6 +740,9 @@ def _tier_gap(row: sqlite3.Row, key: str, need: int) -> float | None:
     return limit - need if limit >= need else None
 
 
+_OVERSIZE, _OVERSIZE_GAP = 5, 10  # пакет больше нужного в 5 раз и хотя бы на 10 мест считается чужим
+
+
 def _filter_quantity(rows: list, key: str, need: int) -> tuple[list, dict, dict | None]:
     """Оставляет варианты под количество need. Возвращает (варианты, запасы, подсказка).
 
@@ -752,6 +755,11 @@ def _filter_quantity(rows: list, key: str, need: int) -> tuple[list, dict, dict 
     if finite:
         # из ярусов "до N" нужен ближайший достаточный: на 50 пользователей не предлагаем пакет на 100
         nearest = min(finite)
+        loose = [r for r in kept if gaps[r["id"]] == _INF]
+        if loose and nearest >= _OVERSIZE_GAP and nearest + need > need * _OVERSIZE:
+            # ближайший пакет в разы больше нужного (на 9 пользователей пакет на 500), а лицензии без пакета
+            # есть: пакет не предлагаем, иначе он встанет первым в списке
+            return loose, gaps, None
         kept = [r for r in kept if gaps[r["id"]] in (nearest, _INF)]
         return kept, gaps, None
     bands = [(_tier_band(r, key), r) for r in rows if gaps[r["id"]] is None]

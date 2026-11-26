@@ -34,3 +34,20 @@ def test_relaxed_hint_uses_the_same_order():
     assert result["matching"] == 0
     assert result["dropped_filter"] == "term_months"
     assert [o["vendor_code"] for o in result["offers"]] == ["STRIZH-L-50"]
+
+
+def _row(i, users_max=None):
+    return {"id": i, "users_max": users_max, "nodes": None, "nodes_min": None, "qty_min": None, "qty_max": None}
+
+
+def test_oversized_pack_is_not_offered_when_single_licenses_exist():
+    """На 9 пользователей пакет на 500 не предлагается, если лицензии продаются и без пакета."""
+    from app.catalog import search
+    rows, _, _ = search._filter_quantity([_row(1), _row(2, 500)], "users", 9)
+    assert [r["id"] for r in rows] == [1]
+    rows, _, _ = search._filter_quantity([_row(1), _row(2, 25)], "users", 20)  # близкий пакет остается
+    assert [r["id"] for r in rows] == [1, 2]
+    rows, _, _ = search._filter_quantity([_row(2, 500)], "users", 9)  # другого варианта нет: пакет остается
+    assert [r["id"] for r in rows] == [2]
+    rows, _, _ = search._filter_quantity([_row(1), _row(2, 10)], "users", 1)  # на одного пакет на 10 еще уместен
+    assert [r["id"] for r in rows] == [1, 2]

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from app import cases as app_cases, config, store
 from app.agent import loop, prices
+from eval import quote_check
 
 ROOT = Path(__file__).parent
 ASK = {  # о чем агент должен спросить -> по каким словам это видно в его вопросе
@@ -135,6 +136,16 @@ def play(case: dict) -> dict:
             "wall_seconds": round(time.time() - started, 1)}
 
 
+def _catalog_price(offer_id) -> float | None:
+    """Цена предложения в каталоге: с ней сверяется цена строки КП. Каталога или предложения нет: None."""
+    try:
+        from app.catalog import search
+        price = search.get_offer(offer_id).get("price")
+        return float(price) if price is not None else None
+    except Exception:
+        return None
+
+
 def check(case: dict, run: dict) -> dict:
     """Проверки кодом. Возвращает {название: True/False/None}; None = к этому кейсу не относится."""
     exp, turns = case["expect"], run["turns"]
@@ -151,6 +162,9 @@ def check(case: dict, run: dict) -> dict:
     # "any": по данным каталога и справки верны оба исхода (ответа в них нет, передать менеджеру допустимо)
     out["передача_менеджеру"] = None if exp["handoff"] == "any" else ("handoff" in events) == bool(exp["handoff"])
     out["черновик_кп"] = ("quote" in events) if exp["quote"] else None
+    # документ появился и документ верен это разные вещи: состав сверяется с заказом клиента позиция в позицию
+    out["состав_кп"] = (not quote_check.mismatches(exp["quote_items"], quote_check.last_quote(run), _catalog_price)
+                        if exp.get("quote_items") else None)
 
     # цены: любая сумма в ответах должна быть в данных инструментов этого диалога или в словах клиента;
     # сумму из слов клиента можно повторить, но нельзя выдать за цену товара (как в цикле агента)
@@ -299,6 +313,10 @@ def report(rows: list[dict], out_dir: Path):
     passed = sum(r["passed"] for r in rows)
     no_human = sum(1 for r in rows if r["checks"]["ответил_сам"]
                    and not any(e["type"] == "handoff" for t in r["run"]["turns"] for e in t["events"]))
+    alone = [r for r in rows if r["checks"]["ответил_сам"]
+             and not any(e["type"] == "handoff" for t in r["run"]["turns"] for e in t["events"])]
+    missed = sum(1 for r in alone if r["case"]["expect"]["handoff"] is True)  # менеджер был нужен, обращения нет
+    clean = sum(1 for r in alone if r["passed"] and r["case"]["expect"]["handoff"] is not True)
     price_guard, discount_guard = guard_outcomes(turns, "price"), guard_outcomes(turns, "discount")
 
     lines = [f"# Прогон проверочных диалогов, {time.strftime('%d.%m.%Y %H:%M')}", "",
@@ -306,7 +324,11 @@ def report(rows: list[dict], out_dir: Path):
              "## Итог", "",
              "| Показатель | Значение |", "|---|---|",
              f"| Диалогов прошло все проверки | {passed} из {n} ({passed / n:.0%}) |",
-             f"| Закрыто без менеджера | {no_human} из {n} ({no_human / n:.0%}) |",
+             f"| Диалогов без передачи менеджеру | {no_human} из {n} ({no_human / n:.0%}) |",
+             f"| из них передача была обязательна, но ее не было | {missed} |",
+             f"| Закрыто агентом без менеджера, передача не требовалась | {no_human - missed} из {n} "
+             f"({(no_human - missed) / n:.0%}) |",
+             f"| из них прошли все проверки | {clean} из {n} ({clean / n:.0%}) |",
              f"| Вызовов модели на реплику клиента | {sum(t['usage']['llm_calls'] for t in turns) / len(turns):.1f} |",
              f"| Вызовов инструментов на реплику | {sum(t['usage']['tool_calls'] for t in turns) / len(turns):.1f} |",
              f"| Токенов на реплику, среднее / медиана | {statistics.mean(per_turn_tokens):.0f} / "
