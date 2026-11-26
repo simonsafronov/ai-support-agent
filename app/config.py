@@ -57,9 +57,10 @@ DAILY_BUDGET_RUB = float(env("DAILY_BUDGET_RUB", "500"))  # потолок ра�
 RETENTION_DAYS = int(env("RETENTION_DAYS", "90"))         # сколько дней хранятся диалоги с контактами клиентов
 PREVIOUS_VISIT_DAYS = int(env("PREVIOUS_VISIT_DAYS", "30"))  # прошлый визит старше этого агент не вспоминает
 
-# Фид каталога: сервер раз в сутки скачивает его и пересобирает базу (app/catalog/update.py); пусто = не обновлять
+# Фид каталога: сервер каждые FEED_UPDATE_EVERY_H часов скачивает его и пересобирает базу (app/catalog/update.py);
+# пусто = не обновлять. Заказчик: фид магазина обновляется несколько раз в сутки
 FEED_URL = env("FEED_URL", "https://store.softline.ru/feeds/Softline.yml.gz")
-FEED_UPDATE_HOUR = int(env("FEED_UPDATE_HOUR", "4"))  # час по Москве
+FEED_UPDATE_EVERY_H = max(1, int(env("FEED_UPDATE_EVERY_H", "3")))  # точки сетки от полуночи по Москве: 0, 3, 6, ...
 
 # Ключ оператора. С ним экран оператора (/admin?token=...) показывает контакты клиентов и дает отвечать,
 # выгружать журнал и обновлять каталог. Без ключа экран открыт только на чтение, контакты в нем скрыты.

@@ -115,7 +115,7 @@ def test_every_operator_and_session_route_is_checked_without_key(stand_dialogs):
         assert "Ромашка-Север" not in r.text and "w3-rS-visitor" not in r.text, (method, path)
     assert store.open_handoff(sid)["id"] == hid  # без ключа обращение не тронуто
     assert set(client.get("/api/admin/catalog").json()) == {"offers", "products", "feed_date", "feed_url",
-                                                            "update_hour_msk", "updating", "last_update"}
+                                                            "update_every_h", "next_update", "updating", "last_update", "prices_at"}
 
 
 def test_client_chat_still_reads_its_own_dialog(stand_dialogs):

@@ -50,7 +50,7 @@ def test_double_click_on_answer_gives_the_client_one_message(monkeypatch):
     assert len(_from_manager(sid)) == 2
 
 
-def test_daily_thread_survives_errors(monkeypatch):
+def test_update_loop_survives_errors(monkeypatch):
     calls, sleeps = [], []
 
     class Stop(BaseException):
@@ -69,7 +69,7 @@ def test_daily_thread_survives_errors(monkeypatch):
     monkeypatch.setattr(server, "update_catalog", boom)
     monkeypatch.setattr(server.time, "sleep", sleep)
     with pytest.raises(Stop):
-        server._daily_update()
+        server._update_loop()
     assert len(calls) == 4  # два круга: чистка и обновление каталога упали, поток живет дальше
 
 

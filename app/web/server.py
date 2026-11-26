@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import cases, config, economy, notify, store
+from app import cases, config, economy, insights, notify, store
 from app.agent import handoff_card, llm, loop, proof
 from app.catalog import search as catalog, update as catalog_update
 from app.kb import answers, search as kb
@@ -39,8 +39,8 @@ log = logging.getLogger("server")
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
-    # раз в сутки: чистка старых диалогов всегда, обновление каталога с фида, если он задан
-    threading.Thread(target=_daily_update, daemon=True).start()
+    # по расписанию: чистка старых диалогов всегда, обновление каталога с фида, если он задан
+    threading.Thread(target=_update_loop, daemon=True).start()
     notify.start(manager_answer)  # карточки обращений в Telegram и ответы менеджеров оттуда, если бот настроен
     yield
 
@@ -139,16 +139,28 @@ def update_catalog() -> bool:
     return True
 
 
-def _daily_update():
+def _now() -> datetime.datetime:
+    return datetime.datetime.now(MSK)
+
+
+def next_run(now: datetime.datetime) -> datetime.datetime:
+    """Ближайший запуск строго после now. Точки стоят через FEED_UPDATE_EVERY_H часов от полуночи по Москве;
+    после последней точки суток идет полночь."""
+    midnight = now.astimezone(MSK).replace(hour=0, minute=0, second=0, microsecond=0)
+    slots = [midnight + datetime.timedelta(hours=h) for h in range(0, 24, config.FEED_UPDATE_EVERY_H)]
+    return next((t for t in slots if t > now), midnight + datetime.timedelta(days=1))
+
+
+def _update_loop():
     while True:
-        now = datetime.datetime.now(MSK)
-        run_at = now.replace(hour=config.FEED_UPDATE_HOUR, minute=0, second=0, microsecond=0)
-        time.sleep(((run_at - now).total_seconds() - 1) % 86400 + 1)
-        _daily_work()
+        now = _now()
+        # секунда запаса: проснувшись чуть раньше точки, поток не запустит ее дважды
+        time.sleep((next_run(now) - now).total_seconds() + 1)
+        _scheduled_work()
 
 
-def _daily_work():
-    """Работа раз в сутки. Сбой пишется в журнал, а поток живет до следующих суток."""
+def _scheduled_work():
+    """Работа по расписанию. Сбой пишется в журнал, а поток живет до следующей точки."""
     try:
         store.purge(config.RETENTION_DAYS)  # диалоги с контактами клиентов не хранятся дольше срока
     except Exception:
@@ -400,7 +412,7 @@ def health():
     c = catalog.stats()
     return {"ok": True, "offers": c["offers"], "products": c["products"], "feed_date": c.get("feed_date"),
             "kb_chunks": kb.stats()["chunks"], "model": config.LLM_MODEL, "provider": config.LLM_PROVIDER,
-            "label": config.LLM_LABEL, "online": llm.model_online()}
+            "label": config.LLM_LABEL, "online": llm.model_online(), "prices_at": catalog_update.prices_at()}
 
 
 STREAM_POLL, STREAM_WAIT = 0.1, 20  # секунд: как часто поток ответа смотрит в очередь; молчание до строки "wait"
@@ -634,7 +646,12 @@ def admin_sessions(request: Request, limit: int = Query(100, ge=1, le=500)):
         "(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.role='user') AS turns, "
         "(SELECT COUNT(*) FROM quotes q WHERE q.session_id=s.id) AS quotes "
         f"FROM sessions s WHERE {where_s} ORDER BY s.updated_at DESC LIMIT ?", (limit,)).fetchall()
-    return view(request, {"sessions": [_session_row(r) for r in rows]})
+    dialogs = insights.load(con, f"session_id IN ({','.join('?' * len(rows))})", tuple(r["id"] for r in rows))
+    in_set = {c["id"] for c in cases.load()}
+    # оценка диалога (insights.rate): диалога без реплик клиента в базе еще нет, оценки у него нет
+    rated = {sid: insights.rate(d) or {} for sid, d in dialogs.items()}
+    return view(request, {"sessions": [{**_session_row(r), **rated.get(r["id"], {}), "in_set": "s-" + r["id"][:8] in in_set}
+                                       for r in rows]})
 
 
 @app.get("/api/admin/session/{session_id}")
@@ -648,7 +665,8 @@ def admin_session(request: Request, session_id: str):
     # сырые копии *_json не отдаются: рядом лежат разобранные поля, а в строке их не скрыть по имени поля
     rows = lambda items: [{k: r[k] for k in r.keys() if not k.endswith("_json") and k != "file"} for r in items]
     return view(request, {
-        "session": s, "messages": rows(store.messages(session_id)), "steps": rows(store.steps(session_id)),
+        "session": s, "rating": insights.rate_session(con, session_id),
+        "messages": rows(store.messages(session_id)), "steps": rows(store.steps(session_id)),
         "handoffs": _handoffs("WHERE session_id=?", (session_id,)),
         "quotes": [{**r, "url": f"/quotes/{r['number']}.pdf"}
                    for r in rows(con.execute("SELECT * FROM quotes WHERE session_id=?", (session_id,)).fetchall())]})
@@ -812,8 +830,10 @@ def admin_export():
 def admin_catalog():
     c = catalog.stats()
     return {"offers": c["offers"], "products": c["products"], "feed_date": c.get("feed_date"),
-            "feed_url": config.FEED_URL, "update_hour_msk": config.FEED_UPDATE_HOUR,
-            "updating": _update_lock.locked(), "last_update": catalog_update.last()}
+            "feed_url": config.FEED_URL, "update_every_h": config.FEED_UPDATE_EVERY_H,
+            "next_update": next_run(_now()).timestamp() if config.FEED_URL else None,
+            "updating": _update_lock.locked(), "last_update": catalog_update.last(),
+            "prices_at": catalog_update.prices_at()}
 
 
 @app.post("/api/admin/catalog/update", dependencies=[Depends(admin)])
@@ -841,10 +861,14 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
     lat = one(f"SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' AND {where_id} "
               "GROUP BY session_id, turn) WHERE t > 0")  # ходы пакетных прогонов времени не несут и в среднее не идут
     total, now = loop.cost_rub(pt, ct), time.time()
+    eco = economy.calc(requests, requests - closed, total, minutes, rub_hour, card_share, volume, pt + ct)
+    share = round(closed / requests, 3) if requests else None
+    shown = insights.load(con, f"session_id IN (SELECT id FROM sessions WHERE {where_s})")
+    in_set = {c["id"] for c in cases.load()}
     return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff, "closed_dialogs": closed,
             "without_human_share": round(closed / dialogs, 3) if dialogs else None,
             "requests": requests,  # от доли по всем обращениям считается экономика: вызов кнопкой тоже работа менеджера
-            "requests_without_human_share": round(closed / requests, 3) if requests else None,
+            "requests_without_human_share": share,
             "quotes": one(f"SELECT COUNT(*) FROM quotes WHERE {where_id}"), "learned_answers": answers.count(),
             "prompt_tokens": pt, "completion_tokens": ct,
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
@@ -853,7 +877,11 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
             "handoffs": _handoffs(f"WHERE {where_id}"), "queue": _queue(now, where_id),
             "added_cases": len(cases.load()),
             "stand_note": config.STAND_NOTE,
-            "economy": economy.calc(requests, requests - closed, total, minutes, rub_hour, card_share, volume, pt + ct),
+            "economy": eco,
+            "before_after": insights.before_after(eco, share, closed, requests),
+            "gaps": insights.gaps(shown),
+            "handoff_reasons": insights.handoff_reasons([h for d in shown.values() for h in d["handoffs"]]),
+            "problems": insights.rate_all(shown, in_set),
             "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": now})
 
 
