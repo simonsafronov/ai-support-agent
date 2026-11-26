@@ -60,10 +60,15 @@ FEED_UPDATE_HOUR = int(env("FEED_UPDATE_HOUR", "4"))  # час по Москве
 ADMIN_TOKEN = env("ADMIN_TOKEN", "")
 
 # Экономика на экране оператора. Первые три числа это допущения: их меняют под свои данные прямо на экране.
-MANAGER_MIN_PER_REQUEST = float(env("MANAGER_MIN_PER_REQUEST", "10"))  # минут менеджера на одно обращение
+MANAGER_MIN_PER_REQUEST = float(env("MANAGER_MIN_PER_REQUEST", "30"))  # минут менеджера на обращение: оценка заказчика на брифе
 MANAGER_RUB_PER_HOUR = float(env("MANAGER_RUB_PER_HOUR", "600"))        # стоимость часа менеджера для компании
 CARD_SAVES_SHARE = float(env("CARD_SAVES_SHARE", "0.5"))  # какую долю времени снимает готовая карточка обращения
 REQUESTS_PER_HALF_YEAR = int(env("REQUESTS_PER_HALF_YEAR", "500"))      # объем обращений: цифра заказчика
+AGENT_DISCOUNT_MAX = float(env("AGENT_DISCOUNT_MAX", "5"))  # скидка, которую агент дает сам, проценты: ответ
+# заказчика на брифе ("агент может предоставить скидку 5%, все остальное уходит на оператора"); 0 = не дает
+SLA_MINUTES = env("SLA_MINUTES", "2,5,15")  # срок реакции менеджера на обращение: срочное, обычное, прочее.
+# По замеру заказчика менеджер сейчас отвечает в среднем через 2 минуты
+WORKDAYS_PER_MONTH = int(env("WORKDAYS_PER_MONTH", "21"))  # для расчета расхода на модель в день
 STAND_NOTE = env("STAND_NOTE", "")  # пояснение на экране оператора: что за диалоги лежат на этом стенде
 MODEL_BUDGET_HALF_YEAR_RUB = float(env("MODEL_BUDGET_HALF_YEAR_RUB", "7000"))  # расход на модель за полгода, который
 # заказчик назвал приемлемым (5-7 тыс. руб.): верхняя граница; 0 = не показывать

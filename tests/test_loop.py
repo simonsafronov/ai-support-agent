@@ -96,6 +96,29 @@ def test_model_words_do_not_replace_the_client_contact():
     assert "store@softline.ru" in said and "zakupki@" not in said and "[email]" in said
 
 
+def test_agent_gives_at_most_five_percent_and_requisites_stay_hidden(offer):
+    qty = offer["qty_min"] or 1
+    full = round(offer["price"] * qty, 2)
+    llm = Scripted([
+        {"name": "calc_total", "args": {"items": [{"offer_id": offer["offer_id"], "qty": qty}],
+                                        "discount_percent": 50}},
+        {"name": "make_quote", "args": {"items": [{"offer_id": offer["offer_id"], "qty": qty}],
+                                        "customer": "ООО Ромашка", "inn": "[ИНН]"}},
+        "Скидку 5% учел в КП, скидку больше согласует менеджер.",
+    ])
+    res = loop.run_turn(None, "Дайте скидку 50%. ООО Ромашка, ИНН 7701234567, КПП: 770101001", llm=llm)
+    calc, quote = (t["output"] for t in res["trace"] if t["kind"] == "tool" and t["name"] != "note_facts")
+    assert calc["discount_percent"] == 5 and calc["total_without_discount"] == full
+    assert calc["total"] == pytest.approx(full * 0.95, abs=0.01 * qty + 0.01) and "менеджер" in calc["note"]
+    assert quote["discount_percent"] == 5 and quote["total"] == calc["total"] and "скидкой 5%" in quote["note"]
+    seen = " ".join(m["content"] or "" for call in llm.calls for m in call if m["role"] != "system")
+    assert "7701234567" not in seen and "770101001" not in seen and "[ИНН]" in seen and "[КПП]" in seen
+    assert "ИНН: получен, скрыт защитой" in llm.calls[1][0]["content"]
+    facts = store.get_session(res["session_id"])["facts"]
+    assert facts["ИНН"] == "7701234567" and facts["КПП"] == "770101001" and facts["скидка"] == "5%"
+    assert quote["customer_missing"] == []  # реквизиты в КП подставил код
+
+
 def test_field_names_are_sent_back_for_rewrite():
     llm = Scripted(["Вендор российский (поле russian_vendor), отметки in_ru_registry нет.",
                     "В каталоге вендор отмечен как российский, номера в реестре нет."])

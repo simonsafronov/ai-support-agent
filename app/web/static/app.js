@@ -153,6 +153,24 @@ async function send(message) {
   state.busy = false; $("b").disabled = false; $("t").focus();
 }
 
+$("call").onclick = async () => {  // клиент сам переключается на менеджера: модель для этого не нужна
+  if (state.busy) return;
+  state.busy = true; $("starters").hidden = true;
+  try {
+    const r = await fetch("/api/chat/handoff", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: state.session || null, client_id: state.client, page_url: state.page }),
+    });
+    if (!r.ok) throw new Error(r.status === 429 ? "слишком много сообщений подряд, подождите минуту" : "сервер ответил " + r.status);
+    const ev = await r.json();
+    state.session = ev.session_id; localStorage.setItem("session", ev.session_id);
+    step("turn", "Клиент нажал: позвать менеджера");
+    showReply(ev);
+  } catch (e) {
+    add("msg sys", "Не удалось позвать менеджера: " + esc(e.message) + ". Нажмите еще раз.");
+  }
+  state.busy = false;
+};
 $("f").onsubmit = (e) => { e.preventDefault(); const v = $("t").value; $("t").value = ""; send(v); };
 $("t").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("f").requestSubmit(); } };
 $("starters").querySelectorAll("button").forEach((b) => (b.onclick = () => send(b.textContent)));

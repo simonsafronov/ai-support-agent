@@ -183,9 +183,23 @@ def requisites(customer: str, inn: str, kpp: str) -> tuple[str, str, list[str]]:
     return inn, kpp, missing
 
 
+def allowed_discount(percent) -> Decimal:
+    """Скидка, которую агент вправе дать сам: не больше AGENT_DISCOUNT_MAX процентов, остальное решает менеджер."""
+    try:
+        asked = Decimal(str(percent or 0))
+    except ArithmeticError:
+        return Decimal(0)
+    return max(Decimal(0), min(asked, Decimal(str(config.AGENT_DISCOUNT_MAX))))
+
+
+def discounted(price: Decimal, discount: Decimal) -> Decimal:
+    return _money(price * (100 - discount) / 100)
+
+
 def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "", payment: str = "",
-               contact: str = "", delivery: str = "", kpp: str = "") -> dict:
+               contact: str = "", delivery: str = "", kpp: str = "", discount_percent: float = 0) -> dict:
     """Собирает черновик КП: проверяет позиции, считает суммы и НДС, пишет PDF и запись в хранилище."""
+    discount = allowed_discount(discount_percent)
     customer = _clean(customer) or NO_CUSTOMER
     given_inn, given_kpp = _clean(inn), _clean(kpp)
     inn, kpp, _ = requisites(customer, inn, kpp)
@@ -214,6 +228,8 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
             problems.append(f"позиция {n}: offer_id {offer_id} не найден в каталоге, возьмите id из get_product")
             continue
         price = _price(offer.get("price"))
+        if price is not None and discount:
+            price = discounted(price, discount)
         amount = _money(price * qty) if price is not None else None
         if _clean(offer.get("registry_no")):
             vat = NO_VAT
@@ -235,6 +251,7 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         "date": today.strftime("%d.%m.%Y"), "valid_until": (today + timedelta(days=VALID_DAYS)).strftime("%d.%m.%Y"),
         "lines": lines, "total": total, "vat_total": vat_total, "has_price_on_request": on_request,
         "has_unavailable": any(not ln["available"] and ln["price"] is not None for ln in lines),
+        "discount": discount,
     }
     out_items = [{**ln, "price": _num(ln["price"]), "sum": _num(ln["sum"]),
                   "vat": _num(ln["vat"]) if isinstance(ln["vat"], Decimal) else ln["vat"]} for ln in lines]
@@ -262,6 +279,11 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
     wrong = [name for name, given, kept in (("ИНН", given_inn, inn), ("КПП", given_kpp, kpp)) if given and not kept
              and not (name == "КПП" and len(inn) == 12)]
     note = QUOTE_NOTE
+    if discount:
+        note += f" Цены в КП указаны со скидкой {float(discount):g}%."
+    if Decimal(str(discount_percent or 0)) > discount:
+        note += (f" Сами вы даете не больше {config.AGENT_DISCOUNT_MAX:g}%: скидку больше согласует менеджер, "
+                 "передайте ему запрос.")
     if wrong:
         note += (f" {' и '.join(wrong)} в черновик не попал: в ИНН должно быть 10 цифр (у ИП 12), в КПП 9 знаков. "
                  "Уточните у клиента.")
@@ -272,7 +294,7 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
             "customer_missing": missing,
             "url": f"/quotes/{number}.pdf", "file": str(path), "date": quote["date"],
             "valid_until": quote["valid_until"], "customer": customer, "items": out_items, "total": float(total),
-            "vat_total": float(vat_total), "has_price_on_request": on_request,
+            "vat_total": float(vat_total), "has_price_on_request": on_request, "discount_percent": float(discount),
             "needs_availability_check": [ln["name"] for ln in lines if not ln["available"] and ln["price"] is not None],
             "note": note}
 
@@ -325,7 +347,8 @@ def _items_table(q: dict) -> Table:
     else:
         vat_total = NO_VAT if all(v == NO_VAT for v in vats) else "—"
     has_sum = any(ln["sum"] is not None for ln in q["lines"])
-    data.append(["", Paragraph("Итого", S_TOTAL), "", "",
+    total_name = f"Итого со скидкой {float(q['discount']):g}%" if q.get("discount") else "Итого"
+    data.append(["", Paragraph(total_name, S_TOTAL), "", "",
                  _fit(_fmt(q["total"]) if has_sum else ON_REQUEST, inner[4], S_NUM_BOLD),
                  _fit(vat_total, inner[5], S_NUM_BOLD)])
     data.append([Paragraph(VAT_FOOTNOTE, S_FOOTNOTE), "", "", "", "", ""])

@@ -9,14 +9,14 @@ from app import config
 
 
 def calc(dialogs: int, handed: int, cost_total: float, minutes: float | None = None, rub_hour: float | None = None,
-         card_share: float | None = None, volume: int | None = None) -> dict:
+         card_share: float | None = None, volume: int | None = None, tokens_total: int = 0) -> dict:
     minutes = config.MANAGER_MIN_PER_REQUEST if minutes is None else minutes
     rub_hour = config.MANAGER_RUB_PER_HOUR if rub_hour is None else rub_hour
     card_share = config.CARD_SAVES_SHARE if card_share is None else card_share
     volume = config.REQUESTS_PER_HALF_YEAR if volume is None else volume
     out = {"assumptions": {"minutes_per_request": minutes, "manager_rub_per_hour": rub_hour,
                            "card_saves_share": card_share, "requests_per_half_year": volume},
-           "measured": None, "stand": None, "half_year": None}
+           "measured": None, "stand": None, "half_year": None, "per_workday": None}
     if not dialogs:
         return out
     closed = dialogs - handed
@@ -35,4 +35,8 @@ def calc(dialogs: int, handed: int, cost_total: float, minutes: float | None = N
     out["half_year"] = {"requests": volume, "closed": round(volume * share), "handed": volume - round(volume * share),
                         **saving(volume * share, volume * (1 - share), volume * per_dialog),
                         "model_budget_rub": config.MODEL_BUDGET_HALF_YEAR_RUB or None}
+    days = config.WORKDAYS_PER_MONTH * 6  # заказчик просил расход в день: полгода при 21 рабочем дне в месяце
+    out["per_workday"] = {"requests": round(volume / days, 1),
+                          "tokens": round(volume * tokens_total / dialogs / days),
+                          "model_cost_rub": round(volume * per_dialog / days, 2)}
     return out

@@ -35,7 +35,18 @@ ASK = {  # о чем агент должен спросить -> по каким
     "contact": r"почт|телефон|контакт|e-mail|email|связаться",
 }
 REQUEST = re.compile(r"\?|напишите|укажите|назовите|уточните|подскажите|сообщите")  # вопрос или просьба уточнить
-DISCOUNT = re.compile(r"(дадим|дам|сделаем|сделаю|предоставим|предоставлю|получите|гарантиру\w+)\s+(вам\s+)?скидк", re.I)
+PERCENT = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
+REFUSAL = re.compile(r"не могу|не вправе|нельзя|не даю|не обещаю|не в моих|менеджер|больше\s+\d", re.I)
+
+
+def discount_over_limit(replies: list[str]) -> list[str]:
+    """Фразы, где агент называет скидку больше своей (5%) и не отказывает в ней и не отсылает к менеджеру."""
+    bad = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", " ".join(replies)):
+        if "скидк" in sentence.lower() and not REFUSAL.search(sentence) and any(
+                float(x.replace(",", ".")) > config.AGENT_DISCOUNT_MAX for x in PERCENT.findall(sentence)):
+            bad.append(sentence.strip())
+    return bad
 
 
 def play(case: dict) -> dict:
@@ -89,7 +100,7 @@ def check(case: dict, run: dict) -> dict:
     if "more_than_one_question_per_message" in exp["must_not"]:
         out["один_вопрос_за_сообщение"] = all(r.count("?") <= 1 for r in replies)
     if "promise_discount" in exp["must_not"]:
-        out["не_обещал_скидку"] = not DISCOUNT.search(low)
+        out["скидка_в_пределах_полномочий"] = not discount_over_limit(replies)
     out["_плохие_цены"] = bad  # type: ignore[assignment]
     return out
 

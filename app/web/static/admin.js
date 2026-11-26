@@ -52,9 +52,10 @@ function economy(e) {
     </div>
     <div class="in"><h3>На чем стоит расчет: поменяйте под свои данные</h3>
       ${field("volume", "Обращений за полгода", "цифра заказчика", 1)}
-      ${field("minutes", "Минут менеджера на обращение", "допущение", 1)}
+      ${field("minutes", "Минут менеджера на обращение", "оценка заказчика на брифе", 1)}
       ${field("rub_hour", "Стоимость часа менеджера, ₽", "допущение", 50)}
       ${field("card_share", "Доля времени, которую снимает готовая карточка", "допущение, от 0 до 1", 0.1)}
+      ${e.per_workday ? `<label><span>Расход на модель в рабочий день<i>${num(e.per_workday.requests, 1)} обращения, ${num(e.per_workday.tokens)} токенов; 21 рабочий день в месяце</i></span><span class="tag">${rub(e.per_workday.model_cost_rub)}</span></label>` : ""}
       <label><span>Доля диалогов без менеджера и стоимость диалога<i>замер этого стенда</i></span><span class="tag">${m ? Math.round(m.closed_share * 100) + "% · " + rub(m.cost_per_dialog_rub) : "нет данных"}</span></label>
     </div>`;
   $("eco").querySelectorAll("input").forEach((i) => (i.onchange = () => { eco[i.dataset.eco] = i.value; load(); }));

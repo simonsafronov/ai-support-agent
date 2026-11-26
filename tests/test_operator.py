@@ -162,12 +162,22 @@ def priced_offer():
     return {**offer, "qty": offer.get("qty_min") or 1}  # количество внутри ценовой ступени варианта
 
 
+def test_client_calls_manager_by_button_without_the_model():
+    r = client.post("/api/chat/handoff", json={"client_id": "button"}).json()
+    assert "менеджер" in r["reply"].lower() and "почту или телефон" in r["reply"]
+    assert [e["type"] for e in r["events"]] == ["handoff"]
+    again = client.post("/api/chat/handoff", json={"session_id": r["session_id"], "client_id": "button"}).json()
+    assert again["events"] == [] and again["session_id"] == r["session_id"]  # второго обращения нет
+    rows = store.db().execute("SELECT reason FROM handoffs WHERE session_id=?", (r["session_id"],)).fetchall()
+    assert [x[0] for x in rows] == ["клиент позвал менеджера кнопкой"]
+
+
 def test_handoff_card_is_built_by_code_and_sorted_by_urgency(priced_offer):
     _handoff_dialog()  # обычное обращение без срочной темы
     sid, hid = _tender_dialog(priced_offer)
     first = client.get("/api/admin/stats", headers=KEY).json()["handoffs"][0]
     card = first["card"]
-    assert first["id"] == hid and card["priority"] == "high" and card["sla_minutes"] == 30
+    assert first["id"] == hid and card["priority"] == "high" and card["sla_minutes"] == 2
     assert {"госзакупка", "просит скидку"} <= set(card["flags"])
     assert card["client"] == {"компания": "Школа 17", "тип организации": "образовательная",
                               "контакт": "zakupki@school.example"}
@@ -216,6 +226,8 @@ def test_economy_separates_measurements_from_assumptions():
     assert e["half_year"]["requests"] == 500 and e["half_year"]["closed"] == 375
     assert e["half_year"]["saved_rub"] == 43750 and e["half_year"]["model_cost_rub"] == 5000
     assert e["half_year"]["model_budget_rub"] == 7000 and "model_budget_rub" not in e["stand"]
+    day = economy.calc(100, 25, 1000.0, volume=504, tokens_total=2_000_000)["per_workday"]  # 126 рабочих дней
+    assert day == {"requests": 4.0, "tokens": 80000, "model_cost_rub": 40.0}
     assert economy.calc(0, 0, 0.0)["measured"] is None
     stats = client.get("/api/admin/stats?minutes=20&rub_hour=900").json()["economy"]
     assert stats["assumptions"]["minutes_per_request"] == 20 and stats["assumptions"]["manager_rub_per_hour"] == 900

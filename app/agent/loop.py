@@ -34,7 +34,22 @@ _CHOICES = re.compile(r"\[\[choices:\s*(.+?)\]\]", re.S)
 _FACTS = re.compile(r"\[\[facts:\s*(.+?)\]\]", re.S)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _FIELD = re.compile(r"(?<![\w/.-])[a-z]+(?:_[a-z]+)+(?![\w/-])")   # имя поля или инструмента: russian_vendor
+_INN = re.compile(r"(ИНН[\s:№]*)(\d{12}|\d{10})(?!\d)", re.I)
+_KPP = re.compile(r"(КПП[\s:№]*)(\d{4}[\dA-Z]{2}\d{3})(?![\dA-Z])", re.I)
 _PHONE = re.compile(r"(?<![\w+])(?:\+7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?!\d)")
+
+
+def mask_requisites(text: str) -> tuple[str, dict]:
+    """ИНН и КПП клиента в модель не уходят: вместо них метки, настоящие значения код кладет в память диалога."""
+    found = {}
+
+    def hide(key: str, mark: str):
+        def repl(m):
+            found[key] = m.group(2)
+            return m.group(1) + mark
+        return repl
+
+    return _KPP.sub(hide("kpp", "[КПП]"), _INN.sub(hide("inn", "[ИНН]"), text)), found
 
 
 def mask_contacts(text: str) -> tuple[str, list[str]]:
@@ -176,11 +191,15 @@ def take_facts(text: str) -> dict:
     return facts
 
 
-def _history(session_id: str, contacts: str = "") -> list[dict]:
-    """Прошлые реплики для модели. Контакт клиента скрыт и в ответах агента; адреса магазина из справки остаются."""
+def _history(session_id: str, facts: dict | None = None) -> list[dict]:
+    """Прошлые реплики для модели. Контакт и реквизиты клиента скрыты и в ответах агента; адреса магазина остаются."""
+    facts = facts or {}
+    marks = {c: "[email]" if "@" in c else "[телефон]" for c in facts.get("контакт", "").split(", ") if c}
+    marks.update({facts[k]: f"[{k}]" for k in ("ИНН", "КПП") if facts.get(k)})
+
     def hide(text: str) -> str:
-        for c in filter(None, contacts.split(", ")):
-            text = text.replace(c, "[email]" if "@" in c else "[телефон]")
+        for value, mark in marks.items():
+            text = text.replace(value, mark)
         return text
 
     msgs = store.messages(session_id, limit=HISTORY_MESSAGES)
@@ -190,7 +209,7 @@ def _history(session_id: str, contacts: str = "") -> list[dict]:
 
 def for_model(text: str) -> str:
     """Сообщение клиента в том виде, в каком его видит модель: без контактов и без служебных меток [[...]]."""
-    return mask_contacts(re.sub(r"\[\[|\]\]", " ", text))[0]
+    return mask_contacts(mask_requisites(re.sub(r"\[\[|\]\]", " ", text))[0])[0]
 
 
 def budget_spent() -> bool:
@@ -219,7 +238,10 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     contacts = mask_contacts(text)[1]
     if contacts:  # контакт запоминается кодом: модель видит только метку, менеджер получает настоящий адрес
         tools.save_facts(ctx, {"contact": ", ".join(contacts)})
-        s["facts"] = dict(ctx.facts)
+    requisites = mask_requisites(text)[1]
+    if requisites:  # так же кодом запоминаются ИНН и КПП: в графу "Заказчик" они попадут без участия модели
+        tools.save_facts(ctx, requisites)
+    s["facts"] = dict(ctx.facts)
     items = s["items"]
     known = {float(o["price"]) for o in items.get("offers", []) if o.get("price")}
     known.update(items.get("prices", []))  # суммы из прошлых ходов: итог расчета или КП можно повторить
@@ -229,7 +251,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     s["quote"] = store.last_quote(sid)
     previous = store.previous_session(s["client_id"], sid) if turn == 1 else None
     msgs = [{"role": "system", "content": prompts.system_prompt(s, page_hint(page_url or s.get("page_url") or ""),
-                                                                 previous)}] + _history(sid, ctx.facts.get("контакт", ""))
+                                                                 previous)}] + _history(sid, ctx.facts)
     trace, usage, reply, corrected = [], [0, 0, 0, 0], "", False
     started, called = time.monotonic(), set()
     vocabulary = set(_FIELD.findall(prompts.SYSTEM + json.dumps(tools.specs())))  # имена, которые модель видит

@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from app import store
+from app import config, store
 from app.catalog import search as catalog
 from app.kb import answers, search as kb
 from app.quote import kp
@@ -73,7 +73,7 @@ def _kb_search(ctx, query: str):
 FACT_FIELDS = {  # что агент запоминает о клиенте: ключ -> как показывать в контексте и оператору
     "company": "компания", "inn": "ИНН", "kpp": "КПП", "org_type": "тип организации", "users": "пользователей",
     "devices": "устройств", "os": "ОС и инфраструктура", "task": "задача", "budget": "бюджет",
-    "term": "срок лицензии", "contact": "контакт", "other": "прочее",
+    "term": "срок лицензии", "contact": "контакт", "discount": "скидка", "other": "прочее",
 }
 
 
@@ -122,9 +122,27 @@ def _contact(ctx, given: str) -> str:
     return merge_contact(ctx.facts.get("контакт", ""), given or "")
 
 
-def _calc_total(ctx, items: list[dict]):
+def _discount(ctx, asked) -> float:
+    """Скидка расчета: названная в вызове либо уже данная клиенту в этом диалоге, в пределах полномочий агента."""
+    given = kp.allowed_discount(asked or str(ctx.facts.get("скидка", "0")).rstrip("% "))
+    if given:
+        save_facts(ctx, {"discount": f"{float(given):g}%"})
+    return float(given)
+
+
+def _over_limit(asked) -> str:
+    try:
+        over = float(asked or 0) > config.AGENT_DISCOUNT_MAX
+    except (TypeError, ValueError):
+        over = False
+    return (f"Сами вы даете не больше {config.AGENT_DISCOUNT_MAX:g}%: посчитано с этой скидкой, скидку больше "
+            "согласует менеджер, передайте ему запрос.") if over else ""
+
+
+def _calc_total(ctx, items: list[dict], discount_percent: float = 0):
     """Сумма по позициям считается кодом: модель не умножает и не складывает сама."""
     lines, total, on_request = [], 0.0, []
+    discount = _discount(ctx, discount_percent)
     for it in items or []:
         o = catalog.get_offer(int(it["offer_id"]))
         if o.get("error"):
@@ -137,27 +155,38 @@ def _calc_total(ctx, items: list[dict]):
                              f"а в расчете {qty}. Найдите вариант под это количество: get_product с qty={qty}."}
         line = {"offer_id": o["offer_id"], "name": o["name"], "qty": qty, "price": price,
                 "sum": round(price * qty, 2) if price else None}
+        if price and discount:  # цена со скидкой считается так же, как в КП: до копейки, затем на количество
+            cut = float(kp.discounted(kp.Decimal(str(price)), kp.Decimal(str(discount))))
+            line.update(price_with_discount=cut, sum_without_discount=line["sum"], sum=round(cut * qty, 2))
         if o.get("price_for"):
             line["price_for"] = o["price_for"]
         if price:
-            total += price * qty
+            total += line["sum"]
         else:
             on_request.append(o["name"])
         lines.append(line)
+    if discount:
+        return {"lines": lines, "total": round(total, 2), "discount_percent": discount,
+                "total_without_discount": round(sum(ln["sum_without_discount"] for ln in lines if ln["sum"]), 2),
+                "price_on_request": on_request,
+                "note": (f"Суммы посчитаны со скидкой {discount:g}%. " + _over_limit(discount_percent)).strip()}
     return {"lines": lines, "total": round(total, 2), "price_on_request": on_request,
             "note": "Цены из каталога, с НДС где он применим. Позиции без цены в сумму не вошли." if on_request
             else "Цены из каталога, с НДС где он применим."}
 
 
 def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", kpp: str = "", payment: str = "",
-                contact: str = ""):
+                contact: str = "", discount_percent: float = 0):
     """Реквизиты графы «Заказчик» помнит диалог: названные раньше подставляются сами, новые запоминаются."""
-    given = {k: v for k, v in (("company", customer), ("inn", inn), ("kpp", kpp)) if str(v or "").strip()}
+    given = {k: v for k, v in (("company", customer), ("inn", inn), ("kpp", kpp))
+             if str(v or "").strip() and "[" not in str(v)}  # метка вместо реквизита: настоящий уже записан кодом
     if given:
         save_facts(ctx, given)
     res = kp.make_quote(ctx.session_id, customer=ctx.facts.get("компания", ""), items=items,
                         inn=ctx.facts.get("ИНН", ""), kpp=ctx.facts.get("КПП", ""), payment=payment,
-                        contact=_contact(ctx, contact))
+                        contact=_contact(ctx, contact), discount_percent=_discount(ctx, discount_percent))
+    if res.get("ok") and _over_limit(discount_percent):
+        res["note"] += " " + _over_limit(discount_percent)
     if res.get("ok"):
         ctx.events.append({"type": "quote", **{k: res[k] for k in ("number", "url", "total")}})
     return res
@@ -245,6 +274,8 @@ TOOLS = [
          "items": {"type": "array", "description": "позиции расчета",
                    "items": _obj({"offer_id": {"type": "integer"}, "qty": {"type": "integer"}},
                                  ["offer_id", "qty"])},
+         "discount_percent": {"type": "number", "description": "скидка в процентах, только когда клиент сам попросил "
+                              "скидку или отсрочку; сами вы даете до 5, больше согласует менеджер"},
      }, ["items"])},
     {"name": "make_quote", "handler": _make_quote,
      "description": "Сформировать черновик коммерческого предложения (PDF по шаблону Softline) для проверки "
@@ -260,10 +291,12 @@ TOOLS = [
          "kpp": {"type": "string", "description": "КПП заказчика: 9 знаков, у ИП его нет"},
          "payment": {"type": "string", "description": "условия оплаты, если клиент назвал"},
          "contact": {"type": "string", "description": "почта или телефон клиента"},
+         "discount_percent": {"type": "number", "description": "скидка в процентах, только когда клиент сам попросил "
+                              "скидку или отсрочку; сами вы даете до 5, больше согласует менеджер"},
      }, ["items"])},
     {"name": "handoff_to_manager", "handler": _handoff,
-     "description": "Передать обращение менеджеру: цена по запросу, скидка, госзакупка, статус заказа, жалоба, "
-                    "нестандартные условия, вопрос вне каталога и базы знаний. В summary кратко: кто клиент, "
+     "description": "Передать обращение менеджеру: цена по запросу, продукта нет в каталоге, скидка больше 5%, "
+                    "отсрочка, госзакупка, жалоба, вопрос вне каталога и базы знаний. В summary кратко: кто клиент, "
                     "что нужно, что уже подобрано. На диалог хватает одного вызова: контакт и новые детали, "
                     "которые клиент сообщит после передачи, менеджер увидит в карточке обращения сам.",
      "parameters": _obj({

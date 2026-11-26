@@ -61,7 +61,7 @@ def too_often(key: str) -> bool:
 @app.middleware("http")
 async def guard(request, call_next):
     """Лимит сообщений в чат, заголовки безопасности и перепроверка страниц стенда браузером."""
-    if request.url.path == "/api/chat" and request.method == "POST":
+    if request.url.path in ("/api/chat", "/api/chat/handoff") and request.method == "POST":
         forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
         if too_often(forwarded or (request.client.host if request.client else "?")):
             return JSONResponse({"detail": "слишком много сообщений подряд"}, status_code=429)
@@ -199,6 +199,33 @@ def chat(body: ChatIn):
 
     return StreamingResponse(stream(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class CallIn(BaseModel):
+    session_id: str | None = Field(default=None, max_length=64)
+    client_id: str = Field(default="", max_length=64)
+    page_url: str = Field(default="", max_length=500)
+
+
+CALLED = "Позвал менеджера: он ответит в этом чате в рабочее время."
+
+
+@app.post("/api/chat/handoff")
+def call_manager(body: CallIn):
+    """Клиент сам зовет менеджера кнопкой: обращение заводит код, модель для этого не вызывается."""
+    with session_lock(body.session_id or body.client_id or "new"):
+        s = store.get_session(body.session_id, body.client_id, body.page_url)
+        sid, ticket = s["id"], store.open_handoff(s["id"])
+        if not ticket:
+            asked = [m["content"] for m in store.messages(sid) if m["role"] == "user"]
+            said = f"Последнее сообщение клиента: {asked[-1][:500]}" if asked else "Клиент еще ничего не написал."
+            hid = store.add_handoff(sid, "клиент позвал менеджера кнопкой", said, s["facts"].get("контакт", ""))
+        else:
+            hid = ticket["id"]
+        reply = CALLED + ("" if s["facts"].get("контакт") else " Оставьте, пожалуйста, почту или телефон для связи.")
+        events = [] if ticket else [{"type": "handoff", "id": hid, "reason": "клиент позвал менеджера кнопкой"}]
+        store.add_message(sid, "assistant", reply, {"cards": [], "choices": [], "events": events})
+    return {"session_id": sid, "reply": reply, "cards": [], "choices": [], "events": events}
 
 
 @app.get("/api/session/{session_id}")
@@ -386,7 +413,7 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
             "handoffs": _handoffs(), "added_cases": len(cases.load()), "stand_note": config.STAND_NOTE,
-            "economy": economy.calc(dialogs, handoff, total, minutes, rub_hour, card_share, volume),
+            "economy": economy.calc(dialogs, handoff, total, minutes, rub_hour, card_share, volume, pt + ct),
             "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": time.time()})
 
 
