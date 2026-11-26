@@ -36,7 +36,7 @@ def _search_products(ctx, query: str, vendor: str = "", only_available: bool = F
         # продукт найден однозначно: его варианты отдаются сразу, второй вызов модели на get_product не нужен
         top = catalog.get_product(first["product_id"], limit=4)
         res["first_product"] = {"product_id": first["product_id"], **{k: top[k] for k in (
-            "matching", "facets", "clarify", "offers", "shown", "all_matching") if top.get(k)}}
+            "matching", "facets", "clarify", "offers", "delivery", "shown", "all_matching") if top.get(k)}}
     return _with_answers(res, query)
 
 

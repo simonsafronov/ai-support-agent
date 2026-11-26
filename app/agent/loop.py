@@ -222,7 +222,7 @@ def _remember_items(items: dict, name: str, out: dict):
 
 def render(text: str) -> tuple[str, list[dict], list[str]]:
     """Убирает служебные метки из текста и собирает карточки товаров и кнопки выбора."""
-    cards, seen = [], set()
+    cards, seen, offers = [], set(), []
     for kind, ident in _MARK.findall(text):
         if (kind, ident) in seen:
             continue
@@ -234,6 +234,7 @@ def render(text: str) -> tuple[str, list[dict], list[str]]:
                     cards.append({"type": "offer", "id": o["offer_id"], "title": o["name"], "vendor": o.get("vendor"),
                                   "vendor_code": o.get("vendor_code"), "price": o.get("price"),
                                   "available": o.get("available"), "url": o.get("url")})
+                    offers.append((cards[-1], o))
             else:
                 p = (catalog.get_product(ident, limit=0) or {}).get("product")
                 if p:
@@ -244,6 +245,10 @@ def render(text: str) -> tuple[str, list[dict], list[str]]:
                                   "url": p.get("url")})
         except (ValueError, KeyError, TypeError):
             pass
+    # карточки с одинаковым названием и разной ценой: под названием то, чем варианты различаются
+    for (card, _), details in zip(offers, catalog.offer_details([o for _, o in offers])):
+        if details:
+            card["details"] = details
     titles = {(c["type"], str(c["id"])): c["title"] for c in cards}
 
     def title(m):  # метка вместо названия: "[[product:1]] (вендор)"; название уже написано словами: не дублируем
