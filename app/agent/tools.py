@@ -32,7 +32,7 @@ def _search_products(ctx, query: str, vendor: str = "", only_available: bool = F
 
 def _get_product(ctx, product_id: str, **filters):
     filters = {k: v for k, v in filters.items() if v not in (None, "", False) and (v != 0 or k == "term_months")}
-    return catalog.get_product(str(product_id), filters=filters, limit=8)
+    return catalog.get_product(str(product_id), filters=filters, limit=6)
 
 
 def _browse_categories(ctx, query: str = "", parent_id: int | None = None):
@@ -44,7 +44,11 @@ def _find_analogs(ctx, product_id: str, russian_only: bool = True):
 
 
 def _kb_search(ctx, query: str):
-    return kb.kb_search(query, limit=4)
+    res = kb.kb_search(query, limit=6)
+    for r in res.get("results", []):
+        r["snippet"] = r["snippet"][:700]
+        r.pop("score", None)
+    return res
 
 
 def _note_facts(ctx, facts: dict):
@@ -99,18 +103,20 @@ TOOLS = [
          "query": {"type": "string", "description": "что ищем: название продукта, вендор или тип ПО"},
          "vendor": {"type": "string", "description": "вендор, если клиент его назвал"},
          "only_available": {"type": "boolean", "description": "только то, что можно купить сейчас по цене из каталога"},
-         "russian_only": {"type": "boolean", "description": "только ПО из реестра отечественного ПО"},
+         "russian_only": {"type": "boolean", "description": "только российские вендоры и реестр отечественного ПО"},
          "category_id": {"type": "integer", "description": "искать внутри категории (id из browse_categories)"},
          "product_type": {"type": "string", "enum": ["софт", "электроника"]},
      }, ["query"])},
     {"name": "get_product", "handler": _get_product,
      "description": "Варианты лицензий одного продукта с ценами и артикулами. Фильтры сужают набор. В ответе "
                     "поле clarify: какие параметры стоит уточнить у клиента, и facets: какие значения бывают. "
-                    "Вызывайте после search_products и повторно, когда клиент ответил на уточнение.",
+                    "matching 0: такого сочетания в каталоге нет, смотрите facets. price_ambiguous: у артикула "
+                    "несколько цен. Вызывайте после search_products и повторно, когда клиент ответил на уточнение.",
      "parameters": _obj({
          "product_id": {"type": "string", "description": "id продукта из search_products"},
          "users": {"type": "integer", "description": "сколько пользователей или рабочих мест"},
          "nodes": {"type": "integer", "description": "сколько узлов, устройств или серверов"},
+         "qty": {"type": "integer", "description": "сколько лицензий покупают, если цена зависит от объема"},
          "term_months": {"type": "integer", "description": "срок лицензии в месяцах, 0 = бессрочная"},
          "license_type": {"type": "string", "description": "тип лицензии: новая, продление, подписка и т.п."},
          "org_type": {"type": "string", "description": "тип организации: коммерческая, государственная, образовательная"},
@@ -128,16 +134,20 @@ TOOLS = [
          "parent_id": {"type": "integer", "description": "показать подкатегории этой категории"},
      })},
     {"name": "find_analogs", "handler": _find_analogs,
-     "description": "Аналоги продукта из той же категории, по умолчанию только из реестра отечественного ПО. "
-                    "Для вопросов 'есть ли российский аналог' и когда продукта нет в продаже.",
+     "description": "Аналоги продукта из той же категории от других вендоров, по умолчанию только российских "
+                    "(реестр отечественного ПО или российский вендор). Для вопросов 'есть ли российский аналог' "
+                    "и когда продукта нет в продаже.",
      "parameters": _obj({
          "product_id": {"type": "string"},
          "russian_only": {"type": "boolean", "description": "true = только отечественное ПО"},
      }, ["product_id"])},
     {"name": "kb_search", "handler": _kb_search,
      "description": "База знаний магазина: доставка и получение лицензий, оплата, НДС, документы, возврат, "
-                    "сроки, условия для юрлиц и физлиц, справка Softline. Отвечайте на такие вопросы только по ней.",
-     "parameters": _obj({"query": {"type": "string"}}, ["query"])},
+                    "сроки, условия для юрлиц и физлиц, личный кабинет, акции. Отвечайте на такие вопросы только "
+                    "по ней.",
+     "parameters": _obj({"query": {"type": "string", "description": "тема существительными, как в справке: "
+                                   "'доставка электронной лицензии', 'способы оплаты', 'закрывающие документы'"}},
+                        ["query"])},
     {"name": "note_facts", "handler": _note_facts,
      "description": "Запомнить, что стало известно о клиенте и его задаче, чтобы не спрашивать повторно: "
                     "компания, ИНН, тип организации, число пользователей, устройства, ОС, бюджет, задача, контакт.",
