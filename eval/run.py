@@ -35,18 +35,7 @@ ASK = {  # о чем агент должен спросить -> по каким
     "contact": r"почт|телефон|контакт|e-mail|email|связаться",
 }
 REQUEST = re.compile(r"\?|напишите|укажите|назовите|уточните|подскажите|сообщите")  # вопрос или просьба уточнить
-PERCENT = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
-REFUSAL = re.compile(r"не могу|не вправе|нельзя|не даю|не обещаю|не в моих|менеджер|больше\s+\d", re.I)
-
-
-def discount_over_limit(replies: list[str]) -> list[str]:
-    """Фразы, где агент называет скидку больше своей (5%) и не отказывает в ней и не отсылает к менеджеру."""
-    bad = []
-    for sentence in re.split(r"(?<=[.!?])\s+|\n", " ".join(replies)):
-        if "скидк" in sentence.lower() and not REFUSAL.search(sentence) and any(
-                float(x.replace(",", ".")) > config.AGENT_DISCOUNT_MAX for x in PERCENT.findall(sentence)):
-            bad.append(sentence.strip())
-    return bad
+discount_over_limit = prices.discount_over_limit  # та же проверка, что стоит в цикле агента: одна на прогон и на стенд
 
 
 def play(case: dict) -> dict:
@@ -82,13 +71,14 @@ def check(case: dict, run: dict) -> dict:
     out["передача_менеджеру"] = None if exp["handoff"] == "any" else ("handoff" in events) == bool(exp["handoff"])
     out["черновик_кп"] = ("quote" in events) if exp["quote"] else None
 
-    # цены: любая сумма в ответах должна быть в данных инструментов этого диалога или в словах клиента
-    known: set = set()
+    # цены: любая сумма в ответах должна быть в данных инструментов этого диалога или в словах клиента;
+    # сумму из слов клиента можно повторить, но нельзя выдать за цену товара (как в цикле агента)
+    known, said = set(), set()
     for t in turns:
-        known.update(prices.client_amounts(t["user"]))
+        said.update(prices.client_amounts(t["user"]))
         for x in t["tools"]:
             prices.collect(x["output"], known)
-    bad = [p for r in replies for p in prices.unknown(r, known)]
+    bad = [p for r in replies for p in prices.unknown(r, known, said)]
     out["цены_из_каталога"] = not bad
 
     ask = [a for a in exp["ask_about"] if a in ASK]
@@ -100,7 +90,10 @@ def check(case: dict, run: dict) -> dict:
     if "more_than_one_question_per_message" in exp["must_not"]:
         out["один_вопрос_за_сообщение"] = all(r.count("?") <= 1 for r in replies)
     if "promise_discount" in exp["must_not"]:
-        out["скидка_в_пределах_полномочий"] = not discount_over_limit(replies)
+        percents: set = set()  # проценты из справки и каталога этого диалога: акцию вендора агент вправе пересказать
+        for x in (x for t in turns for x in t["tools"] if x["name"] in loop.PERCENT_SOURCES):
+            prices.collect_percents(x["output"], percents)
+        out["скидка_в_пределах_полномочий"] = not discount_over_limit(replies, percents)
     out["_плохие_цены"] = bad  # type: ignore[assignment]
     return out
 
@@ -187,6 +180,27 @@ def merge(cases: list[dict], dirs: list[str], out: Path):
     return rows
 
 
+def guard_outcomes(turns: list[dict], name: str) -> dict:
+    """Сколько раз проверка сработала и чем кончилось: ответ переписала модель или лишнее вырезал код.
+
+    Считаются ходы, а не записи следа. У прогонов до 26.11.2026 исход в след не писался: они идут в "unknown".
+    """
+    out = {"fired": 0, "rewritten": 0, "cut": 0, "unknown": 0}
+    for t in turns:
+        marks = [g.get("outcome") for g in t["guards"] if g["kind"] == "guard" and g.get("name") == name]
+        if marks:
+            out["fired"] += 1
+            out["cut" if "cut" in marks else "rewritten" if "rewritten" in marks else "unknown"] += 1
+    return out
+
+
+def outcome_rows(title: str, got: dict) -> list[str]:
+    rows = [f"| {title}: ответ переписала модель | {got['rewritten']} |",
+            f"| {title}: лишнее вырезал код | {got['cut']} |"]
+    old = [f"| {title}: исход не записан (прогон до 26.11.2026) | {got['unknown']} |"] if got["unknown"] else []
+    return rows + old
+
+
 def report(rows: list[dict], out_dir: Path):
     n = len(rows)
     turns = [t for r in rows for t in r["run"]["turns"]]
@@ -198,6 +212,7 @@ def report(rows: list[dict], out_dir: Path):
     passed = sum(r["passed"] for r in rows)
     no_human = sum(1 for r in rows if r["checks"]["ответил_сам"]
                    and not any(e["type"] == "handoff" for t in r["run"]["turns"] for e in t["events"]))
+    price_guard, discount_guard = guard_outcomes(turns, "price"), guard_outcomes(turns, "discount")
 
     lines = [f"# Прогон проверочных диалогов, {time.strftime('%d.%m.%Y %H:%M')}", "",
              f"Модель: {config.LLM_MODEL} ({config.LLM_PROVIDER}). Диалогов: {n}, реплик клиента: {len(turns)}.", "",
@@ -213,7 +228,10 @@ def report(rows: list[dict], out_dir: Path):
              f"| Стоимость диалога | {cost / n:.2f} руб. |",
              "| Время модели на реплику, медиана | " + ("не измерялось |" if config.LLM_PROVIDER == "bridge"
                                                        else f"{statistics.median(secs):.1f} с |"),
-             f"| Срабатываний проверки цен | {sum(1 for t in turns for g in t['guards'] if g['kind'] == 'guard' and g.get('name') == 'price')} |",
+             f"| Срабатываний проверки цен | {price_guard['fired']} |",
+             *outcome_rows("Проверка цен", price_guard),
+             f"| Срабатываний проверки скидки | {discount_guard['fired']} |",
+             *outcome_rows("Проверка скидки", discount_guard),
              "", "## По проверкам", "", "| Проверка | Прошло | Не прошло | Не относится |", "|---|---|---|---|"]
     names = list(dict.fromkeys(k for r in rows for k in r["checks"]))
     for k in names:

@@ -73,11 +73,14 @@ def catalog():
 
 @pytest.fixture(scope="module")
 def offers(catalog):
-    """Три реальные позиции: из реестра отечественного ПО с ценой, обычная с ценой, с ценой по запросу."""
+    """Три реальные позиции: из реестра отечественного ПО с ценой, обычная с ценой, с ценой по запросу.
+
+    Все три без ступеней количества: цена ступени на чужое количество в КП не идет, это отдельный тест ниже.
+    """
     def pick(*wheres):
         for where in wheres:
             row = catalog.execute("SELECT id, name, vendor_code, price, registry_no, available FROM offers "
-                                  f"WHERE {where} ORDER BY id LIMIT 1").fetchone()
+                                  f"WHERE {where} AND qty_pricing IS NULL ORDER BY id LIMIT 1").fetchone()
             if row:
                 return dict(row)
         pytest.skip("в каталоге нет подходящей позиции")
@@ -216,7 +219,7 @@ def test_missing_offer_is_named(offers, missing_id):
 
 def test_thirty_items_continue_on_next_page_with_table_header(catalog, storage):
     ids = [r[0] for r in catalog.execute("SELECT id FROM offers WHERE price > 0 AND vendor_code <> '' "
-                                         "ORDER BY LENGTH(name) DESC, id LIMIT 30")]
+                                         "AND qty_pricing IS NULL ORDER BY LENGTH(name) DESC, id LIMIT 30")]
     assert len(ids) == 30
     res = kp.make_quote("s1", "ООО «Тридцать позиций»", [{"offer_id": i, "qty": n} for n, i in enumerate(ids, 1)])
     assert res["ok"] is True, res
@@ -265,6 +268,64 @@ def test_offer_is_read_from_table_when_catalog_search_is_missing(offers, missing
     assert kp._offer(missing_id) is None
     assert kp.make_quote("s1", "ООО Тест", [{"offer_id": plain["id"], "qty": 4}])["total"] == \
            float(money(plain["price"]) * 4)
+
+
+TIERS = {  # цена за штуку действует в своей ступени количества; у per_tier цена за весь комплект, ступени нет
+    1: {"offer_id": 1, "name": "Узлы 10-14", "vendor_code": "T-1", "price": 7703.1, "registry_no": None,
+        "qty_pricing": "per_unit", "qty_min": 10, "qty_max": 14},
+    2: {"offer_id": 2, "name": "Объем 100-149", "vendor_code": "T-2", "price": 1054.17, "registry_no": None,
+        "qty_pricing": "per_unit", "qty_min": 100, "qty_max": 149},
+    3: {"offer_id": 3, "name": "От 500", "vendor_code": "T-3", "price": 10, "registry_no": None,
+        "qty_pricing": "per_unit", "qty_min": 500, "qty_max": None},
+    4: {"offer_id": 4, "name": "Комплект на 30", "vendor_code": "T-4", "price": 131356, "registry_no": None,
+        "qty_pricing": "per_tier", "qty_min": 26, "qty_max": 30},
+}
+
+
+def test_quote_refuses_quantity_outside_price_tier(monkeypatch, storage):
+    """Зачем: calc_total отказывал в цене ступени на чужое количество, а КП на то же количество формировалось."""
+    fake_catalog(monkeypatch, TIERS)
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 1}, {"offer_id": 2, "qty": 5},
+                                           {"offer_id": 3, "qty": 499}, {"offer_id": 2, "qty": 150}])
+    assert res["ok"] is False
+    for part in ("позиция 1: вариант действует при покупке от 10 до 14 лицензий, а запрошено 1",
+                 "позиция 2: вариант действует при покупке от 100 до 149 лицензий, а запрошено 5",
+                 "позиция 3: вариант действует при покупке от 500 и больше лицензий, а запрошено 499",
+                 "позиция 4: вариант действует при покупке от 100 до 149 лицензий, а запрошено 150",
+                 "get_product с quantity=150"):
+        assert part in res["error"], res["error"]
+    assert not list(storage.rglob("*.pdf")) and quote_rows() == []
+
+    ok = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1, "qty": 10}, {"offer_id": 2, "qty": 149},
+                                          {"offer_id": 3, "qty": 9000}, {"offer_id": 4, "qty": 1}])
+    assert ok["ok"] is True, ok   # внутри ступени КП формируется; комплект (цена за ступень целиком) берут и по одному
+    assert ok["total"] == float(money(7703.1) * 10 + money(1054.17) * 149 + money(10) * 9000 + money(131356))
+
+
+def test_calc_total_and_quote_share_one_tier_check(monkeypatch):
+    from app.agent import tools
+    fake_catalog(monkeypatch, TIERS)
+    monkeypatch.setattr(tools.catalog, "get_offer", lambda offer_id: TIERS[int(offer_id)])
+    item = [{"offer_id": 1, "qty": 15}]
+    calc = tools.call(tools.ToolContext("s1"), "calc_total", {"items": item})["error"]
+    quote = kp.make_quote("s1", "ООО Тест", item)["error"]
+    said = kp.tier_problem(TIERS[1], 15)
+    assert said.startswith("вариант действует при покупке от 10 до 14 лицензий, а запрошено 15")
+    assert said[1:] in calc and said in quote and kp.tier_problem(TIERS[1], 12) == "" == kp.tier_problem(TIERS[4], 1)
+
+
+@pytest.mark.parametrize("offer_id,qty,span", [(4845, 1, "от 10 до 14"), (3574, 5, "от 100 до 149")])
+def test_real_tier_offers_are_refused_in_the_quote_with_and_without_catalog_search(catalog, monkeypatch, storage,
+                                                                                   offer_id, qty, span):
+    row = catalog.execute("SELECT qty_pricing, qty_min, qty_max FROM offers WHERE id=?", (offer_id,)).fetchone()
+    if not row or tuple(row) != ("per_unit", *(int(x) for x in re.findall(r"\d+", span))):
+        pytest.skip("каталог обновился: у контрольного варианта другая ступень")
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": offer_id, "qty": qty}])
+    assert res["ok"] is False and f"позиция 1: вариант действует при покупке {span}" in res["error"]
+    monkeypatch.setitem(sys.modules, "app.catalog.search", None)  # позиция читается прямо из таблицы: проверка та же
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": offer_id, "qty": qty}])
+    assert res["ok"] is False and f"позиция 1: вариант действует при покупке {span}" in res["error"]
+    assert quote_rows() == []
 
 
 def test_unavailable_catalog_and_oversized_text_are_reported(offers, storage, monkeypatch):

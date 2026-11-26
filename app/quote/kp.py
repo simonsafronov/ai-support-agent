@@ -118,7 +118,7 @@ def _offer(offer_id: int) -> dict | None:
     try:
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT id AS offer_id, name, vendor, vendor_code, price, available, url, registry_no, "
-                          "product_id FROM offers WHERE id=?", (offer_id,)).fetchone()
+                          "product_id, qty_pricing, qty_min, qty_max FROM offers WHERE id=?", (offer_id,)).fetchone()
     finally:
         con.close()
     return dict(row) if row else None
@@ -224,6 +224,19 @@ def discounted(price: Decimal, discount: Decimal) -> Decimal:
     return _money(price * (100 - discount) / 100)
 
 
+def tier_problem(offer: dict, qty: int) -> str:
+    """Цена за штуку из ступени "от 10 до 14" на другое количество не годится: одна проверка для расчета и для КП.
+
+    Зачем: иначе КП на 1 лицензию выходит по цене ступени 10-14, клиент получает сумму, которой в каталоге нет.
+    """
+    lo, hi = offer.get("qty_min"), offer.get("qty_max")
+    if offer.get("qty_pricing") != "per_unit" or not ((lo and qty < lo) or (hi and qty > hi)):
+        return ""
+    span = f"от {lo or 1} до {hi}" if hi else f"от {lo} и больше"
+    return (f"вариант действует при покупке {span} лицензий, а запрошено {qty} (offer_id {offer.get('offer_id')}). "
+            f"Найдите вариант под это количество: get_product с quantity={qty}")
+
+
 def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "", payment: str = "",
                contact: str = "", delivery: str = "", kpp: str = "", discount_percent: float = 0) -> dict:
     """Собирает черновик КП: проверяет позиции, считает суммы и НДС, пишет PDF и запись в хранилище."""
@@ -254,6 +267,10 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
             return _error("Каталог сейчас недоступен, КП не сформировано. Передайте обращение менеджеру.")
         if not offer:
             problems.append(f"позиция {n}: offer_id {offer_id} не найден в каталоге, возьмите id из get_product")
+            continue
+        tier = tier_problem(offer, qty)
+        if tier:
+            problems.append(f"позиция {n}: {tier}")
             continue
         list_price = _price(offer.get("price"))
         price = discounted(list_price, discount) if list_price is not None and discount else list_price
@@ -427,14 +444,6 @@ def table_cells(q: dict) -> list[dict]:
     cells.append({"kind": "total", "name": "Итого", "sum": _fmt(q["total"]) if has_sum else ON_REQUEST,
                   "vat": vat_text(lines, q["vat_total"])})
     return cells
-
-
-def column_widths(with_article: bool) -> dict:
-    """Ширины колонок; без артикулов графа «Артикул» не печатается, ее место занимает наименование."""
-    widths = dict(COLS)
-    if not with_article:
-        widths["name"] += widths.pop("code")
-    return widths
 
 
 NAME_STYLE = {"item": S_NAME, "subtotal": S_SUBTOTAL, "total": S_TOTAL}
