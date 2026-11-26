@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import sqlite3
 import threading
@@ -44,13 +45,14 @@ ADDRESS = ("119021, город Москва, ул Льва Толстого, д.
            "5 стр. 1, этаж 3, помещ. 1, ком. №2, 2а (а-311)",
            "Т +7 495 232 00 23 | info@softline.com",
            "www.softline.ru | www.softline.com")
-SIGNER_NAME, SIGNER_TITLE, SIGNER_SHORT = "Бондаренко Александр", "Директор департамента", "Бондаренко А.С."
 DRAFT_TITLE = "Черновик коммерческого предложения."
 DRAFT_TEXT = "Подготовлен ИИ-консультантом Softline Store, требует проверки менеджером."
 VAT_FOOTNOTE = "НДС рассчитан автоматически, проверяет менеджер."
 ON_REQUEST_LINE = "Позиции с ценой по запросу рассчитает менеджер."
 ON_REQUEST_HEAD = "Позиции с ценой по запросу, в итог не входят, их рассчитает менеджер:"
 UNAVAILABLE_LINE = "Наличие позиций, которых сейчас нет в продаже на сайте, подтвердит менеджер."
+PRICE_MARK = "*"
+PRICE_CHECK_LINE = "У артикула в каталоге несколько цен, цену подтвердит менеджер."
 
 MSK = timezone(timedelta(hours=3))  # дата КП по московскому времени
 _NUMBER_LOCK = threading.Lock()
@@ -118,7 +120,8 @@ def _offer(offer_id: int) -> dict | None:
     try:
         con.row_factory = sqlite3.Row
         row = con.execute("SELECT id AS offer_id, name, vendor, vendor_code, price, available, url, registry_no, "
-                          "product_id, qty_pricing, qty_min, qty_max FROM offers WHERE id=?", (offer_id,)).fetchone()
+                          "product_id, qty_pricing, qty_min, qty_max, same_code_prices, price_ambiguous "
+                          "FROM offers WHERE id=?", (offer_id,)).fetchone()
     finally:
         con.close()
     return dict(row) if row else None
@@ -220,6 +223,31 @@ def allowed_discount(percent) -> Decimal:
     return max(Decimal(0), min(asked, Decimal(str(config.AGENT_DISCOUNT_MAX))))
 
 
+def discount_arg(value) -> tuple[Decimal, str]:
+    """Скидка из аргумента модели. Не число, NaN, меньше 0 или больше 100 считается нулем, причина идет в note."""
+    if value is None or value == "":
+        return Decimal(0), ""
+    try:
+        asked = Decimal(str(value).strip().rstrip("%").strip().replace(",", ".")) if not isinstance(value, bool) else None
+    except ArithmeticError:
+        asked = None
+    if asked is None or not asked.is_finite() or not 0 <= asked <= 100:
+        return Decimal(0), (f" Скидка {str(value)[:20]!r} не распознана: нужен процент от 0 до 100. "
+                            "Черновик посчитан без скидки.")
+    return asked, ""
+
+
+def price_to_confirm(offer: dict) -> bool:
+    """У артикула в каталоге несколько цен, и ступень количества разницу не объясняет: цену подтвердит менеджер.
+
+    Зачем: иначе в документ молча уходит одна из цен артикула, а в магазине клиент видит другую.
+    """
+    prices = offer.get("same_code_prices") or []
+    if isinstance(prices, str):  # из таблицы offers список приходит строкой JSON
+        prices = json.loads(prices or "null") or []
+    return bool(offer.get("price_ambiguous")) or (len(prices) > 1 and not offer.get("qty_pricing"))
+
+
 def discounted(price: Decimal, discount: Decimal) -> Decimal:
     return _money(price * (100 - discount) / 100)
 
@@ -240,7 +268,8 @@ def tier_problem(offer: dict, qty: int) -> str:
 def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "", payment: str = "",
                contact: str = "", delivery: str = "", kpp: str = "", discount_percent: float = 0) -> dict:
     """Собирает черновик КП: проверяет позиции, считает суммы и НДС, пишет PDF и запись в хранилище."""
-    discount = allowed_discount(discount_percent)
+    asked, bad_discount = discount_arg(discount_percent)  # до любых записей: неверная скидка не роняет КП
+    discount = allowed_discount(asked)
     customer = _clean(customer) or NO_CUSTOMER
     given_inn, given_kpp = _clean(inn), _clean(kpp)
     inn, kpp, _ = requisites(customer, inn, kpp)
@@ -277,9 +306,11 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         amount = _money(price * qty) if price is not None else None
         list_sum = _money(list_price * qty) if list_price is not None else None
         registry = bool(_clean(offer.get("registry_no")))
+        check = price is not None and price_to_confirm(offer)
         lines.append({"offer_id": offer_id, "name": _clean(offer.get("name")).strip(" ,;"),
                       "vendor_code": _clean(offer.get("vendor_code")), "qty": qty, "price": price, "sum": amount,
                       "vat": _vat(amount, registry), "available": bool(offer.get("available")),
+                      **({"price_to_confirm": True} if check else {}),
                       "list": {"price": list_price, "sum": list_sum, "vat": _vat(list_sum, registry)}})
     if problems:
         return _error("КП не сформировано, исправьте и повторите: " + "; ".join(problems) + ".")
@@ -326,12 +357,17 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         note += (f" Цены и суммы в этом ответе указаны со скидкой {float(discount):g}%. В документе клиент видит "
                  "цены каталога, сумму без скидки, скидку и итог.")
         saved = {"total_without_discount": float(list_total), "discount_sum": float(list_total - total)}
-    if Decimal(str(discount_percent or 0)) > discount:
+    note += bad_discount
+    if asked > discount:
         note += (f" Сами вы даете не больше {config.AGENT_DISCOUNT_MAX:g}%: скидку больше согласует менеджер, "
                  "передайте ему запрос.")
     if wrong:
         note += (f" {' и '.join(wrong)} в черновик не попал: в ИНН должно быть 10 цифр (у ИП 12), в КПП 9 знаков. "
                  "Уточните у клиента.")
+    unsure = [ln["name"] for ln in lines if ln.get("price_to_confirm")]
+    if unsure:
+        note += (f" У артикула позиции {', '.join(unsure)} в каталоге несколько цен, в черновике цена выбранного "
+                 "варианта. Скажите клиенту, что цену этой позиции подтвердит менеджер.")
     if missing:
         note += (f" В графе «Заказчик» не хватает: {', '.join(missing)}. Попросите их одним сообщением один раз; "
                  "клиент не дал, черновик остается как есть, реквизиты уточнит менеджер.")
@@ -340,7 +376,7 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
             "url": f"/quotes/{number}.pdf", "file": str(path), "date": quote["date"],
             "valid_until": quote["valid_until"], "customer": customer, "items": out_items, "total": float(total),
             "vat_total": float(vat_total), "has_price_on_request": on_request, "discount_percent": float(discount),
-            **saved,
+            **saved, "price_to_confirm": unsure,
             "needs_availability_check": [ln["name"] for ln in lines if not ln["available"] and ln["price"] is not None],
             "note": note}
 
@@ -431,8 +467,9 @@ def table_cells(q: dict) -> list[dict]:
     cells = []
     for ln, cell in zip(lines, shown):
         priced = cell["price"] is not None
+        mark = PRICE_MARK if ln.get("price_to_confirm") else ""
         cells.append({"kind": "item", "code": ln["vendor_code"] or "—", "name": ln["name"], "qty": str(ln["qty"]),
-                      "price": _fmt(cell["price"]) if priced else ON_REQUEST,
+                      "price": _fmt(cell["price"]) + mark if priced else ON_REQUEST,
                       "sum": _fmt(cell["sum"]) if priced else ON_REQUEST,
                       "vat": _fmt(cell["vat"]) if isinstance(cell["vat"], Decimal) else (cell["vat"] or "—")})
     if off:
@@ -463,7 +500,10 @@ def _items_table(q: dict) -> Table:
 
     data = [[Paragraph(title.replace(" ", NBSP), S_HEAD) for key, title in HEAD if key in widths]]
     data += [[flow(c["kind"], key, c[key]) if c.get(key) else "" for key in widths] for c in cells]
-    data.append([Paragraph(VAT_FOOTNOTE, S_FOOTNOTE)] + [""] * (len(widths) - 1))
+    footnote = VAT_FOOTNOTE
+    if any(c.get("price", "").endswith(PRICE_MARK) for c in cells):
+        footnote += f"<br/>{PRICE_MARK} {PRICE_CHECK_LINE}"
+    data.append([Paragraph(footnote, S_FOOTNOTE)] + [""] * (len(widths) - 1))
     tail = 3 + sum(c["kind"] == "subtotal" for c in cells)  # последняя позиция, строки скидки, итог и сноска
     return Table(data, colWidths=list(widths.values()), repeatRows=1, style=[
         ("GRID", (0, 0), (-1, -2), 0.5, colors.black),
@@ -534,9 +574,9 @@ def _render(q: dict) -> bytes:
         ("BACKGROUND", (0, 0), (-1, -1), BRAND_TINT), ("LINEBEFORE", (0, 0), (0, -1), 3, BRAND),
         ("LEFTPADDING", (0, 0), (-1, -1), 14), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
         ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 9)])
-    sign = _plain([Paragraph(f"{SIGNER_NAME}<br/>{SIGNER_TITLE}", S_SIGN),
+    sign = _plain([Paragraph(f"{escape(config.KP_SIGNER_NAME)}<br/>{escape(config.KP_SIGNER_TITLE)}", S_SIGN),
                    HRFlowable(width="100%", thickness=0.5, color=colors.black, spaceBefore=0, spaceAfter=0),
-                   Paragraph(SIGNER_SHORT, S_SIGN)],
+                   Paragraph(escape(config.KP_SIGNER_SHORT), S_SIGN)],
                   (320.5, 84.0, WIDTH - 404.5),
                   [("VALIGN", (0, 0), (-1, -1), "BOTTOM"), ("LEFTPADDING", (0, 0), (0, 0), 26.5),
                    ("LEFTPADDING", (2, 0), (2, 0), 6), ("BOTTOMPADDING", (1, 0), (1, 0), 2.5)])

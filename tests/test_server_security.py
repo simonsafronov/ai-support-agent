@@ -209,7 +209,7 @@ def test_rate_limit_ignores_spoofed_forwarded_for(monkeypatch):
     assert other.status_code == 200
 
 
-@pytest.mark.needs_data
+@pytest.mark.small_catalog
 def test_price_guard_demo_is_rate_limited(monkeypatch):
     monkeypatch.setattr(server.config, "CHAT_RATE_PER_MIN", 1)
     assert client.post("/api/proof").status_code == 200

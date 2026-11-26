@@ -1,5 +1,6 @@
 """Экран оператора и то, что добавилось по ответам заказчика: журнал, ответы менеджера как знание, обновление каталога."""
 import json
+import re
 import sqlite3
 
 import pytest
@@ -31,7 +32,7 @@ def _handoff_dialog() -> tuple[str, int]:
     return res["session_id"], store.open_handoff(res["session_id"])["id"]
 
 
-@pytest.mark.needs_data
+@pytest.mark.small_catalog
 def test_manager_answer_reaches_client_and_teaches_agent():
     sid, hid = _handoff_dialog()
     r = client.post(f"/api/admin/handoff/{hid}/answer", headers=KEY, json={
@@ -265,7 +266,7 @@ def test_failed_dialog_becomes_a_regression_case(tmp_path, monkeypatch):
     assert len(cases.load()) == 1 and cases.load()[0]["expect"]["handoff"] == "any"  # повтор заменяет кейс
 
 
-@pytest.mark.needs_data
+@pytest.mark.small_catalog
 def test_price_guard_demo_shows_both_outcomes():
     before = store.db().execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     r = client.post("/api/proof").json()
@@ -300,3 +301,11 @@ def test_client_who_asks_for_a_human_is_not_left_with_the_lowest_urgency():
     assert handoff_card.priority("агент не смог ответить") == "normal"   # клиент остался без ответа агента
     assert handoff_card.priority("какая у вас лицензия на 1С") == "low"
     assert handoff_card.priority("хочу менеджера, жалоба: третий день жду ключ") == "high"
+
+
+def test_deferred_payment_is_flagged_with_discount_urgency():
+    from app.agent import handoff_card
+    for said in ("Можно с отсрочкой платежа на 30 дней?", "работаем только по постоплате", "оплата после поставки"):
+        assert handoff_card.priority(said) == handoff_card.priority("дайте скидку") == "normal", said
+        assert any(name == "просит отсрочку" and re.search(rx, said.lower()) for name, rx in handoff_card.FLAGS)
+    assert not any(name == "просит отсрочку" and re.search(rx, "как оплатить картой") for name, rx in handoff_card.FLAGS)

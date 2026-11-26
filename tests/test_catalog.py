@@ -432,3 +432,13 @@ def test_org_type_filter_matches_whole_value():
     assert not commercial({"org_type": "Академическая, Некоммерческая"})
     assert commercial({"org_type": None})  # поле не заполнено: ограничения нет
     assert search._value_check("org_type", "нко")({"org_type": "Академическая, Некоммерческая"})
+
+
+@pytest.mark.needs_data
+@pytest.mark.parametrize("word,vendor", [("сервер", "Paragon Software Group"), ("сервер", "Orion soft"),
+                                         ("office", "Docsvision")])
+def test_common_word_with_small_vendor_is_not_empty(word, vendor):
+    """Зачем: выборка по вариантам обрезалась до 80 продуктов раньше фильтра по вендору, и общее слово
+    с вендором, у которого мало предложений, давало пустой ответ."""
+    res = search_products(word, vendor=vendor, limit=6)
+    assert res["products"] and all(p["vendor"] == vendor for p in res["products"]), res

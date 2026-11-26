@@ -1,6 +1,7 @@
 """Тесты черновика КП: суммы и НДС, проверки входа, PDF, нумерация.
 
-Идут на реальном каталоге data/db/catalog.sqlite (нет базы: тесты пропускаются).
+Идут на синтетическом каталоге tests/data/feed_small.xml, на чистом клоне тоже. Тесты с пометкой needs_data
+берут позиции из каталога заказчика data/db/catalog.sqlite (нет базы: пропускаются).
 Хранилище приложения и каталог с PDF на время теста направлены во временную папку.
 """
 from __future__ import annotations
@@ -25,7 +26,7 @@ if str(ROOT) not in sys.path:  # чтобы тест находил пакет a
 from app import config, store  # noqa: E402
 from app.quote import kp  # noqa: E402
 
-pytestmark = pytest.mark.skipif(not config.CATALOG_DB.exists(), reason=f"нет базы каталога {config.CATALOG_DB}")
+pytestmark = pytest.mark.small_catalog
 
 CENT = Decimal("0.01")
 
@@ -64,8 +65,8 @@ def storage(tmp_path, monkeypatch):
 
 
 @pytest.fixture(scope="module")
-def catalog():
-    con = sqlite3.connect(config.CATALOG_DB)
+def catalog(small_catalog_db):
+    con = sqlite3.connect(small_catalog_db)
     con.row_factory = sqlite3.Row
     yield con
     con.close()
@@ -73,7 +74,7 @@ def catalog():
 
 @pytest.fixture(scope="module")
 def offers(catalog):
-    """Три реальные позиции: из реестра отечественного ПО с ценой, обычная с ценой, с ценой по запросу.
+    """Три позиции каталога: из реестра отечественного ПО с ценой, обычная с ценой, с ценой по запросу.
 
     Все три без ступеней количества: цена ступени на чужое количество в КП не идет, это отдельный тест ниже.
     """
@@ -162,7 +163,7 @@ def test_sums_vat_and_pdf(offers, storage):
                    f"Срок действия коммерческого предложения - до {res['valid_until']}.",
                    "Черновик коммерческого предложения.",
                    "Подготовлен ИИ-консультантом Softline Store, требует проверки менеджером.",
-                   "Бондаренко Александр", "Директор департамента"):
+                   config.KP_SIGNER_NAME, config.KP_SIGNER_TITLE):
         assert squeeze(phrase) in text, phrase
 
     (row,) = quote_rows()
@@ -242,7 +243,7 @@ def test_thirty_items_continue_on_next_page_with_table_header(catalog, storage):
     assert "Итого" + ru(expected) in pages[total_page] and ru(res["items"][-1]["sum"]) in pages[total_page]
     assert squeeze("НДС рассчитан автоматически") in pages[total_page]
     (terms_page,) = [p for p in pages if squeeze("Цена указана с учетом") in p]
-    assert squeeze("Черновик коммерческого предложения.") in terms_page and squeeze("Бондаренко А.С.") in terms_page
+    assert squeeze("Черновик коммерческого предложения.") in terms_page and squeeze(config.KP_SIGNER_SHORT) in terms_page
 
 
 def test_numbers_grow_and_special_characters_are_safe(offers, storage):
@@ -314,9 +315,11 @@ def test_calc_total_and_quote_share_one_tier_check(monkeypatch):
     assert said[1:] in calc and said in quote and kp.tier_problem(TIERS[1], 12) == "" == kp.tier_problem(TIERS[4], 1)
 
 
+@pytest.mark.needs_data
 @pytest.mark.parametrize("offer_id,qty,span", [(4845, 1, "от 10 до 14"), (3574, 5, "от 100 до 149")])
-def test_real_tier_offers_are_refused_in_the_quote_with_and_without_catalog_search(catalog, monkeypatch, storage,
+def test_real_tier_offers_are_refused_in_the_quote_with_and_without_catalog_search(monkeypatch, storage,
                                                                                    offer_id, qty, span):
+    catalog = sqlite3.connect(config.CATALOG_DB)
     row = catalog.execute("SELECT qty_pricing, qty_min, qty_max FROM offers WHERE id=?", (offer_id,)).fetchone()
     if not row or tuple(row) != ("per_unit", *(int(x) for x in re.findall(r"\d+", span))):
         pytest.skip("каталог обновился: у контрольного варианта другая ступень")
@@ -556,3 +559,66 @@ def test_copied_table_row_keeps_quantity_and_price_apart(monkeypatch):
     (row,) = [ln for ln in page.extract_text(extraction_mode="layout").splitlines() if "Лицензия А" in ln]
     assert re.split(r" {2,}", row.strip()) == ["A-1", "Лицензия А", "25", "6\u202f150,00", "153\u202f750,00",
                                                "27\u202f725,41"]
+
+
+def test_article_with_several_prices_is_marked_for_the_manager(offers, storage):
+    """Зачем: у артикула CB-WS-1Y в каталоге две цены без различия в параметрах, в КП молча шла одна из них."""
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": 1082, "qty": 2}, {"offer_id": offers["plain"]["id"], "qty": 1}])
+    assert res["ok"] is True, res
+    flagged, plain = res["items"]
+    assert flagged["price_to_confirm"] is True and "price_to_confirm" not in plain
+    assert flagged["sum"] == 9900.0 and res["total"] == 9900.0 + plain["sum"]  # сумма считается по цене offer_id
+    assert res["price_to_confirm"] == [flagged["name"]] and "подтвердит менеджер" in res["note"]
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "CB-WS-1Y" in text and "4950,00*" in text and squeeze("* " + kp.PRICE_CHECK_LINE) in text
+    assert text.count("*") == 2  # знак у цены и сноска под таблицей
+
+
+def test_ordinary_item_has_no_price_footnote(offers, storage):
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": offers["plain"]["id"], "qty": 1}])
+    assert res["price_to_confirm"] == [] and "подтвердит менеджер" not in res["note"]
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "*" not in text and squeeze(kp.PRICE_CHECK_LINE) not in text
+
+
+@pytest.mark.needs_data
+def test_real_article_with_several_prices_gets_the_footnote(monkeypatch, storage):
+    """Кейс c03 набора: у LBS-AC-12M-25-A3 в каталоге две цены; кейсы c10 и c52: цена зависит от ступени количества."""
+    catalog = sqlite3.connect(config.CATALOG_DB)
+    ambiguous = catalog.execute("SELECT id FROM offers WHERE price_ambiguous = 1 AND price > 0 AND qty_pricing IS NULL "
+                                "ORDER BY id LIMIT 1").fetchone()
+    c03 = catalog.execute("SELECT id FROM offers WHERE vendor_code = 'LBS-AC-12M-25-A3' AND price > 0 "
+                          "ORDER BY id LIMIT 1").fetchone()
+    c52 = catalog.execute("SELECT id, qty_min FROM offers WHERE vendor_code = 'SNLSP1.x-BL1-SB-SP1Y' "
+                          "AND qty_pricing = 'per_unit' ORDER BY qty_min LIMIT 1").fetchone()
+    catalog.close()
+    if not (ambiguous and c03 and c52):
+        pytest.skip("каталог обновился: контрольных артикулов нет")
+    for offer_id in (ambiguous[0], c03[0]):
+        res = kp.make_quote("s1", "ООО Тест", [{"offer_id": offer_id, "qty": 1}])
+        assert res["ok"] and res["items"][0]["price_to_confirm"] is True, res
+        assert squeeze("* " + kp.PRICE_CHECK_LINE) in squeeze(pdf_pages(res["file"])[0])
+    # ступень количества объясняет разницу цен артикула: цена определена, сноски нет
+    res = kp.make_quote("s2", "ООО Тест", [{"offer_id": c52[0], "qty": c52[1] or 1}])
+    assert res["ok"] and res["price_to_confirm"] == [], res
+
+
+@pytest.mark.parametrize("bad", ["abc", "nan", float("nan"), -5, 150, "1e999", True])
+def test_wrong_discount_counts_as_zero_before_anything_is_written(offers, storage, bad):
+    """Зачем: discount_percent="abc" ронял make_quote уже после записи PDF и строки в базе."""
+    plain = offers["plain"]
+    res = kp.make_quote("s1", "ООО Тест", [{"offer_id": plain["id"], "qty": 2}], discount_percent=bad)
+    assert res["ok"] is True and res["discount_percent"] == 0.0, res
+    assert res["total"] == float(money(plain["price"]) * 2) and "не распознана" in res["note"]
+    assert [p.name for p in storage.rglob("*.pdf")] == [f"{res['number']}.pdf"]
+    assert [(r["number"], r["total"]) for r in quote_rows()] == [(res["number"], res["total"])]
+    ok = kp.make_quote("s2", "ООО Тест", [{"offer_id": plain["id"], "qty": 2}], discount_percent="3,5%")
+    assert ok["discount_percent"] == 3.5 and "не распознана" not in ok["note"]
+
+
+def test_signer_comes_from_settings(offers, storage, monkeypatch):
+    monkeypatch.setattr(config, "KP_SIGNER_NAME", "Иванов Иван")
+    monkeypatch.setattr(config, "KP_SIGNER_TITLE", "Руководитель отдела")
+    monkeypatch.setattr(config, "KP_SIGNER_SHORT", "Иванов И.И.")
+    text = squeeze(pdf_pages(kp.make_quote("s1", "ООО Тест", [{"offer_id": offers["plain"]["id"], "qty": 1}])["file"])[0])
+    assert squeeze("Иванов Иван Руководитель отдела") in text and squeeze("Иванов И.И.") in text

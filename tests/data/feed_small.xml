@@ -1,0 +1,746 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<yml_catalog date="2026-11-01 10:00">
+	<shop>
+		<name>shop.example</name>
+		<company>Тестовый магазин ПО</company>
+		<url>https://shop.example</url>
+		<categories>
+			<category id="1">Программы для защиты</category>
+			<category id="11" parentId="1">Антивирусы</category>
+			<category id="2">Операционные системы</category>
+			<category id="21" parentId="2">Операционные системы Linux</category>
+			<category id="3">Офисные программы</category>
+			<category id="31" parentId="3">Офисные пакеты</category>
+			<category id="4">Почта и коммуникации</category>
+			<category id="41" parentId="4">Почтовые серверы</category>
+			<category id="5">Резервное копирование</category>
+			<category id="51" parentId="5">Резервное копирование данных</category>
+		</categories>
+		<offers>
+<offer id="1001" group_id="100" available="true">
+	<name>Kaspersky Endpoint Security для бизнеса Стандартный, лицензия на 1 год</name>
+	<vendor>Kaspersky</vendor>
+	<vendorCode>KL4863RAAFS</vendorCode>
+	<url>https://shop.example/kaspersky/1001/</url>
+	<price>2150.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 10 до 14 шт.</description>
+	<group_id>100</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1002" group_id="100" available="true">
+	<name>Kaspersky Endpoint Security для бизнеса Стандартный, лицензия на 1 год</name>
+	<vendor>Kaspersky</vendor>
+	<vendorCode>KL4863RABFS</vendorCode>
+	<url>https://shop.example/kaspersky/1002/</url>
+	<price>2010.50</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 15 до 19 шт.</description>
+	<group_id>100</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1003" group_id="100" available="true">
+	<name>Kaspersky Endpoint Security для бизнеса Стандартный, лицензия на 1 год</name>
+	<vendor>Kaspersky</vendor>
+	<vendorCode>KL4863RACFS</vendorCode>
+	<url>https://shop.example/kaspersky/1003/</url>
+	<price>1890.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 20 до 24 шт.</description>
+	<group_id>100</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1004" group_id="100" available="true">
+	<name>Kaspersky Endpoint Security для бизнеса Стандартный, лицензия на 1 год</name>
+	<vendor>Kaspersky</vendor>
+	<vendorCode>KL4863RADFS</vendorCode>
+	<url>https://shop.example/kaspersky/1004/</url>
+	<price>1750.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 25 до 49 шт.</description>
+	<group_id>100</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1011" group_id="100" available="true">
+	<name>Kaspersky Endpoint Security для бизнеса Стандартный, продление на 1 год на 5 узлов</name>
+	<vendor>Kaspersky</vendor>
+	<vendorCode>KL4863RAPRN5</vendorCode>
+	<url>https://shop.example/kaspersky/1011/</url>
+	<price>9850.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: продление • Минимальная покупка: от 1 шт.</description>
+	<group_id>100</group_id>
+<param name="Тип лицензии">Продление</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">5</param>
+</offer>
+<offer id="1012" group_id="100" available="true">
+	<name>Kaspersky Endpoint Security для бизнеса Стандартный, продление на 1 год на 10 узлов</name>
+	<vendor>Kaspersky</vendor>
+	<vendorCode>KL4863RAPRN10</vendorCode>
+	<url>https://shop.example/kaspersky/1012/</url>
+	<price>18200.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: продление • Минимальная покупка: от 1 шт.</description>
+	<group_id>100</group_id>
+<param name="Тип лицензии">Продление</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">10</param>
+</offer>
+<offer id="1013" group_id="100" available="true">
+	<name>Kaspersky Endpoint Security для бизнеса Стандартный, продление на 1 год на 25 узлов</name>
+	<vendor>Kaspersky</vendor>
+	<vendorCode>KL4863RAPRN25</vendorCode>
+	<url>https://shop.example/kaspersky/1013/</url>
+	<price>41250.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: продление • Минимальная покупка: от 1 шт.</description>
+	<group_id>100</group_id>
+<param name="Тип лицензии">Продление</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">25</param>
+</offer>
+<offer id="1021" group_id="200" available="true">
+	<name>Dr.Web Desktop Security Suite, Антивирус, лицензия на 1 год на 5 ПК</name>
+	<vendor>Доктор Веб</vendor>
+	<vendorCode>LBW-AC-12M-5-A3</vendorCode>
+	<url>https://shop.example/доктор-веб/1021/</url>
+	<price>7425.40</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>200</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">5</param>
+</offer>
+<offer id="1022" group_id="200" available="true">
+	<name>Dr.Web Desktop Security Suite, Антивирус, лицензия на 1 год на 10 ПК</name>
+	<vendor>Доктор Веб</vendor>
+	<vendorCode>LBW-AC-12M-10-A3</vendorCode>
+	<url>https://shop.example/доктор-веб/1022/</url>
+	<price>13870.60</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>200</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">10</param>
+</offer>
+<offer id="1023" group_id="200" available="true">
+	<name>Dr.Web Desktop Security Suite, Антивирус, лицензия на 1 год на 25 ПК</name>
+	<vendor>Доктор Веб</vendor>
+	<vendorCode>LBW-AC-12M-25-A3</vendorCode>
+	<url>https://shop.example/доктор-веб/1023/</url>
+	<price>32315.90</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>200</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">25</param>
+</offer>
+<offer id="1024" group_id="200" available="true">
+	<name>Dr.Web Desktop Security Suite, Антивирус, лицензия на 1 год на 50 ПК</name>
+	<vendor>Доктор Веб</vendor>
+	<vendorCode>LBW-AC-12M-50-A3</vendorCode>
+	<url>https://shop.example/доктор-веб/1024/</url>
+	<price>61210.30</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>200</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">50</param>
+</offer>
+<offer id="1025" group_id="200" available="true">
+	<name>Dr.Web Desktop Security Suite, Антивирус + Центр управления, лицензия на 2 года на 5 ПК</name>
+	<vendor>Доктор Веб</vendor>
+	<vendorCode>LBW-ACC-24M-5-A3</vendorCode>
+	<url>https://shop.example/доктор-веб/1025/</url>
+	<price>12990.75</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 24 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>200</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">24 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">5</param>
+</offer>
+<offer id="1026" group_id="200" available="true">
+	<name>Dr.Web Desktop Security Suite, Антивирус + Центр управления, лицензия на 2 года на 10 ПК</name>
+	<vendor>Доктор Веб</vendor>
+	<vendorCode>LBW-ACC-24M-10-A3</vendorCode>
+	<url>https://shop.example/доктор-веб/1026/</url>
+	<price>24120.25</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 24 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>200</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">24 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">10</param>
+</offer>
+<offer id="1031" group_id="300" available="true">
+	<name>Astra Linux Special Edition 1.8, х86-64, «Орел», для рабочей станции, бессрочная</name>
+	<vendor>РусБИТех-Астра</vendor>
+	<vendorCode>OS1800X86О0TWS</vendorCode>
+	<url>https://shop.example/русбитех-астра/1031/</url>
+	<price>18900.50</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>21</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>300</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">369</param>
+<param name="Версия">1.8</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1032" group_id="300" available="true">
+	<name>Astra Linux Special Edition 1.8, х86-64, «Воронеж», для рабочей станции, бессрочная</name>
+	<vendor>РусБИТех-Астра</vendor>
+	<vendorCode>OS1800X86В1TWS</vendorCode>
+	<url>https://shop.example/русбитех-астра/1032/</url>
+	<price>26450.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>21</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>300</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">369</param>
+<param name="Версия">1.8</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1033" group_id="300" available="true">
+	<name>Astra Linux Special Edition 1.8, х86-64, «Орел», для рабочей станции, на 1 год</name>
+	<vendor>РусБИТех-Астра</vendor>
+	<vendorCode>OS1800X86О2TWS</vendorCode>
+	<url>https://shop.example/русбитех-астра/1033/</url>
+	<price>8500.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>21</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>300</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">369</param>
+<param name="Версия">1.8</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1034" group_id="300" available="true">
+	<name>Astra Linux Special Edition 1.8, х86-64, «Воронеж», для рабочей станции, на 1 год</name>
+	<vendor>РусБИТех-Астра</vendor>
+	<vendorCode>OS1800X86В3TWS</vendorCode>
+	<url>https://shop.example/русбитех-астра/1034/</url>
+	<price>11900.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>21</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>300</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">369</param>
+<param name="Версия">1.8</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1041" group_id="400" available="true">
+	<name>МойОфис Стандартный, лицензия для 1 пользователей, бессрочная</name>
+	<vendor>Новые облачные технологии</vendor>
+	<vendorCode>MO-STD-1</vendorCode>
+	<url>https://shop.example/новые-облачные-технологии/1041/</url>
+	<price>3990.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>400</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">283</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">1</param>
+</offer>
+<offer id="1042" group_id="400" available="true">
+	<name>МойОфис Стандартный, лицензия для 10 пользователей, бессрочная</name>
+	<vendor>Новые облачные технологии</vendor>
+	<vendorCode>MO-STD-10</vendorCode>
+	<url>https://shop.example/новые-облачные-технологии/1042/</url>
+	<price>37900.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>400</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">283</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">10</param>
+</offer>
+<offer id="1043" group_id="400" available="true">
+	<name>МойОфис Стандартный, лицензия для 50 пользователей, бессрочная</name>
+	<vendor>Новые облачные технологии</vendor>
+	<vendorCode>MO-STD-50</vendorCode>
+	<url>https://shop.example/новые-облачные-технологии/1043/</url>
+	<price>179500.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>400</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">283</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">50</param>
+</offer>
+<offer id="1051" group_id="500" available="false">
+	<name>Microsoft Office 2024 для дома и бизнеса</name>
+	<vendor>Microsoft</vendor>
+	<vendorCode>MS-OFF-1</vendorCode>
+	<url>https://shop.example/microsoft/1051/</url>
+	<price>0.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>500</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1052" group_id="500" available="false">
+	<name>Microsoft Office LTSC Standard 2024</name>
+	<vendor>Microsoft</vendor>
+	<vendorCode>MS-OFF-2</vendorCode>
+	<url>https://shop.example/microsoft/1052/</url>
+	<price>0.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>500</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1053" group_id="500" available="false">
+	<name>Microsoft 365 Business Standard, подписка на 1 год</name>
+	<vendor>Microsoft</vendor>
+	<vendorCode>MS-OFF-3</vendorCode>
+	<url>https://shop.example/microsoft/1053/</url>
+	<price>0.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>500</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1061" group_id="600" available="true">
+	<name>Р7-Офис Профессиональный, лицензия на 1 пользователей, на 1 год</name>
+	<vendor>Р7</vendor>
+	<vendorCode>R7-PRO-1</vendorCode>
+	<url>https://shop.example/р7/1061/</url>
+	<price>4290.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>600</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">1</param>
+</offer>
+<offer id="1062" group_id="600" available="true">
+	<name>Р7-Офис Профессиональный, лицензия на 25 пользователей, на 1 год</name>
+	<vendor>Р7</vendor>
+	<vendorCode>R7-PRO-25</vendorCode>
+	<url>https://shop.example/р7/1062/</url>
+	<price>98750.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>600</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">25</param>
+</offer>
+<offer id="1063" group_id="600" available="true">
+	<name>Р7-Офис Профессиональный, лицензия на 100 пользователей, на 1 год</name>
+	<vendor>Р7</vendor>
+	<vendorCode>R7-PRO-100</vendorCode>
+	<url>https://shop.example/р7/1063/</url>
+	<price>361900.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>31</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>600</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">100</param>
+</offer>
+<offer id="1071" group_id="700" available="true">
+	<name>CommuniGate Pro, почтовый сервер на 50 почтовых ящиков, бессрочная</name>
+	<vendor>СталкерСофт</vendor>
+	<vendorCode>CGP-MAIL-50</vendorCode>
+	<url>https://shop.example/сталкерсофт/1071/</url>
+	<price>128400.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>41</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>700</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">50</param>
+</offer>
+<offer id="1072" group_id="700" available="true">
+	<name>CommuniGate Pro, почтовый сервер на 100 почтовых ящиков, бессрочная</name>
+	<vendor>СталкерСофт</vendor>
+	<vendorCode>CGP-MAIL-100</vendorCode>
+	<url>https://shop.example/сталкерсофт/1072/</url>
+	<price>231700.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>41</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>700</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">100</param>
+</offer>
+<offer id="1073" group_id="700" available="true">
+	<name>CommuniGate Pro, почтовый сервер на 250 почтовых ящиков, бессрочная</name>
+	<vendor>СталкерСофт</vendor>
+	<vendorCode>CGP-MAIL-250</vendorCode>
+	<url>https://shop.example/сталкерсофт/1073/</url>
+	<price>498300.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>41</categoryId>
+	<description>Срок действия: Бессрочная • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>700</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">Бессрочная</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">250</param>
+</offer>
+<offer id="1081" group_id="800" available="true">
+	<name>Кибер Бэкап Стандартный для рабочей станции, подписка на 1 год</name>
+	<vendor>Киберпротект</vendor>
+	<vendorCode>CB-WS-1Y</vendorCode>
+	<url>https://shop.example/киберпротект/1081/</url>
+	<price>4500.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>51</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>800</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1082" group_id="800" available="true">
+	<name>Кибер Бэкап Стандартный для рабочей станции, подписка на 1 год</name>
+	<vendor>Киберпротект</vendor>
+	<vendorCode>CB-WS-1Y</vendorCode>
+	<url>https://shop.example/киберпротект/1082/</url>
+	<price>4950.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>51</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>800</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1083" group_id="800" available="true">
+	<name>Кибер Бэкап Стандартный для сервера, подписка на 1 год</name>
+	<vendor>Киберпротект</vendor>
+	<vendorCode>CB-SRV-1</vendorCode>
+	<url>https://shop.example/киберпротект/1083/</url>
+	<price>38900.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>51</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>800</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1084" group_id="800" available="true">
+	<name>Кибер Бэкап Стандартный для виртуальной машины, подписка на 1 год</name>
+	<vendor>Киберпротект</vendor>
+	<vendorCode>CB-SRV-2</vendorCode>
+	<url>https://shop.example/киберпротект/1084/</url>
+	<price>12450.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>51</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>800</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1085" group_id="800" available="true">
+	<name>Кибер Бэкап Стандартный для сервера, продление, подписка на 1 год</name>
+	<vendor>Киберпротект</vendor>
+	<vendorCode>CB-SRV-3</vendorCode>
+	<url>https://shop.example/киберпротект/1085/</url>
+	<price>31200.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>51</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: продление • Минимальная покупка: от 1 шт.</description>
+	<group_id>800</group_id>
+<param name="Тип лицензии">Продление</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+<offer id="1091" group_id="900" available="true">
+	<name>ESET PROTECT Entry, антивирус на 5 устройств, на 1 год</name>
+	<vendor>ESET</vendor>
+	<vendorCode>EES-NEW-5</vendorCode>
+	<url>https://shop.example/eset/1091/</url>
+	<price>8370.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>900</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">5</param>
+</offer>
+<offer id="1092" group_id="900" available="true">
+	<name>ESET PROTECT Entry, антивирус на 10 устройств, на 1 год</name>
+	<vendor>ESET</vendor>
+	<vendorCode>EES-NEW-10</vendorCode>
+	<url>https://shop.example/eset/1092/</url>
+	<price>15890.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>900</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">10</param>
+</offer>
+<offer id="1093" group_id="900" available="true">
+	<name>ESET PROTECT Entry, антивирус на 25 устройств, на 1 год</name>
+	<vendor>ESET</vendor>
+	<vendorCode>EES-NEW-25</vendorCode>
+	<url>https://shop.example/eset/1093/</url>
+	<price>37210.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>900</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">25</param>
+</offer>
+<offer id="1094" group_id="900" available="true">
+	<name>ESET PROTECT Entry, антивирус на 50 устройств, на 1 год</name>
+	<vendor>ESET</vendor>
+	<vendorCode>EES-NEW-50</vendorCode>
+	<url>https://shop.example/eset/1094/</url>
+	<price>70990.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>900</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">50</param>
+</offer>
+<offer id="1095" group_id="900" available="true">
+	<name>ESET PROTECT Entry, антивирус на 5 устройств, продление на 1 год</name>
+	<vendor>ESET</vendor>
+	<vendorCode>EES-REN-5</vendorCode>
+	<url>https://shop.example/eset/1095/</url>
+	<price>0.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>11</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: продление • Минимальная покупка: от 1 шт.</description>
+	<group_id>900</group_id>
+<param name="Тип лицензии">Продление</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+</offer>
+		</offers>
+	</shop>
+</yml_catalog>

@@ -520,12 +520,17 @@ def _find_all_words(conn, q: Query, where: str, params: list, found: _Candidates
 
 
 def _find_in_offers(conn, q: Query, where: str, params: list, found: _Candidates) -> None:
-    """Все слова запроса в имени или артикуле варианта."""
+    """Все слова запроса в имени или артикуле варианта.
+
+    Фильтры (вендор, категория, наличие) стоят внутри выборки, до LIMIT: иначе общее слово занимает все 80 мест
+    продуктами других вендоров, и с фильтром ответ пустой.
+    """
     for row in conn.execute(
             f"SELECT {_PRODUCT_COLS} FROM (SELECT o.product_id AS pid, COUNT(*) AS hits"
-            " FROM offers_fts JOIN offers o ON o.id = offers_fts.rowid WHERE offers_fts MATCH ?"
+            " FROM offers_fts JOIN offers o ON o.id = offers_fts.rowid"
+            f" JOIN products p ON p.product_id = o.product_id WHERE offers_fts MATCH ?{where}"
             " GROUP BY o.product_id ORDER BY hits DESC LIMIT 80) m"
-            f" JOIN products p ON p.product_id = m.pid WHERE 1=1{where}",
+            " JOIN products p ON p.product_id = m.pid",
             (q.fts("AND"), *params)):
         found.add(row, offer_hit=True)
 
