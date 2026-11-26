@@ -2,18 +2,29 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const rub = (v) => { const n = Number(v); return n.toLocaleString("ru-RU", { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 }) + " ₽"; };
+// ссылка из ответа сервера: только http(s) и адреса этого сайта, иначе ссылки нет
+const safeUrl = (u) => /^https?:\/\//i.test(u || "") || /^\/(?!\/)/.test(u || "") ? u : "";
 // метка браузера: по ней сервер отдает переписку только ее владельцу, поэтому она не угадывается
 const rid = () => crypto.randomUUID ? crypto.randomUUID()
   : [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+// хранилище браузера бывает запрещено: тогда чат работает, но диалог не переживет перезагрузку
+const store = (() => {
+  try { const s = localStorage, k = "__t"; s.setItem(k, k); s.removeItem(k); return s; } catch (e) {
+    const m = new Map();
+    return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };
+  }
+})();
 const BROKEN = "Связь прервалась. Отправьте сообщение еще раз.";
 const IDLE_MS = 60000;  // сервер шлет отметку хода раз в 20 секунд: минута тишины значит, что связь пропала
+const WAIT_MS = 180000;  // столько после перезагрузки ждем ответ на сообщение, отправленное до нее
 
 const state = {
-  session: localStorage.getItem("session") || "",
-  client: localStorage.getItem("client") || (() => { const c = rid(); localStorage.setItem("client", c); return c; })(),
-  page: "", busy: false, steps: 0, tokens: 0, cost: 0, seen: 0,
+  session: store.getItem("session") || "",
+  client: store.getItem("client") || (() => { const c = rid(); store.setItem("client", c); return c; })(),
+  page: "", busy: false, steps: 0, tokens: 0, cost: 0, seen: 0, last: 0, callAfter: false,
   gen: 0, ctrl: null,  // поколение диалога и прерывание хода: ответ хода из прежнего диалога в новый не попадает
 };
+const starters = $("starters");  // подсказки живут в журнале под приветствием и возвращаются туда в новом диалоге
 
 const TOOL = {
   search_products: "Поиск в каталоге", get_product: "Варианты лицензий", browse_categories: "Категории каталога",
@@ -27,9 +38,39 @@ const WAIT = {
   calc_total: "Считаю сумму",
   make_quote: "Готовлю КП", handoff_to_manager: "Передаю менеджеру",
 };
+// подписи аргументов в «Ходе работы»: что не названо здесь (номера, контакты, сводка), клиенту не показывается
+const ARG = {
+  query: "запрос", vendor: "производитель", quantity: "количество", term_months: "срок", license_type: "тип лицензии",
+  org_type: "организация", user_type: "покупатель", version: "версия", platform: "платформа", text: "в названии",
+  only_available: "только в продаже", russian_only: "только отечественное", product_type: "тип",
+  items: "позиции", discount_percent: "скидка", customer: "заказчик", reason: "причина",
+};
+
+function arg(k, v) {
+  if (k === "term_months") return v ? v + " мес." : "бессрочная";
+  if (k === "discount_percent") return v + "%";
+  if (k === "items") return Array.isArray(v) ? `${v.length} поз., ${v.reduce((n, i) => n + (Number(i.qty) || 0), 0)} шт.` : "";
+  if (typeof v === "boolean") return v ? "да" : "";
+  return typeof v === "object" ? "" : String(v);
+}
+
+// Разметка ответа: жирный, заголовки, ссылки http(s), строки списка с отступом
+function inline(s) {
+  return s.replace(/^#{1,4}\s+(.+)$/, "<b>$1</b>").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[\s(])\*([^*\s][^*]*?)\*(?=[\s.,;:)]|$)/g, "$1$2")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<«»]*[^\s<«».,;:!?)]/g,
+      (m, t, u) => `<a href="${u || m}" target="_blank" rel="noopener">${t || m}</a>`);
+}
 
 function text(s) {
-  return esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  let html = "", block = true;
+  for (const line of esc(s).split("\n")) {
+    const li = line.match(/^\s*(\d+[.)]|[-•*])\s+(.*)$/);
+    if (li) html += `<span class="li">${/\d/.test(li[1]) ? li[1] : "•"} ${inline(li[2])}</span>`;
+    else html += (block ? "" : "\n") + inline(line);
+    block = !!li;
+  }
+  return html;
 }
 
 function add(cls, html) {
@@ -39,65 +80,139 @@ function add(cls, html) {
   return d;
 }
 
+function scrollEnd() { $("log").scrollTop = $("log").scrollHeight; }
+
+// Название без производителя в начале: он уже написан строкой выше
+function bare(c) {
+  const t = String(c.title || ""), v = String(c.vendor || "");
+  const cut = v && t.toLowerCase().startsWith(v.toLowerCase()) ? t.slice(v.length).replace(/^[\s,.:-]+/, "") : "";
+  return cut || t;
+}
+
 function card(c) {
+  const url = safeUrl(c.url), title = bare(c);
+  const go = url ? `<a class="go" href="${esc(url)}" target="_blank" rel="noopener">Открыть в магазине</a>` : "";
   if (c.type === "offer") {
-    const price = c.price ? `<div class="p">${rub(c.price)}</div>` : `<div class="p req">Цена по запросу</div>`;
-    return `<div class="v">${esc(c.vendor || "")}</div><div class="t">${esc(c.title)}</div>${price}
-      <div class="row"><span>${c.vendor_code ? "Артикул " + esc(c.vendor_code) : ""}${c.available ? ' <span class="badge">· в продаже</span>' : ""}</span>
-      ${c.url ? `<a class="go" href="${esc(c.url)}" target="_blank" rel="noopener">Открыть в магазине</a>` : ""}</div>`;
+    const d = c.details && typeof c.details === "object" ? Object.entries(c.details) : [];
+    const pick = "Беру: " + title + (d.length ? " (" + d.map(([, v]) => v).join(", ") + ")" : "");
+    return `<div class="v">${esc(c.vendor || "")}</div><div class="t">${esc(title)}</div>
+      ${d.length ? `<div class="d">${d.map(([k, v]) => esc(k) + ": " + esc(v)).join(" · ")}</div>` : ""}
+      <div class="row"><div>${c.price ? `<div class="p">${rub(c.price)}</div>` : `<div class="p req">Цена по запросу</div>`}
+      <span>${c.vendor_code ? "Артикул " + esc(c.vendor_code) : ""}${c.available ? ' <span class="badge">· в продаже</span>' : ""}</span></div>
+      <span class="acts"><button type="button" class="take" data-say="${esc(pick)}">Выбрать</button>${go}</span></div>`;
   }
   let price = "Цена по запросу";
   if (c.price_min) price = c.price_min === c.price_max ? rub(c.price_min) : `от ${rub(c.price_min)}`;
-  return `<div class="v">${esc(c.vendor || "")}</div><div class="t">${esc(c.title)}</div><div class="p${c.price_min ? "" : " req"}">${price}</div>
-    <div class="row"><span>Вариантов: ${c.n_offers ?? ""}${c.in_ru_registry ? ' <span class="badge">· реестр отечественного ПО</span>' : ""}</span>
-    ${c.url ? `<a class="go" href="${esc(c.url)}" target="_blank" rel="noopener">Открыть в магазине</a>` : ""}</div>`;
+  return `<div class="v">${esc(c.vendor || "")}</div><div class="t">${esc(title)}</div>
+    <div class="row"><div><div class="p${c.price_min ? "" : " req"}">${price}</div>
+    <span>Вариантов: ${esc(c.n_offers ?? "")}${c.in_ru_registry ? ' <span class="badge">· реестр отечественного ПО</span>' : ""}</span></div>
+    <span class="acts">${go}</span></div>`;
 }
 
-function showReply(r) {
-  if (r.reply) add(r.from === "manager" ? "msg bot mgr" : "msg bot", text(r.reply));
-  for (const c of r.cards || []) add("card", card(c));
+// Черновик КП: новая версия того же номера заменяет прежнюю карточку, ссылка остается только у новой
+function quote(e) {
+  for (const old of document.querySelectorAll(".card.doc:not(.old)")) {
+    if (old.dataset.n !== String(e.number)) continue;
+    old.classList.add("old");
+    old.querySelector(".go")?.remove();
+    old.querySelector(".acts").textContent = "Заменен версией ниже";
+  }
+  const url = safeUrl(e.url);
+  const d = add("card doc", `<div class="t">Черновик ${esc(e.number)}</div><div class="row"><span class="sum">${e.total ? "Итого " + rub(e.total) : ""}</span>
+    <span class="acts">${url ? `<a class="go" href="${esc(url)}" target="_blank" rel="noopener">Открыть PDF</a>` : ""}</span></div>`);
+  d.dataset.n = e.number;
+}
+
+// Кнопка в шапке показывает, что обращение у менеджера: "wait" ждет ответа, "in" менеджер уже ответил
+function callState(s) {
+  const b = $("call");
+  b.textContent = s === "in" ? "Менеджер в чате" : s === "wait" ? "Менеджер подключится" : "Позвать менеджера";
+  b.disabled = !!s; b.dataset.state = s;
+}
+
+function showReply(r, restoring = false) {
+  const log = $("log"), start = log.children.length;
+  if (r.reply) {
+    const mgr = r.from === "manager";
+    add(mgr ? "msg bot mgr" : "msg bot", `<span class="who">${mgr ? "Менеджер Softline" : "ИИ-консультант"}</span>${text(r.reply)}`);
+    if (mgr) callState("in");
+  }
+  for (const c of r.cards || []) add("card", card(c)).querySelector(".take")?.addEventListener("click", (e) => send(e.target.dataset.say));
   for (const e of r.events || []) {
-    if (e.type === "quote") add("card doc", `<div class="t">Черновик КП ${esc(e.number)}</div><div class="row"><span>${e.total ? "Итого " + rub(e.total) : ""}</span><a class="go" href="${esc(e.url)}" target="_blank" rel="noopener">Открыть PDF</a></div>`);
-    if (e.type === "handoff") add("msg sys", `Обращение передано менеджеру, номер ${esc(e.id)}`);
+    if (e.type === "quote") quote(e);
+    if (e.type === "handoff") {
+      add("msg sys", Number.isInteger(e.sla_minutes)
+        ? `Обращение № ${esc(e.id)} у менеджера. В рабочее время отвечаем в течение ${e.sla_minutes} мин, ответ придет в этот чат.`
+        : `Обращение передано менеджеру, номер ${esc(e.id)}`);
+      if (!$("call").dataset.state) callState("wait");
+    }
   }
   if ((r.choices || []).length) {
     const d = add("choices", r.choices.map((c) => `<button type="button">${esc(c)}</button>`).join(""));
     d.querySelectorAll("button").forEach((b) => (b.onclick = () => { d.remove(); send(b.textContent); }));
   }
+  // ответ выше окна: журнал встает на его начало, а не на последние кнопки
+  const first = log.children[start];
+  if (!restoring && first && log.scrollHeight - first.offsetTop > log.clientHeight) log.scrollTop = first.offsetTop - 16;
 }
 
 function summary(name, out) {
   if (!out || typeof out !== "object") return "";
-  if (out.error) return "Ошибка: " + out.error;
+  if (out.error) return "Не получилось, агент продолжил без этого шага";
   if (name === "search_products" || name === "find_analogs") {
     const p = out.products || [];
-    return p.length ? `Найдено: ${out.total ?? p.length}. Первые: ${p.slice(0, 3).map((x) => x.title).join("; ")}` : "Ничего не найдено";
+    return p.length ? esc(`Найдено: ${out.total ?? p.length}. Первые: ${p.slice(0, 3).map((x) => x.title).join("; ")}`) : "Ничего не найдено";
   }
   if (name === "get_product") {
     const c = (out.clarify || []).slice(0, 3).join(", ");
-    return `Подходит вариантов: ${out.matching ?? "?"} из ${out.total_offers ?? "?"}${c ? ". Уточнить: " + c : ""}`;
+    return esc(`Подходит вариантов: ${out.matching ?? "?"} из ${out.total_offers ?? "?"}${c ? ". Уточнить: " + c : ""}`);
   }
-  if (name === "browse_categories") return (out.categories || []).slice(0, 4).map((x) => x.name).join("; ") || "Категорий не найдено";
-  if (name === "kb_search") return (out.results || []).slice(0, 2).map((x) => x.title || x.heading).join("; ") || "В базе знаний нет ответа";
-  if (name === "note_facts") return Object.entries(out.saved || {}).map(([k, v]) => `${k}: ${v}`).join("; ");
+  if (name === "browse_categories") return esc((out.categories || []).slice(0, 4).map((x) => x.name).join("; ")) || "Категорий не найдено";
+  if (name === "kb_search") {
+    const found = (out.results || []).slice(0, 2).map((x) => {
+      const t = esc(x.title || x.heading), u = /^https:\/\//.test(x.url || "") ? x.url : "";
+      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${t}</a>` : t;
+    });
+    return found.length ? "Нашлось: " + found.join("; ") : "В базе знаний нет ответа";
+  }
+  if (name === "note_facts") return esc(Object.entries(out.saved || {}).map(([k, v]) => `${k}: ${v}`).join("; "));
   if (name === "calc_total") return out.total ? `Итого ${rub(out.total)}` : "";
-  if (name === "make_quote") return out.ok ? `${out.number}, итого ${rub(out.total)}` : out.error || "";
-  if (name === "handoff_to_manager") return `Обращение ${out.ticket}`;
+  if (name === "make_quote") return out.ok ? esc(`${out.number}, итого ${rub(out.total)}`) : "";
+  if (name === "handoff_to_manager") return out.ticket ? `Обращение № ${esc(out.ticket)}` : "";
   return "";
 }
 
-function step(cls, name, args, out) {
+function step(cls, name, args, out = "", tool = "") {
   const ol = $("steps");
   ol.querySelector(".empty")?.remove();
   const li = document.createElement("li");
   li.className = cls;
-  const a = args && Object.keys(args).length ? Object.entries(args).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") : "";
-  li.innerHTML = `<div class="n">${esc(name)}</div>${a ? `<div class="a">${esc(a)}</div>` : ""}${out ? `<div class="o">${esc(out)}</div>` : ""}`;
+  const a = tool === "note_facts" ? "" : Object.entries(args || {}).filter(([k]) => ARG[k])
+    .map(([k, v]) => [ARG[k], arg(k, v)]).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · ");
+  li.innerHTML = `<div class="n">${esc(name)}</div>${a ? `<div class="a">${esc(a)}</div>` : ""}${out ? `<div class="o">${out}</div>` : ""}`;
   ol.append(li); ol.scrollTop = ol.scrollHeight;
   return li;
 }
 
-function meter(u) {
+const said = (m) => "Клиент: " + (m.length > 60 ? m.slice(0, 60) + "…" : m);
+
+// Шаги хода в «Ходе работы»: итоги к уже показанным вызовам инструментов, проверки и сбои
+function trace(list, pending = []) {
+  let k = 0;
+  for (const t of list || []) {
+    if (t.kind === "tool") {
+      const li = pending[k++] || step("", TOOL[t.name] || "Шаг агента", t.args, "", t.name);
+      const s = summary(t.name, t.output);
+      if (s) li.insertAdjacentHTML("beforeend", `<div class="o">${s}</div>`);
+    }
+    if (t.kind === "guard" && t.name === "price") step("guard", "Проверка цен", null, esc("В черновике ответа была сумма не из каталога: " + (t.output || []).join(", ") + ". Ответ переписан."));
+    if (t.kind === "guard" && t.name === "wording") step("guard", "Проверка текста", null, "В черновике ответа были служебные имена полей. Ответ переписан.");
+    if (t.kind === "error") step("guard", "Сбой", null, esc(t.output));
+  }
+}
+
+function meter(u, total = false) {
+  if (total) state.steps = state.tokens = state.cost = 0;
   if (!u) return;
   state.steps += (u.llm_calls || 0) + (u.tool_calls || 0);
   state.tokens += (u.prompt_tokens || 0) + (u.completion_tokens || 0);
@@ -107,25 +222,61 @@ function meter(u) {
   $("m3").textContent = rub(state.cost);
 }
 
+// Поле ввода растет по тексту до 120px и возвращается к 40px, когда текст ушел
+function fit() {
+  const t = $("t");
+  t.style.height = "auto";
+  t.style.height = Math.min(Math.max(t.scrollHeight + 2, 40), 120) + "px";
+}
+
+function lock(on) {
+  state.busy = on; $("b").disabled = on;
+  if (on || !state.callAfter) return;
+  state.callAfter = false;  // клиент звал менеджера, пока агент отвечал
+  if (!$("call").dataset.state) call();
+}
+
+function saveSession(id, gen) {
+  if (!id || gen !== state.gen) return;
+  state.session = id; store.setItem("session", id);
+}
+
 async function send(message) {
   message = (message || "").trim();
   if (!message || state.busy) return;
   const gen = state.gen, ctrl = state.ctrl = new AbortController();
   let idle = setTimeout(() => ctrl.abort(), IDLE_MS), got = false;
-  state.busy = true; $("b").disabled = true; $("starters").hidden = true;
+  lock(true); starters.hidden = true;
   document.querySelectorAll(".choices").forEach((e) => e.remove());
-  add("msg user", esc(message));
-  step("turn", "Клиент: " + (message.length > 60 ? message.slice(0, 60) + "…" : message));
-  const typing = add("typing", "<i></i><i></i><i></i><span>Думаю</span>");
+  document.querySelectorAll(".msg.user.failed").forEach((e) => { if (e.textContent === message) e.remove(); });
+  const mine = add("msg user", esc(message));
+  step("turn", said(message));
+  $("say").textContent = "Консультант отвечает";
+  const typing = add("typing", '<i></i><i></i><i></i><span>Думаю</span>');
+  typing.setAttribute("aria-hidden", "true");
   const pending = [];
+  const handle = (line) => {
+    const ev = JSON.parse(line);
+    if (ev.type === "session") saveSession(ev.session_id, gen);
+    else if (ev.type === "tool") {
+      typing.querySelector("span").textContent = WAIT[ev.name] || "Работаю";
+      pending.push(step("", TOOL[ev.name] || "Шаг агента", ev.args, "", ev.name));
+    } else if (ev.type === "reply") {
+      typing.remove(); got = true;
+      saveSession(ev.session_id, gen);
+      trace(ev.trace, pending);
+      showReply(ev); meter(ev.usage);
+      $("say").textContent = "Ответ получен";
+    }
+  };
   try {
     const r = await fetch("/api/chat", {
       method: "POST", headers: { "Content-Type": "application/json" }, signal: ctrl.signal,
       body: JSON.stringify({ message, session_id: state.session || null, client_id: state.client, page_url: state.page }),
     });
     const refused = (text) => Object.assign(new Error(text), { refused: true });  // сервер ответил отказом
-    if (r.status === 429) throw refused("слишком много сообщений подряд, подождите минуту");
-    if (!r.ok) throw refused("сервер ответил " + r.status);
+    if (r.status === 429) throw refused("Слишком много сообщений подряд. Подождите минуту и отправьте еще раз.");
+    if (!r.ok) throw refused("На сервере сбой. Отправьте сообщение еще раз или позовите менеджера.");
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = "";
     for (;;) {
@@ -137,90 +288,90 @@ async function send(message) {
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-        if (!line) continue;
-        const ev = JSON.parse(line);
-        if (ev.type === "tool") {
-          typing.querySelector("span").textContent = WAIT[ev.name] || "Работаю";
-          pending.push(step("", TOOL[ev.name] || ev.name, ev.args));
-        } else if (ev.type === "reply") {
-          typing.remove(); got = true;
-          if (ev.session_id) { state.session = ev.session_id; localStorage.setItem("session", ev.session_id); }
-          let k = 0;
-          for (const t of ev.trace || []) {
-            if (t.kind === "tool" && pending[k]) { const s = summary(t.name, t.output); if (s) pending[k].insertAdjacentHTML("beforeend", `<div class="o">${esc(s)}</div>`); k++; }
-            if (t.kind === "guard" && t.name === "price") step("guard", "Проверка цен", null, "В черновике ответа была сумма не из каталога: " + (t.output || []).join(", ") + ". Ответ переписан.");
-            if (t.kind === "guard" && t.name === "wording") step("guard", "Проверка текста", null, "В черновике ответа были служебные имена полей. Ответ переписан.");
-            if (t.kind === "error") step("guard", "Сбой", null, String(t.output));
-          }
-          showReply(ev); meter(ev.usage);
-        }
+        if (line) handle(line);
       }
     }
+    if (buf.trim()) handle(buf.trim());  // последняя строка без перевода строки
     if (!got) throw new Error("поток оборвался до ответа");
   } catch (e) {
     if (gen !== state.gen) return;  // клиент начал новый диалог: прерванный ход молча забыт
-    typing.remove();
-    // сеть, обрыв потока и долгая тишина дают одно сообщение; отказ сервера назван как есть
-    add("msg sys", e.refused ? "Не удалось получить ответ: " + esc(e.message) + ". Отправьте сообщение еще раз." : BROKEN);
-    if (!$("t").value.trim()) $("t").value = message;  // текст вернулся в поле: отправить еще раз одним нажатием
+    typing.remove(); mine.classList.add("failed");
+    step("guard", "Сбой связи", null, "Ответ не получен");
+    $("say").textContent = "";
+    // сеть, обрыв потока и долгая тишина дают одно сообщение; отказ сервера назван своими словами
+    add("msg sys", e.refused ? esc(e.message) : BROKEN);
+    if (!$("t").value.trim()) { $("t").value = message; fit(); }  // текст вернулся в поле: отправить еще раз одним нажатием
   } finally {
     clearTimeout(idle);
   }
   if (gen !== state.gen) return;
-  state.busy = false; state.ctrl = null; $("b").disabled = false; $("t").focus();
+  state.ctrl = null; lock(false); $("t").focus();
 }
 
-$("call").onclick = async () => {  // клиент сам переключается на менеджера: модель для этого не нужна
-  if (state.busy) return;
+// Клиент сам переключается на менеджера: модель для этого не нужна
+async function call() {
+  if (state.busy) {  // агент еще отвечает: менеджера позовем сразу после ответа
+    if (!state.callAfter) { state.callAfter = true; add("msg sys", "Позову менеджера, как только консультант закончит ответ."); }
+    return;
+  }
   const gen = state.gen;
-  state.busy = true; $("starters").hidden = true;
+  lock(true); starters.hidden = true;
   try {
     const r = await fetch("/api/chat/handoff", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: state.session || null, client_id: state.client, page_url: state.page }),
     });
-    if (!r.ok) throw new Error(r.status === 429 ? "слишком много сообщений подряд, подождите минуту" : "сервер ответил " + r.status);
+    if (!r.ok) throw new Error(r.status === 429 ? "слишком много запросов подряд, подождите минуту" : "на сервере сбой");
     const ev = await r.json();
     if (gen !== state.gen) return;
-    state.session = ev.session_id; localStorage.setItem("session", ev.session_id);
+    saveSession(ev.session_id, gen);
     step("turn", "Клиент нажал: позвать менеджера");
     showReply(ev);
+    if (!$("call").dataset.state) callState("wait");
   } catch (e) {
     if (gen !== state.gen) return;
-    add("msg sys", "Не удалось позвать менеджера: " + esc(e.message) + ". Нажмите еще раз.");
+    add("msg sys", "Не удалось позвать менеджера: " + (e instanceof TypeError ? "нет связи" : esc(e.message)) + ". Нажмите еще раз.");
   }
-  state.busy = false;
-};
-$("f").onsubmit = (e) => {  // пока агент отвечает, набранный текст остается в поле и не отправляется
-  e.preventDefault();
+  if (gen === state.gen) lock(false);
+}
+
+function submit() {  // пока агент отвечает, набранный текст остается в поле и не отправляется
   const v = $("t").value;
   if (state.busy || !v.trim()) return;
-  $("t").value = ""; send(v);
-};
-$("t").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("f").requestSubmit(); } };
-$("starters").querySelectorAll("button").forEach((b) => (b.onclick = () => send(b.textContent)));
+  $("t").value = ""; fit(); send(v);
+}
+$("call").onclick = call;
+$("f").onsubmit = (e) => { e.preventDefault(); submit(); };
+$("t").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } };
+$("t").addEventListener("input", fit);
+starters.querySelectorAll("button").forEach((b) => (b.onclick = () => send(b.textContent)));
 $("new").onclick = () => {
-  state.gen++; state.ctrl?.abort(); state.ctrl = null; state.busy = false; $("b").disabled = false;
-  state.session = ""; localStorage.removeItem("session");
-  state.steps = state.tokens = state.cost = state.seen = 0; meter({});
-  $("log").innerHTML = ""; $("steps").innerHTML = ""; $("starters").hidden = false;
+  state.gen++; state.ctrl?.abort(); state.ctrl = null; state.callAfter = false; lock(false);
+  state.session = ""; store.removeItem("session");
+  state.seen = state.last = 0; meter({}, true);
+  $("log").innerHTML = ""; $("steps").innerHTML = ""; callState("");
   step("turn", "Новый диалог. Память о клиенте сохранена.");
   hello();
 };
 
 function hello() {
-  add("msg bot", "Здравствуйте. Помогу подобрать программное обеспечение и лицензии, отвечу на вопросы об оплате и получении. Какой продукт или задача вас интересует?");
+  showReply({ reply: "Здравствуйте. Помогу подобрать программное обеспечение и лицензии, отвечу на вопросы об оплате и получении. Какой продукт или задача вас интересует?" });
+  $("log").append(starters); starters.hidden = false;
 }
 
 // Витрина: поиск по каталогу и выбор страницы товара
 async function goods(q) {
-  const r = await (await fetch("/api/products?q=" + encodeURIComponent(q))).json();
-  $("goods").innerHTML = (r.products || []).map((p) => `<li data-url="${esc(p.url || "")}" data-title="${esc(p.title)}">
-    <div class="v">${esc(p.vendor || "")}</div><div class="t">${esc(p.title)}</div>
-    <div class="m"><span>${p.price_min ? "от " + rub(p.price_min) : "цена по запросу"}</span><span>вариантов: ${p.n_offers}</span>${p.in_ru_registry ? '<span class="badge">реестр отечественного ПО</span>' : ""}</div></li>`).join("")
-    || '<li class="empty">Ничего не найдено. Измените запрос.</li>';
-  $("goods").querySelectorAll("li[data-url]").forEach((li) => (li.onclick = () => {
-    state.page = li.dataset.url; $("ctxt").textContent = "Клиент на странице: " + li.dataset.title; $("ctx").classList.add("on"); $("t").focus();
+  try {
+    const r = await (await fetch("/api/products?q=" + encodeURIComponent(q))).json();
+    $("goods").innerHTML = (r.products || []).map((p) => `<li><button type="button" class="pick" data-url="${esc(p.url || "")}" data-title="${esc(p.title)}">
+      <span class="v">${esc(p.vendor || "")}</span><span class="t">${esc(p.title)}</span>
+      <span class="m"><span>${p.price_min ? "от " + rub(p.price_min) : "цена по запросу"}</span><span>вариантов: ${esc(p.n_offers)}</span>${p.in_ru_registry ? '<span class="badge">реестр отечественного ПО</span>' : ""}</span></button></li>`).join("")
+      || '<li class="empty">Ничего не найдено. Измените запрос.</li>';
+  } catch (e) {
+    $("goods").innerHTML = '<li class="empty">Каталог не загрузился. Обновите страницу.</li>';
+  }
+  $("goods").querySelectorAll(".pick").forEach((b) => (b.onclick = () => {
+    state.page = b.dataset.url; $("ctxt").textContent = "Клиент на странице: " + b.dataset.title; $("ctx").classList.add("on"); $("t").focus();
   }));
 }
 $("sf").onsubmit = (e) => { e.preventDefault(); goods($("sq").value.trim()); };
@@ -231,13 +382,13 @@ async function answersPoll() {
   if (!state.session || state.busy || document.hidden) return;
   const gen = state.gen;
   try {
-    const r = await fetch(`/api/session/${state.session}/answers?client_id=${encodeURIComponent(state.client)}&after=${state.seen}`);
+    const r = await fetch(`/api/session/${encodeURIComponent(state.session)}/answers?client_id=${encodeURIComponent(state.client)}&after=${state.seen}`);
     if (!r.ok) return;
     const found = (await r.json()).answers || [];
     if (gen !== state.gen) return;  // пока шел запрос, клиент начал новый диалог
     for (const m of found) {
       if (m.id <= state.seen) continue;
-      state.seen = m.id;
+      state.seen = state.last = Math.max(state.last, m.id);
       showReply({ reply: m.content, from: "manager" });
       step("turn", "Менеджер ответил в чат");
     }
@@ -257,23 +408,58 @@ async function model() {
 }
 model(); setInterval(model, 30000);
 
+// История диалога: переписка, «Ход работы» и счетчики по полям trace и usage, если сервер их отдает
+function history(s) {
+  const msgs = (s.messages || []).filter((m) => m.id > state.last), traced = msgs.some((m) => "trace" in m);
+  msgs.forEach((m, i) => {
+    state.last = m.id;
+    if (m.role === "user") { add("msg user", esc(m.content)); if (traced) step("turn", said(m.content)); return; }
+    if (m.from === "manager") { state.seen = Math.max(state.seen, m.id); if (traced) step("turn", "Менеджер ответил в чат"); }
+    trace(m.trace);
+    showReply({ reply: m.content, from: m.from, cards: m.cards, events: m.events, choices: i === msgs.length - 1 ? m.choices : [] }, true);
+  });
+  if (s.usage) meter(s.usage, true);
+  if (s.status) callState(s.status === "handoff" ? (state.seen ? "in" : "wait") : "");  // менеджер мог вернуть диалог агенту
+  scrollEnd(); document.fonts?.ready.then(scrollEnd);  // шрифт догрузился и переверстал строки: журнал снова внизу
+}
+
+async function getSession(signal) {
+  // переписку сервер отдает только владельцу диалога: вместе с номером диалога уходит метка этого браузера
+  const r = await fetch("/api/session/" + encodeURIComponent(state.session) + "?client_id=" + encodeURIComponent(state.client), { signal });
+  if (r.status === 404) { state.session = ""; store.removeItem("session"); }
+  return r.ok ? r.json() : {};
+}
+
+// Страницу перезагрузили, пока агент отвечал: ход идет на сервере, ответ дорисуется, когда появится в истории
+async function awaitReply(gen) {
+  const typing = add("typing", '<i></i><i></i><i></i><span>Думаю</span>');
+  typing.setAttribute("aria-hidden", "true");
+  for (const until = Date.now() + WAIT_MS; Date.now() < until;) {
+    await new Promise((ok) => setTimeout(ok, 4000));
+    if (gen !== state.gen) return;
+    try {
+      const s = await getSession();
+      if (gen !== state.gen) return;
+      const msgs = s.messages || [];
+      if (msgs.length && msgs[msgs.length - 1].role !== "user") { typing.remove(); history(s); return; }
+    } catch (e) { /* связь пропала: спросим на следующем круге */ }
+  }
+  typing.remove(); add("msg sys", "Ответ не пришел. Отправьте сообщение еще раз.");
+}
+
 (async () => {
   goods("");
-  if (state.session) {
-    try {
-      // переписку сервер отдает только владельцу диалога: вместе с номером диалога уходит метка этого браузера
-      const r = await fetch("/api/session/" + encodeURIComponent(state.session) + "?client_id=" + encodeURIComponent(state.client));
-      if (r.status === 404) { state.session = ""; localStorage.removeItem("session"); }
-      const s = r.ok ? await r.json() : {};
-      if ((s.messages || []).length) {
-        $("starters").hidden = true;
-        for (const m of s.messages) {
-          if (m.from === "manager") state.seen = m.id;
-          m.role === "user" ? add("msg user", esc(m.content)) : showReply({ reply: m.content, from: m.from, cards: m.cards, events: m.events });
-        }
-        return;
-      }
-    } catch (e) { /* история не загрузилась: начинаем с приветствия */ }
-  }
-  hello();
+  if (!state.session) return hello();
+  const gen = state.gen, ctrl = new AbortController(), cut = setTimeout(() => ctrl.abort(), 10000);
+  lock(true);  // пока грузится история, новое сообщение не отправляется: иначе оно встанет выше старой переписки
+  let s = {};
+  try { s = await getSession(ctrl.signal); } catch (e) { /* история не загрузилась: начинаем с приветствия */ }
+  clearTimeout(cut);
+  if (gen !== state.gen) return;
+  const msgs = s.messages || [];
+  if (!msgs.length) { hello(); lock(false); return; }
+  starters.hidden = true;
+  history(s);
+  if (msgs[msgs.length - 1].role === "user") await awaitReply(gen);
+  if (gen === state.gen) lock(false);
 })();
