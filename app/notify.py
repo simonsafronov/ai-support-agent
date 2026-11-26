@@ -27,7 +27,6 @@ log = logging.getLogger("notify")
 API = "https://api.telegram.org"
 SETTLE, FRESH, WATCH = 3.0, 900.0, 3600.0  # секунд: дать ходу закончиться; не слать старое; сколько обновлять карточку
 EVERY, LONG_POLL = 2.0, 25
-NOT_VISITOR = "s.client_id LIKE 'eval-%' OR s.client_id = 'demo'"  # диалоги прогона, а не посетителей
 STATUS = {"new": "ждет ответа", "taken": "в работе", "answered": "ответ дан", "returned": "возвращено агенту"}
 HOWTO = "Ответьте на это сообщение: клиент увидит ответ в чате сайта."
 HELLO = ("Сюда приходят обращения из чата магазина. Ответьте на карточку обращения реплаем, и клиент увидит "
@@ -145,9 +144,9 @@ def _send_quote(h: dict, card: dict, message_id: int) -> str:
 def sync() -> int:
     """Отправляет карточки новых обращений и обновляет отправленные, если карточка изменилась."""
     con, now, done = _db(), time.time(), 0
-    fresh = con.execute(
-        f"SELECT h.* FROM handoffs h JOIN sessions s ON s.id = h.session_id WHERE h.ts BETWEEN ? AND ? "
-        f"AND h.id NOT IN (SELECT handoff_id FROM tg_cards) AND NOT ({NOT_VISITOR}) ORDER BY h.id",
+    fresh = con.execute(  # диалоги проверочного прогона менеджеру не шлем: это не посетители
+        f"SELECT * FROM handoffs WHERE ts BETWEEN ? AND ? AND id NOT IN (SELECT handoff_id FROM tg_cards) "
+        f"AND session_id NOT IN (SELECT id FROM sessions WHERE {store.RUN_CLIENTS}) ORDER BY id",
         (now - FRESH, now - SETTLE)).fetchall()
     for h in map(dict, fresh):
         card = handoff_card.build(h, now)

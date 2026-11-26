@@ -34,6 +34,8 @@ CREATE INDEX IF NOT EXISTS ix_steps_session ON steps(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_sessions_client ON sessions(client_id, updated_at);
 """
 
+RUN_CLIENTS = "client_id LIKE 'eval-%' OR client_id = 'demo'"  # диалоги, которые создал прогон, а не посетитель
+
 _local = threading.local()
 
 

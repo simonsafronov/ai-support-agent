@@ -450,11 +450,13 @@ def _handoffs(where: str = "", args: tuple = (), limit: int = 50) -> list[dict]:
     """Обращения с карточками: сначала открытые, внутри них срочные и те, у кого срок реакции ближе."""
     rows = [dict(r) for r in store.db().execute(f"SELECT * FROM handoffs {where} ORDER BY id DESC LIMIT ?",
                                                 (*args, limit))]
+    run = {r[0] for r in store.db().execute(f"SELECT id FROM sessions WHERE {store.RUN_CLIENTS}")}
     now, order = time.time(), {"high": 0, "normal": 1, "low": 2}
     for h in rows:
         h["card"] = handoff_card.build(h, now)
-    return sorted(rows, key=lambda h: (h["status"] in ("answered", "returned"), order[h["card"]["priority"]],
-                                       h["card"]["sla_due"]))
+        h["from_run"] = h["session_id"] in run  # диалог проверочного прогона: менеджер на него не отвечает
+    return sorted(rows, key=lambda h: (h["status"] in ("answered", "returned"), h["from_run"],
+                                       order[h["card"]["priority"]], h["card"]["sla_due"]))
 
 
 class TakeIn(BaseModel):

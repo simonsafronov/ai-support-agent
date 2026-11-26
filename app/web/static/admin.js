@@ -22,7 +22,7 @@ function span(sec) {
 function card(h, now) {
   const c = h.card, done = h.status === "answered" || h.status === "returned";
   const left = c.sla_due - now;
-  const due = done ? STATUS[h.status] : left < 0 ? `просрочено на ${span(left)}` : `ответить до ${left > 12 * 3600 ? dt(c.sla_due) : hm(c.sla_due)}, осталось ${span(left)}`;
+  const due = done ? STATUS[h.status] : h.from_run ? "диалог проверочного прогона" : left < 0 ? `просрочено на ${span(left)}` : `ответить до ${left > 12 * 3600 ? dt(c.sla_due) : hm(c.sla_due)}, осталось ${span(left)}`;
   const kv = (o) => Object.entries(o).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ");
   const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}`).join("<br>");
   const money = [c.calc_total ? `расчет ${rub(c.calc_total)}` : "", c.quote ? `${c.quote.url ? `<a href="${esc(c.quote.url)}" target="_blank" rel="noopener">черновик ${esc(c.quote.number)}</a>` : `черновик ${esc(c.quote.number)}`} на ${rub(c.quote.total)}${c.quote.url ? "" : ", КП доступен оператору"}` : ""].filter(Boolean).join(" · ");
@@ -35,7 +35,7 @@ function card(h, now) {
   ].filter(Boolean).map(([a, b]) => `<div class="row"><span>${a}</span><span>${b}</span></div>`).join("");
   const act = done ? "" : `<div class="act">${operator ? (h.status === "new" ? '<button type="button" class="btn main" data-do="take">Взять в работу</button>' : "") + '<button type="button" class="btn" data-do="return">Вернуть агенту</button>' : ""}${c.assignee ? `<em>в работе: ${esc(c.assignee)} с ${hm(c.taken_at)}</em>` : ""}</div>`;
   return `<article class="card ${c.priority}${done ? " done" : ""}" data-id="${esc(h.session_id)}" data-h="${h.id}">
-    <div class="hd"><span class="tag ${c.priority === "high" ? "u" : ""}">срочность ${esc(c.priority_name)}</span><b>№ ${h.id} · ${esc(h.reason)}</b>${c.flags.map((f) => `<span class="tag h">${esc(f)}</span>`).join("")}<span class="due${!done && left < 0 ? " late" : ""}">${dt(h.ts)} · ${due}</span></div>
+    <div class="hd"><span class="tag ${c.priority === "high" ? "u" : ""}">срочность ${esc(c.priority_name)}</span><b>№ ${h.id} · ${esc(h.reason)}</b>${c.flags.map((f) => `<span class="tag h">${esc(f)}</span>`).join("")}<span class="due${!done && !h.from_run && left < 0 ? " late" : ""}">${dt(h.ts)} · ${due}</span></div>
     ${rows}${act}</article>`;
 }
 
@@ -84,8 +84,8 @@ async function load() {
     [st.avg_model_seconds_per_turn == null ? "нет данных" : String(st.avg_model_seconds_per_turn).replace(".", ",") + " с", "модель думает на запрос"],
   ].map(([b, s]) => `<div><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join("");
   if (!document.activeElement?.dataset?.eco) economy(st.economy);
-  const open = st.handoffs.filter((h) => h.status === "new" || h.status === "taken");
-  $("handn").textContent = open.length ? `ждут ответа: ${open.length}, из них просрочено: ${open.filter((h) => h.card.overdue).length}` : "";
+  const open = st.handoffs.filter((h) => h.status === "new" || h.status === "taken"), live = open.filter((h) => !h.from_run);
+  $("handn").textContent = open.length ? `ждут ответа: ${live.length}, из них просрочено: ${live.filter((h) => h.card.overdue).length}${open.length > live.length ? `; из проверочного прогона: ${open.length - live.length}` : ""}` : "";
   $("hand").innerHTML = st.handoffs.map((h) => card(h, st.now)).join("") || '<div class="empty">Передач менеджеру пока нет.</div>';
   $("rows").innerHTML = ss.sessions.map((s) => `<tr data-id="${esc(s.id)}"><td>${dt(s.created_at)}</td><td>${esc((s.first || "").slice(0, 140))}</td>
     <td>${s.status === "handoff" ? '<span class="tag h">менеджеру</span>' : '<span class="tag">агент</span>'}${s.quotes ? ' <span class="tag">КП</span>' : ""}</td>

@@ -22,7 +22,7 @@ from app.agent import loop, tools
 from app.quote import kp
 
 TABLES = ("messages", "steps", "handoffs")
-RUN_CLIENTS = "client_id LIKE 'eval-%' OR client_id = 'demo'"   # диалоги, которые создает прогон, а не посетитель
+RUN_CLIENTS = store.RUN_CLIENTS
 
 
 def _columns(con: sqlite3.Connection, table: str) -> list[str]:
