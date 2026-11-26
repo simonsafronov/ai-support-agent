@@ -119,6 +119,28 @@ def test_agent_gives_at_most_five_percent_and_requisites_stay_hidden(offer):
     assert quote["customer_missing"] == []  # реквизиты в КП подставил код
 
 
+def test_small_discount_goes_to_the_quote_and_a_bigger_one_to_the_manager_card(offer):
+    qty = offer["qty_min"] or 1
+    full = round(offer["price"] * qty, 2)
+    items = [{"offer_id": offer["offer_id"], "qty": qty}]
+    llm = Scripted([{"name": "make_quote", "args": {"items": items, "customer": "ООО Ромашка", "discount_percent": 3}},
+                    "КП со скидкой 3% готово."])
+    res = loop.run_turn(None, "Дайте скидку 3% и КП на ООО Ромашка", llm=llm)
+    quote = next(t["output"] for t in res["trace"] if t["kind"] == "tool" and t["name"] == "make_quote")
+    assert quote["discount_percent"] == 3 and quote["total"] == pytest.approx(full * 0.97, abs=0.01 * qty + 0.01)
+    llm = Scripted([{"name": "calc_total", "args": {"items": items, "discount_percent": 7}},
+                    {"name": "handoff_to_manager", "args": {"reason": "скидка больше 5%", "summary": "Просит 7%"}},
+                    "Сам даю 5%, запрос на 7% передал менеджеру."])
+    res = loop.run_turn(res["session_id"], "А 7% дадите?", llm=llm)
+    calc = next(t["output"] for t in res["trace"] if t["kind"] == "tool" and t["name"] == "calc_total")
+    assert calc["discount_percent"] == 5 and calc["total"] == pytest.approx(full * 0.95, abs=0.01 * qty + 0.01)
+    ticket = store.open_handoff(res["session_id"])
+    card = handoff_card.build(dict(store.db().execute("SELECT * FROM handoffs WHERE id=?", (ticket["id"],)).fetchone()))
+    assert "просит скидку" in card["flags"]
+    assert card["needs"]["запрошена скидка"] == "7%" and card["needs"]["дана скидка"] == "5%"
+    assert handoff_card.asked_discount(["НДС 22% входит в цену?", "закупка по 44-ФЗ"]) == ""
+
+
 def test_field_names_are_sent_back_for_rewrite():
     llm = Scripted(["Вендор российский (поле russian_vendor), отметки in_ru_registry нет.",
                     "В каталоге вендор отмечен как российский, номера в реестре нет."])

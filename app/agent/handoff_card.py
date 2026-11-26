@@ -38,6 +38,17 @@ TEMPLATES = (  # заготовки ответа: менеджер правит 
 )
 
 
+_PERCENT = re.compile(r"(?<![\d,.])(\d{1,2}(?:[.,]\d)?)\s?%")
+SHOWN_AS = {"скидка": "дана скидка"}  # в карточке рядом стоят данная агентом и запрошенная клиентом скидка
+
+
+def asked_discount(messages: list[str]) -> str:
+    """Самый большой процент из слов клиента: менеджер видит, о какой скидке шла речь."""
+    found = [float(x.replace(",", ".")) for text in messages if "ндс" not in text.lower()
+             for x in _PERCENT.findall(text)]
+    return f"{max(found):g}%" if found else ""
+
+
 def priority(text: str) -> str:
     text = text.lower()
     return next((p for p, rx in PRIORITY if re.search(rx, text)), "low")
@@ -59,12 +70,16 @@ def build(h: dict, now: float | None = None) -> dict:
     shown = [{"id": o["id"], "name": o["name"], "price": o.get("price")} for o in items.get("offers", [])[:5]]
     in_quote = [{"id": o.get("offer_id"), "name": o["name"], "price": o.get("price"), "qty": o.get("qty")}
                 for o in json.loads(quote["items_json"] or "[]")] if quote else []
+    flags = [name for name, rx in FLAGS if re.search(rx, text.lower())]
+    needs = {SHOWN_AS.get(k, k): facts[k] for k in NEED_FIELDS if facts.get(k)}
+    if "просит скидку" in flags and asked_discount(asked):
+        needs["запрошена скидка"] = asked_discount(asked)
     return {
         "priority": level, "priority_name": PRIORITY_NAME[level], "sla_minutes": SLA_MINUTES[level],
         "sla_due": due, "overdue": not done and now > due,
-        "flags": [name for name, rx in FLAGS if re.search(rx, text.lower())],
+        "flags": flags,
         "client": {k: facts[k] for k in CLIENT_FIELDS if facts.get(k)},
-        "needs": {k: facts[k] for k in NEED_FIELDS if facts.get(k)},
+        "needs": needs,
         "offers": in_quote or shown,  # есть КП: позиции из него, иначе последние показанные клиенту
         "quote": {"number": quote["number"], "total": quote["total"], "customer": quote["customer"],
                   "url": f"/quotes/{quote['number']}.pdf"} if quote else None,
