@@ -374,7 +374,8 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
                  "варианта. Скажите клиенту, что цену этой позиции подтвердит менеджер.")
     if missing:
         note += (f" В графе «Заказчик» не хватает: {', '.join(missing)}. Попросите их одним сообщением один раз; "
-                 "клиент не дал, черновик остается как есть, реквизиты уточнит менеджер.")
+                 "клиент не дал: черновик остается как есть, недостающее он может прислать в этот чат позже. "
+                 "Обращение менеджеру ради реквизитов не заводите.")
     return {"ok": True, "number": number, "updated": bool(prev), "contact_in_quote": bool(quote["contact"]),
             "customer_missing": missing,
             "url": f"/quotes/{number}.pdf", "file": str(path), "date": quote["date"],

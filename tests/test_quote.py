@@ -136,6 +136,7 @@ def test_sums_vat_and_pdf(offers, storage):
     assert res["customer"] == "ООО «Ромашка»"
     assert res["note"].startswith("Черновик КП сформирован, его проверит менеджер.")
     assert res["customer_missing"] == ["КПП"]
+    assert "уточнит менеджер" not in res["note"] and "ради реквизитов не заводите" in res["note"]
 
     assert re.fullmatch(r"КП-\d{8}-0001", res["number"])
     assert res["url"] == f"/quotes/{res['number']}.pdf"

@@ -1032,7 +1032,8 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
     # обязательные условия клиента (платформа, срок, тип, доступность) раньше выбора ближайшего пакета:
     # иначе пакет на 25 под Windows вытесняет подходящий пакет на 50 под Linux и вариантов не остается
     rows, gaps, notes = _apply_quantity_filters(_apply_value_filters(all_rows, filters), filters)
-    rows.sort(key=_offer_order(gaps))
+    new_first = "license_type" not in filters
+    rows.sort(key=_offer_order(gaps, new_first))
     full_facets = facet_counts(rows)
     facets, facets_more = _facets_for_output(full_facets)
     known = {"term_months", "text", "only_available", *_QUANTITY_FILTERS, *_SUBSTRING_FILTERS}
@@ -1053,7 +1054,10 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
     }
     result.update({key: value for key, value in optional.items() if value})
     if len(rows) > len(result["offers"]):
-        result["shown"] = (f"показаны {len(result['offers'])} из {len(rows)}, от дешевых к дорогим; "
+        mixed = new_first and len({_not_new(r["license_type"]) for r in rows}) > 1
+        result["shown"] = (f"показаны {len(result['offers'])} из {len(rows)}, от дешевых к дорогим"
+                           + (", новые лицензии раньше продлений, обновлений, техподдержки и дистрибутивов; "
+                              if mixed else "; ") +
                            "остальные откроются, если сузить фильтром из clarify или словом в text. "
                            "Вилку цен называйте по all_matching, а не по показанным")
         priced = [r["price"] for r in rows if r["price"] is not None]
@@ -1065,12 +1069,25 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
     return result
 
 
-def _offer_order(gaps: dict):
-    """Порядок вариантов: сначала доступные с ценой, затем ближайший ярус количества, затем дешевле."""
+# Типы лицензии, которые покупкой новой лицензии не являются (по первому слову значения из фида)
+_NOT_NEW = ("Продление", "Техподдержка", "Обновление", "Перекрестное обновление", "Дистрибутив", "Миграция",
+            "Восстановление", "Обмен", "Расширение")
+
+
+def _not_new(license_type: str | None) -> bool:
+    return bool(license_type) and license_type.startswith(_NOT_NEW)
+
+
+def _offer_order(gaps: dict, new_first: bool = False):
+    """Порядок вариантов: сначала доступные с ценой, затем ближайший ярус количества, затем дешевле.
+
+    new_first (клиент не назвал тип лицензии): новые лицензии идут раньше продлений, обновлений, техподдержки и
+    дистрибутивов, иначе первые показанные варианты заняты дешевыми позициями, которые покупкой не являются."""
     def order(r: sqlite3.Row) -> tuple:
         buyable = 0 if r["available"] and r["price"] is not None else 1
         price = r["price"] if r["price"] is not None else _INF
-        return (buyable, gaps.get(r["id"], 0), price, r["id"])
+        other = 1 if new_first and _not_new(r["license_type"]) else 0
+        return (buyable, gaps.get(r["id"], 0), other, price, r["id"])
     return order
 
 
@@ -1085,7 +1102,7 @@ def _relaxed(all_rows: list, filters: dict, limit: int) -> dict:
     if not best_rows:
         return {"note": "С такими фильтрами вариантов нет. В facets значения, которые есть у продукта без фильтров.",
                 "facets": _facets_for_output(facet_counts(all_rows))[0]}
-    best_rows.sort(key=_offer_order(best_gaps))
+    best_rows.sort(key=_offer_order(best_gaps, best_key == "license_type" or "license_type" not in filters))
     offers = [_offer_dict(r) for r in best_rows[:max(0, min(int(limit), 100))]]
     return {"note": f"Вариантов с {best_key}={filters[best_key]} у продукта нет. Ниже варианты без этого условия: "
                     "скажите клиенту, что именно такого в каталоге нет, и предложите ближайшее.",

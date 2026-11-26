@@ -159,15 +159,16 @@ def drop_internal(text: str, names: list[str]) -> str:
 PERCENT_SOURCES = ("search_products", "get_product", "find_analogs", "browse_categories", "kb_search")
 
 
-def cut_by_code(text: str, known, said, names: list[str], percents=(), positions=None) -> tuple[str, dict]:
+def cut_by_code(text: str, known, said, names: list[str], percents=(), positions=None,
+                named=()) -> tuple[str, dict]:
     """Последний рубеж: чего модель не исправила сама, из ответа убирает код.
 
     Возвращает текст для клиента и то, что вырезано: суммы не из каталога и фразы со скидкой больше своей.
     """
     cut = {}
-    bad = prices.unknown(text, known, said, positions)  # с позициями: и известная сумма не у своей позиции
+    bad = prices.unknown(text, known, said, positions, named)  # с позициями: и известная сумма не у своей позиции
     if bad:
-        text, cut["price"] = prices.mask_unknown(text, known, said, positions), bad
+        text, cut["price"] = prices.mask_unknown(text, known, said, positions, named), bad
     over = prices.discount_over_limit([text], percents)
     if over:
         text, cut["discount"] = prices.cut_discount(text, percents), over
@@ -365,6 +366,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     items = s["items"]
     known = {float(o["price"]) for o in items.get("offers", []) if o.get("price")}
     known.update(items.get("prices", []))  # суммы из прошлых ходов: итог расчета или КП можно повторить
+    named = set(items.get("named", []))  # числа из названий ("яндекс 360"): в ответе это название, а не сумма
     percents = set(items.get("percents", []))  # проценты из справки и каталога: акцию вендора можно пересказать
     positions = prices.load_positions(items.get("positions"), items.get("offers"))  # позиция -> ее цены и суммы
     said: set = set()  # суммы из слов клиента: повторить можно, выдать за цену товара нельзя
@@ -408,6 +410,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             called.add(key)
             usage[3] += 1
             prices.collect(out, known)
+            prices.collect_named(out, named)
             prices.collect_positions(out, positions)
             if name in PERCENT_SOURCES:
                 prices.collect_percents(out, percents)
@@ -421,7 +424,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             msgs.append({"role": "tool", "name": name, "content": fit_json(tools.slim(name, out), TOOL_RESULT_LIMIT)})
             continue
         names = internal_names(res.text, vocabulary)
-        reply, cut = cut_by_code(res.text, known, said, names, percents, positions)  # уйдет, если не будет второй попытки
+        reply, cut = cut_by_code(res.text, known, said, names, percents, positions, named)  # уйдет без второй попытки
         bad, over = cut.get("price"), cut.get("discount")  # сумма не из каталога; скидка больше своей словами
         if (bad or over or names) and not corrected and step < MAX_STEPS - 1:
             corrected, notes = True, []
@@ -485,6 +488,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             _remember_items(items, "get_product", {"offers": [{"offer_id": c["id"], "name": c["title"],
                                                                "price": c.get("price")}]})
     items["prices"] = sorted(known)[-400:]
+    items["named"] = sorted(named)[-200:]
     items["percents"] = sorted(percents)[-100:]
     items["positions"] = prices.dump_positions(positions)
     store.update_session(sid, items=items, facts=ctx.facts)

@@ -168,12 +168,13 @@ def check(case: dict, run: dict) -> dict:
 
     # цены: любая сумма в ответах должна быть в данных инструментов этого диалога или в словах клиента;
     # сумму из слов клиента можно повторить, но нельзя выдать за цену товара (как в цикле агента)
-    known, said = set(), set()
+    known, said, named = set(), set(), set()
     for t in turns:
         said.update(prices.client_amounts(t["user"]))
         for x in t["tools"]:
             prices.collect(x["output"], known)
-    bad = [p for r in replies for p in prices.unknown(r, known, said)]
+            prices.collect_named(x["output"], named)
+    bad = [p for r in replies for p in prices.unknown(r, known, said, named=named)]
     out["цены_из_каталога"] = not bad
     untraced = untraced_numbers(turns)
     out["числа_прослеживаются"] = not untraced

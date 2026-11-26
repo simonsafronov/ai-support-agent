@@ -145,6 +145,30 @@ def collect(obj, acc: set) -> None:
             collect(v, acc)
 
 
+_NAMED = re.compile(r"\b([A-ZА-ЯЁ][\w.+-]*)\s+(\d{3,})(?![\d.,]\d)")  # слово с заглавной: "на 500 узлов" не название
+
+
+def collect_named(obj, acc: set) -> None:
+    """Числа из названий продуктов и вариантов вместе со словом перед ними: "яндекс 360", "office 2021".
+
+    Такое число после слова о цене ("Стоимость Яндекс 360 для бизнеса") это часть названия, а не сумма."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in ("title", "name") and isinstance(v, str):
+                acc.update(f"{w.lower()} {n}" for w, n in _NAMED.findall(v))
+            else:
+                collect_named(v, acc)
+    elif isinstance(obj, list):
+        for v in obj:
+            collect_named(v, acc)
+
+
+def _in_name(text: str, start: int, raw: str, named) -> bool:
+    """Число стоит в ответе после того же слова, что и в названии из ответов инструментов."""
+    word = re.search(r"([A-Za-zА-Яа-яЁё][\w.+-]*)\s+$", text[:start])
+    return bool(word) and f"{word.group(1).lower()} {raw}" in named
+
+
 def client_amounts(text: str) -> set[float]:
     """Суммы, которые назвал сам клиент (бюджет, цена из чужого счета): агент вправе их повторить."""
     found = {v for _, v in amounts(text)}
@@ -176,10 +200,11 @@ def _asserts_price(sentence: str) -> bool:
     return bool(_ASSERT.search(sentence)) and not _NOT_ASSERT.search(sentence)
 
 
-def _bad(text: str, known, said, positions=None) -> list[tuple[int, int]]:
+def _bad(text: str, known, said, positions=None, named=()) -> list[tuple[int, int]]:
     """Места в тексте с суммой, которой нет в данных инструментов и которая не подана как слова клиента.
 
     С positions сюда же попадает известная сумма, которая стоит не у своей позиции (см. price_pairs).
+    named это числа из названий (collect_named): число без валюты в составе названия суммой не считается.
     """
     out = []
     marks = [m.span() for m in FACTS_MARK.finditer(text)]
@@ -202,6 +227,8 @@ def _bad(text: str, known, said, positions=None) -> list[tuple[int, int]]:
         v *= _scale(m.group(4))  # "цена лицензии 5 тыс.", "обойдется в 120 тыс. на всех"
         if not BARE_MIN <= v <= LOOSE_MAX or _is_known(v, known) or _NOT_A_SUM.search(m.group(2)) or year:
             continue  # "стоимость по артикулу 4601546", "цена действует до 2027"
+        if _in_name(text, a, m.group(3), named):
+            continue  # "стоимость Яндекс 360 для бизнеса"
         if _is_known(v, said) and not _asserts_price(_sentence_at(text, a)):
             continue
         out.append((a, b))
@@ -213,19 +240,19 @@ def _bad(text: str, known, said, positions=None) -> list[tuple[int, int]]:
     return sorted(out)
 
 
-def unknown(text: str, known, said=(), positions=None) -> list[str]:
+def unknown(text: str, known, said=(), positions=None, named=()) -> list[str]:
     """Суммы в тексте ответа, которых нет среди известных.
 
     known это суммы из ответов инструментов, said это суммы из слов клиента: вторые можно повторить
     ("в ваш бюджет 300 000 руб. укладывается"), но утверждать ими цену товара нельзя ("лицензия стоит 500 руб.").
     positions это позиции диалога (collect_positions): известная сумма у чужой позиции тоже считается ошибкой.
     """
-    return [text[a:b].strip() for a, b in _bad(text, known, said, positions)]
+    return [text[a:b].strip() for a, b in _bad(text, known, said, positions, named)]
 
 
-def mask_unknown(text: str, known, said=(), positions=None) -> str:
+def mask_unknown(text: str, known, said=(), positions=None, named=()) -> str:
     """Последний рубеж: неизвестные суммы заменяются словами, известные остаются как есть."""
-    for a, b in reversed(_bad(text, known, said, positions)):
+    for a, b in reversed(_bad(text, known, said, positions, named)):
         text = text[:a] + "цена по запросу" + text[b:]
     # "цена 12 345 руб." не должна стать "цена цена по запросу", а "около 100 тыс." не должно стать "около цена..."
     return re.sub(r"(?:\b(?:цена|цены|около|примерно|порядка|приблизительно)\s+)+цена по запросу",
