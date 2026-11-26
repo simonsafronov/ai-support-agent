@@ -136,7 +136,7 @@ function renderRows() {
   paint($("rows"), list.map((s) => `<tr data-id="${esc(s.id)}"><td>${dt(s.updated_at)}</td><td><button type="button" class="open" data-f="d${esc(s.id)}">${esc(cut(s.first || "без сообщений клиента"))}</button></td>
     <td>${s.status === "handoff" ? '<span class="tag h">менеджеру</span>' : '<span class="tag">агент</span>'}${s.quotes ? ' <span class="tag">КП</span>' : ""}</td>
     <td class="num">${s.turns}</td><td class="num">${num(s.prompt_tokens + s.completion_tokens)}</td><td class="num">${rub(s.cost_rub)}</td></tr>`).join("")
-    || `<tr><td colspan="6" class="empty">${all.length ? "Под выбранный фильтр диалогов нет." : "Диалогов пока нет. Напишите в чат покупателя."}</td></tr>`);
+    || `<tr><td colspan="6" class="empty">${all.length ? "Под выбранный фильтр диалогов нет." : operator ? "Диалогов пока нет. Напишите в чат покупателя." : "Демонстрационных диалогов на стенде нет."}</td></tr>`);
 }
 
 // Часы из рублей по ставке часа: строки "снято с менеджеров" и "стоимость снятых часов" сходятся
@@ -154,14 +154,14 @@ function economy(e) {
       ${rows}<dt>Снято с менеджеров</dt><dd>${hours(x, rate)}</dd><dt>Стоимость снятых часов</dt><dd>${rub(x.saved_rub)}</dd>
       <dt>Расход на модель${x.model_budget_rub ? "<i>бюджет заказчика 5-7 тыс. ₽</i>" : ""}</dt><dd>${rub(x.model_cost_rub)}</dd><dt>Рубль на модель возвращает</dt><dd>${x.return_x == null ? "нет данных" : num(x.return_x, 1) + " ₽"}</dd></dl></div>`
     : `<div><h3>${title}</h3><div class="big">нет данных</div><p class="cap">Появится после первых диалогов на стенде.</p></div>`;
-  $("ecores").innerHTML = part("На этом стенде", e.stand, m ? `<dt>Диалогов на стенде</dt><dd>${num(m.dialogs)}</dd><dt>Из них без менеджера</dt><dd>${num(m.closed)} (${Math.round(m.closed_share * 100)}%)</dd>` : "")
+  $("ecores").innerHTML = part("На этом стенде", e.stand, m ? `<dt>Диалогов с агентом</dt><dd>${num(m.dialogs)}</dd><dt>Из них без передачи менеджеру</dt><dd>${num(m.closed)} (${Math.round(m.closed_share * 100)}%)</dd>` : "")
     + part(`За полгода при ${num(n)} ${word}`, hy, hy ? `<dt>Закроет сам</dt><dd>${num(hy.closed)}</dd><dt>Передаст карточкой</dt><dd>${num(hy.handed)}</dd>` : "");
   const value = (key, v) => key === "card_share" ? Math.round(v * 100) : v;
   const pd = e.per_workday, day = pd && Math.round(pd.requests);
   $("ecoin").innerHTML = `<h3>На чем стоит расчет: поменяйте допущения под свои данные</h3>
     ${FIELDS.map(([key, ans, label, hint, step, lo, hi]) => `<label><span>${label}<i>${hint}</i></span><input type="number" inputmode="decimal" min="${lo}" max="${hi}" step="${step}" data-eco="${key}" value="${value(key, a[ans])}"></label>`).join("")}
     ${pd ? `<label><span>Расход на модель в рабочий день<i>${day ? `около ${num(day)} ${plural(day, ["обращения", "обращений", "обращений"])}` : "меньше одного обращения"}, ${num(pd.tokens)} ${plural(pd.tokens, ["токен", "токена", "токенов"])}; 21 рабочий день в месяце</i></span><span class="tag">${rub(pd.model_cost_rub)}</span></label>` : ""}
-    <label><span>Доля диалогов без менеджера и стоимость диалога<i>замер этого стенда</i></span><span class="tag">${m ? Math.round(m.closed_share * 100) + "% · " + rub(m.cost_per_dialog_rub) : "нет данных"}</span></label>`;
+    <label><span>Доля без передачи среди диалогов с агентом и стоимость диалога<i>замер этого стенда, от этой доли идет расчет; вызовы менеджера кнопкой без диалога с агентом в нее не входят</i></span><span class="tag">${m ? Math.round(m.closed_share * 100) + "% · " + rub(m.cost_per_dialog_rub) : "нет данных"}</span></label>`;
   $("ecoin").querySelectorAll("input").forEach((i) => {
     i.onchange = () => apply(i);
     i.onkeydown = (ev) => { if (ev.key === "Enter") apply(i); };
@@ -230,9 +230,10 @@ async function load(force = false) {
   operator = st.role === "operator";
   const badKey = token && !operator;
   if (badKey) try { sessionStorage.removeItem("op_token"); } catch (e) { /* хранилище недоступно: ключ и так не сохранен */ }
+  // без ключа сервер отдает только диалоги прогона и показа: рабочие диалоги посетителей видит только оператор
   $("demo").textContent = badKey
-    ? "Ключ оператора не подошел: открыт режим просмотра. Контакты клиентов скрыты, ответы и выгрузка отключены. Откройте экран по ссылке с верным ключом."
-    : "Режим просмотра: почта и телефоны клиентов скрыты, ответы клиентам, выгрузка журнала и обновление каталога отключены. Полный доступ открывается по ссылке с ключом оператора.";
+    ? "Ключ оператора не подошел: открыт режим просмотра, в нем только демонстрационные диалоги проверочного прогона. Откройте экран по ссылке с верным ключом."
+    : "Режим просмотра: показаны демонстрационные диалоги проверочного прогона, контакты в них скрыты. Рабочие диалоги, ответы клиентам, выгрузка журнала и обновление каталога доступны по ссылке с ключом оператора.";
   $("demo").hidden = operator;
   $("snote").textContent = st.stand_note || "";
   $("snote").hidden = !st.stand_note;
@@ -240,9 +241,12 @@ async function load(force = false) {
   $("cat").textContent = catalogLine(cat);
   $("learn").textContent = learnLine(st);
   const qu = st.queue, late = qu.overdue > 0;  // счетчики сервер считает по всей открытой очереди, а не по показанным карточкам
-  const pct = st.without_human_share == null ? "нет данных" : Math.round(st.without_human_share * 100) + "%";
+  const pct = (v) => v == null ? "нет данных" : Math.round(v * 100) + "%";
   $("kpi").innerHTML = `<a href="#queue" id="towait" class="${late ? "late" : ""}"><b>${num(qu.waiting)}</b><span>ждут менеджера${late ? `, просрочено ${num(qu.overdue)}` : ""}</span></a>` + [
-    [num(st.dialogs), "диалогов"], [pct, "закрыто без менеджера"], [num(st.quotes), "черновиков КП"],
+    // две доли рядом, у каждой числитель и знаменатель: число диалогов и обращений видно в них
+    [pct(st.without_human_share), `без передачи среди диалогов с агентом: ${num(st.closed_dialogs)}\u00a0из\u00a0${num(st.dialogs)}`],
+    [pct(st.requests_without_human_share), `без менеджера среди всех обращений, включая вызов менеджера кнопкой: ${num(st.closed_dialogs)}\u00a0из\u00a0${num(st.requests)}`],
+    [num(st.quotes), "черновиков КП"],
     [rub(st.cost_rub_per_turn), "стоимость одного запроса"], [rub(st.cost_rub_per_dialog), "стоимость диалога"],
     [st.avg_model_seconds_per_turn == null ? "нет данных" : String(st.avg_model_seconds_per_turn).replace(".", ",") + " с", "модель думает на запрос"],
   ].map(([b, s]) => `<div><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join("");

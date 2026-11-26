@@ -153,7 +153,7 @@ def test_client_cannot_get_a_signature_for_someone_elses_quote(monkeypatch, pric
 
 @pytest.mark.needs_data
 def test_view_mode_has_no_quote_links_and_no_client_ids(monkeypatch, priced_offer):
-    reply = quote(monkeypatch, priced_offer)
+    reply = quote(monkeypatch, priced_offer, client_id="eval-buyer")  # без ключа видны только диалоги прогона
     sid = reply["session_id"]
     seen = client.get(f"/api/admin/session/{sid}").json()
     text = json.dumps(seen, ensure_ascii=False)
@@ -161,7 +161,7 @@ def test_view_mode_has_no_quote_links_and_no_client_ids(monkeypatch, priced_offe
     assert seen["quotes"][0]["url"] == "" and "file" not in seen["quotes"][0]
     assert str(server.config.QUOTES_DIR) not in text  # путь файла на сервере не виден и в шагах агента
     full = client.get(f"/api/admin/session/{sid}", headers=KEY).json()
-    assert full["session"]["client_id"] == "buyer" and "file" not in full["quotes"][0]
+    assert full["session"]["client_id"] == "eval-buyer" and "file" not in full["quotes"][0]
     assert client.get(full["quotes"][0]["url"]).status_code == 200  # ссылка оператора открывается в новой вкладке
     listed = client.get("/api/admin/sessions").json()["sessions"]
     assert listed and all("client_id" not in s for s in listed)

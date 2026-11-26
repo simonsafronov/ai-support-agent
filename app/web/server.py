@@ -409,6 +409,7 @@ STREAM_POLL, STREAM_WAIT = 0.1, 20  # секунд: как часто поток
 @app.post("/api/chat")
 def chat(body: ChatIn):
     """Ответ потоком строк JSON: сначала шаги агента (какой инструмент вызван), в конце ответ клиенту."""
+    received = time.monotonic()  # срок хода идет с приема сообщения: ожидание места у модели входит в него
     q: queue.Queue = queue.Queue()
     text = body.message.strip()
     # диалог заводится здесь, а не в цикле агента: при любом сбое известно, куда записать ответ и обращение
@@ -416,11 +417,8 @@ def chat(body: ChatIn):
 
     def work():
         try:
-            with session_lock(sid), _slots:
-                try:
-                    res = loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=q.put)
-                except Exception as e:  # клиент получает ответ, а менеджер обращение при любом сбое
-                    res = failed_turn(sid, text, e)
+            with session_lock(sid):
+                res = turn_in_slot(sid, text, body, received, q.put)
             q.put({"type": "reply", **public_reply(res)})
         except Exception as e:  # не записалось и обращение: ответ клиенту все равно уходит
             q.put({"type": "reply", "session_id": sid, "reply": loop.FALLBACK, "cards": [], "choices": [],
@@ -451,8 +449,29 @@ def chat(body: ChatIn):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event) -> dict:
+    """Ход агента на свободном месте у модели (MAX_PARALLEL_TURNS) в срок TURN_DEADLINE с приема сообщения.
+
+    Место не освободилось до срока: ход не начинается, клиент получает ответ о передаче, а менеджер обращение,
+    как при сбое модели. Место получено: циклу агента остается срок минус время ожидания (llm.Limited).
+    """
+    until = received + config.TURN_DEADLINE if config.TURN_DEADLINE else None
+    if not _slots.acquire(timeout=None if until is None else max(0.0, until - time.monotonic())):
+        return failed_turn(sid, text, TimeoutError(f"нет свободного места у модели за {config.TURN_DEADLINE:.0f} с"))
+    try:
+        return loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=on_event,
+                             llm=llm.Limited(loop.get_llm(), until) if until else None)
+    except Exception as e:  # клиент получает ответ, а менеджер обращение при любом сбое
+        return failed_turn(sid, text, e)
+    finally:
+        _slots.release()
+
+
 def failed_turn(sid: str, text: str, error: Exception) -> dict:
-    """Ход оборвался не по вине модели (ошибку модели цикл агента обрабатывает сам): ответ и обращение менеджеру."""
+    """Ход оборвался не по вине модели или не начался до конца срока: ответ и обращение менеджеру.
+
+    Ошибку модели цикл агента обрабатывает сам.
+    """
     last = store.messages(sid, limit=1)
     if not last or (last[0]["role"], last[0]["content"]) != ("user", text):
         store.add_message(sid, "user", text)  # сбой случился раньше, чем сообщение клиента попало в журнал
@@ -463,12 +482,13 @@ def failed_turn(sid: str, text: str, error: Exception) -> dict:
                                      contact)
         if created:
             events.append({"type": "handoff", "id": hid, "reason": "сбой при ответе агента"})
-    store.add_step(sid, sum(1 for m in store.messages(sid) if m["role"] == "user"), "error", type(error).__name__,
-                   {}, {"error": str(error)})
+    name = "deadline" if isinstance(error, TimeoutError) else type(error).__name__  # срок хода вышел
+    store.add_step(sid, sum(1 for m in store.messages(sid) if m["role"] == "user"), "error", name, {},
+                   {"error": str(error)})
     meta = {"cards": [], "choices": [], "events": events}
     store.add_message(sid, "assistant", loop.FALLBACK, meta)
     return {"session_id": sid, "reply": loop.FALLBACK, **meta,
-            "trace": [{"kind": "error", "name": type(error).__name__, "output": str(error)}]}
+            "trace": [{"kind": "error", "name": name, "output": str(error)}]}
 
 
 class CallIn(BaseModel):
@@ -584,6 +604,20 @@ def new_license_prices(found: list[dict]) -> list[dict]:
 
 # --- экран оператора ---
 
+FROM_RUN = f"session_id IN (SELECT id FROM sessions WHERE {store.RUN_CLIENTS})"
+
+
+def scope(request: Request) -> tuple[str, str]:
+    """Какие диалоги видит экран оператора: условие на таблицу sessions и на столбец session_id остальных таблиц.
+
+    С ключом оператора видны все диалоги. В режиме просмотра только диалоги прогона и показа (store.RUN_CLIENTS):
+    в свободном тексте посетителя остаются имя, компания, бюджет и детали закупки, которые маска не узнает.
+    """
+    if is_operator(request):
+        return "1", "1"
+    return f"({store.RUN_CLIENTS})", FROM_RUN
+
+
 def _session_row(r) -> dict:
     d = dict(r)
     d["cost_rub"] = loop.cost_rub(d["prompt_tokens"], d["completion_tokens"])
@@ -592,22 +626,22 @@ def _session_row(r) -> dict:
 
 @app.get("/api/admin/sessions")
 def admin_sessions(request: Request, limit: int = Query(100, ge=1, le=500)):
-    con = store.db()
+    con, (where_s, _) = store.db(), scope(request)
     rows = con.execute(
         "SELECT s.id, s.created_at, s.updated_at, s.status, s.page_url, s.prompt_tokens, s.completion_tokens, "
         "s.llm_calls, s.tool_calls, "
         "(SELECT content FROM messages m WHERE m.session_id=s.id AND m.role='user' ORDER BY m.id LIMIT 1) AS first, "
         "(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.role='user') AS turns, "
         "(SELECT COUNT(*) FROM quotes q WHERE q.session_id=s.id) AS quotes "
-        "FROM sessions s ORDER BY s.updated_at DESC LIMIT ?", (limit,)).fetchall()
+        f"FROM sessions s WHERE {where_s} ORDER BY s.updated_at DESC LIMIT ?", (limit,)).fetchall()
     return view(request, {"sessions": [_session_row(r) for r in rows]})
 
 
 @app.get("/api/admin/session/{session_id}")
 def admin_session(request: Request, session_id: str):
-    con = store.db()
-    row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
-    if row is None:
+    con, (where_s, _) = store.db(), scope(request)
+    row = con.execute(f"SELECT * FROM sessions WHERE id=? AND {where_s}", (session_id,)).fetchone()
+    if row is None:  # рабочий диалог без ключа оператора: ответ тот же, что для несуществующего
         raise HTTPException(404, "нет такого диалога")
     s = _session_row(row)
     s["facts"], s["items"] = json.loads(s.pop("facts_json")), json.loads(s.pop("items_json"))
@@ -622,7 +656,6 @@ def admin_session(request: Request, session_id: str):
 
 OPEN = "status IN ('new', 'taken')"
 OPEN_MAX = 500  # открытых обращений на экране не больше: закрытые добираются до размера страницы
-FROM_RUN = f"session_id IN (SELECT id FROM sessions WHERE {store.RUN_CLIENTS})"
 
 
 def _handoffs(where: str = "", args: tuple = (), limit: int = 50) -> list[dict]:
@@ -646,13 +679,14 @@ def _handoffs(where: str = "", args: tuple = (), limit: int = 50) -> list[dict]:
                                        order[h["card"]["priority"]], h["card"]["sla_due"]))
 
 
-def _queue(now: float) -> dict:
-    """Счетчики очереди по всем открытым обращениям, а не по показанной странице."""
+def _queue(now: float, where_id: str) -> dict:
+    """Счетчики очереди по всем открытым обращениям видимых диалогов (см. scope), а не по показанной странице."""
     con = store.db()
-    count = lambda sql, args=(): con.execute(f"SELECT COUNT(*) FROM handoffs WHERE {OPEN} AND {sql}",
+    count = lambda sql, args=(): con.execute(f"SELECT COUNT(*) FROM handoffs WHERE {OPEN} AND {where_id} AND {sql}",
                                              args).fetchone()[0]
     late = now - max(handoff_card.SLA_MINUTES.values()) * 60  # старше самого долгого срока реакции: уже просрочено
-    recent = con.execute(f"SELECT * FROM handoffs WHERE {OPEN} AND NOT {FROM_RUN} AND ts>=?", (late,)).fetchall()
+    recent = con.execute(f"SELECT * FROM handoffs WHERE {OPEN} AND {where_id} AND NOT {FROM_RUN} AND ts>=?",
+                         (late,)).fetchall()
     return {"waiting": count(f"NOT {FROM_RUN}"), "from_run": count(FROM_RUN),
             "overdue": count(f"NOT {FROM_RUN} AND ts<?", (late,))
                        + sum(handoff_card.build(dict(h), now)["overdue"] for h in recent)}
@@ -791,25 +825,32 @@ def admin_catalog_update():
 def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=600),
                 rub_hour: float | None = Query(None, ge=0, le=100000),
                 card_share: float | None = Query(None, ge=0, le=1), volume: int | None = Query(None, ge=1, le=10**7)):
-    con = store.db()
+    # показатели, очередь и экономика по видимым диалогам: в режиме просмотра по диалогам прогона и показа
+    con, (where_s, where_id) = store.db(), scope(request)
     one = lambda sql: con.execute(sql).fetchone()[0] or 0
     # диалоги и переданные менеджеру из одной выборки: переданных не больше диалогов, доля от 0 до 1
-    dialogs = one("SELECT COUNT(*) FROM sessions WHERE llm_calls>0")
-    pt, ct = one("SELECT SUM(prompt_tokens) FROM sessions"), one("SELECT SUM(completion_tokens) FROM sessions")
-    turns = one("SELECT COUNT(*) FROM messages WHERE role='user'")
+    dialogs = one(f"SELECT COUNT(*) FROM sessions WHERE llm_calls>0 AND {where_s}")
+    pt, ct = (one(f"SELECT SUM({c}) FROM sessions WHERE {where_s}") for c in ("prompt_tokens", "completion_tokens"))
+    turns = one(f"SELECT COUNT(*) FROM messages WHERE role='user' AND {where_id}")
     handoff = one("SELECT COUNT(DISTINCT session_id) FROM handoffs "
-                  "WHERE session_id IN (SELECT id FROM sessions WHERE llm_calls>0)")
-    lat = one("SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' GROUP BY session_id, turn) "
-              "WHERE t > 0")  # ходы пакетных прогонов времени не несут и в среднее не идут
+                  f"WHERE session_id IN (SELECT id FROM sessions WHERE llm_calls>0 AND {where_s})")
+    closed = dialogs - handoff  # диалоги с агентом без передачи менеджеру: числитель обеих долей
+    # все обращения клиентов: диалоги с агентом и вызовы менеджера без диалога с агентом (кнопкой, после сбоя)
+    requests = one(f"SELECT COUNT(*) FROM sessions WHERE {where_s} "
+                   "AND (llm_calls>0 OR id IN (SELECT session_id FROM handoffs))")
+    lat = one(f"SELECT AVG(t) FROM (SELECT SUM(seconds) AS t FROM steps WHERE kind='llm' AND {where_id} "
+              "GROUP BY session_id, turn) WHERE t > 0")  # ходы пакетных прогонов времени не несут и в среднее не идут
     total, now = loop.cost_rub(pt, ct), time.time()
-    return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff,
-            "without_human_share": round(1 - handoff / dialogs, 3) if dialogs else None,
-            "quotes": one("SELECT COUNT(*) FROM quotes"), "learned_answers": answers.count(),
+    return view(request, {"dialogs": dialogs, "turns": turns, "handoff_dialogs": handoff, "closed_dialogs": closed,
+            "without_human_share": round(closed / dialogs, 3) if dialogs else None,  # от нее считается экономика
+            "requests": requests, "requests_without_human_share": round(closed / requests, 3) if requests else None,
+            "quotes": one(f"SELECT COUNT(*) FROM quotes WHERE {where_id}"), "learned_answers": answers.count(),
             "prompt_tokens": pt, "completion_tokens": ct,
             "cost_rub_total": total, "cost_rub_per_turn": round(total / turns, 2) if turns else None,
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
-            "handoffs": _handoffs(), "queue": _queue(now), "added_cases": len(cases.load()),
+            "handoffs": _handoffs(f"WHERE {where_id}"), "queue": _queue(now, where_id),
+            "added_cases": len(cases.load()),
             "stand_note": config.STAND_NOTE,
             "economy": economy.calc(dialogs, handoff, total, minutes, rub_hour, card_share, volume, pt + ct),
             "price_per_1k": {"in": config.PRICE_IN_PER_1K, "out": config.PRICE_OUT_PER_1K}, "now": now})

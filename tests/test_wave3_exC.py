@@ -64,7 +64,7 @@ KEPT_MESSAGE = ("Итого 1 234 567 890 руб., без пробелов 12345
 
 
 def _handed_dialog() -> str:
-    sid = _dialog(MESSAGE)
+    sid = _dialog(MESSAGE, "eval-w3-exC")  # без ключа видны только диалоги прогона и показа
     store.add_message(sid, "user", KEPT_MESSAGE)
     store.handoff(sid, "скидка", "Клиент ООО Тест (контактное лицо Иван Петров), ОГРН 1157746123456", "")
     store.add_step(sid, 1, "tool", "get_product", {"product_id": "1"},

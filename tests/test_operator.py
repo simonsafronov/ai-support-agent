@@ -24,8 +24,8 @@ def operator_key(monkeypatch):
     monkeypatch.setattr(server.config, "CHAT_RATE_PER_MIN", 0)
 
 
-def _handoff_dialog() -> tuple[str, int]:
-    res = loop.run_turn(None, "Продаете ли вы Articulate 360? Почта ivanov@romashka.example", client_id="ivanov",
+def _handoff_dialog(client_id: str = "ivanov") -> tuple[str, int]:
+    res = loop.run_turn(None, "Продаете ли вы Articulate 360? Почта ivanov@romashka.example", client_id=client_id,
                         llm=Scripted([
         {"name": "handoff_to_manager", "args": {"reason": "продукта нет в каталоге", "summary": "Нужен Articulate 360"}},
         "Передал вопрос менеджеру."]))
@@ -65,7 +65,7 @@ def test_export_has_every_message_with_tools_and_handoff_flag():
 
 
 def test_without_key_operator_screen_is_read_only_and_hides_contacts(monkeypatch):
-    sid, hid = _handoff_dialog()
+    sid, hid = _handoff_dialog("eval-ivanov")  # без ключа видны только диалоги прогона и показа
     demo = client.get(f"/api/admin/session/{sid}").json()
     assert demo["role"] == "demo" and "ivanov@" not in json.dumps(demo, ensure_ascii=False)
     assert "[email]" in demo["messages"][0]["content"]
@@ -189,14 +189,17 @@ def test_handoff_card_is_built_by_code_and_sorted_by_urgency(priced_offer):
     assert card["turns"] == 1 and not card["overdue"]
     # заготовки по пометкам обращения стоят перед общими: закупка, затем скидка
     assert [t["title"] for t in card["templates"]][:2] == ["Условия закупки", "Скидка"] and len(card["templates"]) == 5
-    # без ключа карточка видна, но контакт в ней скрыт
+    # без ключа карточки рабочих диалогов не видны; карточка диалога прогона видна, но контакт в ней скрыт
+    assert client.get("/api/admin/stats").json()["handoffs"] == []
+    store.db().execute("UPDATE sessions SET client_id='eval-tender' WHERE id=?", (sid,))
+    store.db().commit()
     demo = client.get("/api/admin/stats").json()["handoffs"][0]["card"]
     assert demo["client"]["контакт"] == "[email]"
 
 
 @pytest.mark.needs_data
 def test_view_mode_hides_requisites_and_quote_files(priced_offer):
-    res = loop.run_turn(None, "Нужно КП, ИНН 7701234567, КПП 770101001", llm=Scripted([
+    res = loop.run_turn(None, "Нужно КП, ИНН 7701234567, КПП 770101001", client_id="eval-kp", llm=Scripted([
         {"name": "make_quote", "args": {"items": [{"offer_id": priced_offer["offer_id"], "qty": priced_offer["qty"]}],
                                         "customer": "ООО Ромашка", "inn": "7701234567", "kpp": "770101001"}},
         {"name": "handoff_to_manager", "args": {"reason": "просит счет", "summary": "ООО Ромашка просит счет по КП"}},
