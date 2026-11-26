@@ -220,7 +220,8 @@ class Bridge:
                 raise LLMError(f"мост: нет ответа на {req.name} за {self.timeout:.0f} с")
             time.sleep(0.2)
         ans = json.loads(res.read_text(encoding="utf-8"))
-        out = LLMResult(text=(ans.get("text") or "").strip(), model=self.model, seconds=time.time() - t0,
+        # seconds остается 0: ждали сессию разработчика, скорость модели это не показывает
+        out = LLMResult(text=(ans.get("text") or "").strip(), model=self.model, seconds=0.0,
                         prompt_tokens=self.tokens(body),
                         completion_tokens=self.tokens(json.dumps(ans, ensure_ascii=False)))
         if ans.get("tool_call"):

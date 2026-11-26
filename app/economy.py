@@ -33,5 +33,6 @@ def calc(dialogs: int, handed: int, cost_total: float, minutes: float | None = N
                        "cost_per_dialog_rub": round(per_dialog, 2)}
     out["stand"] = saving(closed, handed, cost_total)
     out["half_year"] = {"requests": volume, "closed": round(volume * share), "handed": volume - round(volume * share),
-                        **saving(volume * share, volume * (1 - share), volume * per_dialog)}
+                        **saving(volume * share, volume * (1 - share), volume * per_dialog),
+                        "model_budget_rub": config.MODEL_BUDGET_HALF_YEAR_RUB or None}
     return out

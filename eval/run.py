@@ -202,7 +202,7 @@ def report(rows: list[dict], out_dir: Path):
              f"| Стоимость диалога | {cost / n:.2f} руб. |",
              "| Время модели на реплику, медиана | " + ("не измерялось |" if config.LLM_PROVIDER == "bridge"
                                                        else f"{statistics.median(secs):.1f} с |"),
-             f"| Срабатываний проверки цен | {sum(1 for t in turns for g in t['guards'] if g['kind'] == 'guard')} |",
+             f"| Срабатываний проверки цен | {sum(1 for t in turns for g in t['guards'] if g['kind'] == 'guard' and g.get('name') == 'price')} |",
              "", "## По проверкам", "", "| Проверка | Прошло | Не прошло | Не относится |", "|---|---|---|---|"]
     names = list(dict.fromkeys(k for r in rows for k in r["checks"]))
     for k in names:

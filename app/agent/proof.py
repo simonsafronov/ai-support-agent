@@ -31,7 +31,7 @@ def price_guard() -> dict:
     for title, second in (("Модель исправилась после замечания проверки", truth),
                           ("Модель настаивает на выдуманной цене", lie)):
         res = loop.run_turn(None, question, client_id="proof", llm=Scripted([call, lie, second]))
-        caught = [t["output"] for t in res["trace"] if t["kind"] == "guard"]
+        caught = [t["output"] for t in res["trace"] if t["kind"] == "guard" and t["name"] == "price"]
         runs.append({"title": title, "model_said": lie, "caught": caught[0] if caught else [],
                      "model_second": second, "client_saw": res["reply"]})
         store.drop_session(res["session_id"])

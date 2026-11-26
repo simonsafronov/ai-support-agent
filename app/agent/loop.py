@@ -33,6 +33,7 @@ _MARK = re.compile(r"\[\[(product|offer):\s*([\w-]+)\]\]")
 _CHOICES = re.compile(r"\[\[choices:\s*(.+?)\]\]", re.S)
 _FACTS = re.compile(r"\[\[facts:\s*(.+?)\]\]", re.S)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_FIELD = re.compile(r"(?<![\w/.-])[a-z]+(?:_[a-z]+)+(?![\w/-])")   # имя поля или инструмента: russian_vendor
 _PHONE = re.compile(r"(?<![\w+])(?:\+7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?!\d)")
 
 
@@ -40,6 +41,29 @@ def mask_contacts(text: str) -> tuple[str, list[str]]:
     """Почта и телефон клиента в модель не уходят: вместо них метки, сами значения видит только оператор."""
     found = _EMAIL.findall(text) + _PHONE.findall(text)
     return _PHONE.sub("[телефон]", _EMAIL.sub("[email]", text)), found
+
+
+def field_names(obj) -> set[str]:
+    """Имена полей из ответа инструмента: по ним проверка отличает служебное имя от названия товара."""
+    if isinstance(obj, dict):
+        return {k for k in obj if _FIELD.fullmatch(k)}.union(*(field_names(v) for v in obj.values()))
+    if isinstance(obj, list):
+        return set().union(*(field_names(v) for v in obj))
+    return set()
+
+
+def internal_names(text: str, vocabulary: set[str]) -> list[str]:
+    """Служебные имена полей и инструментов в ответе клиенту. Адреса страниц и метки не считаются."""
+    found = _FIELD.findall(re.sub(r"https?://\S+|\[\[.*?\]\]", " ", text, flags=re.S))
+    return sorted(set(found) & vocabulary)
+
+
+def drop_internal(text: str, names: list[str]) -> str:
+    """Модель не убрала служебные имена сама: убираем скобку с именем или само имя, смысл фразы остается."""
+    for name in names:
+        text = re.sub(rf"\s*\([^()]*\b{name}\b[^()]*\)", "", text)
+        text = re.sub(rf"\s*(?:поле|поля|полю|отметка|отметки|признак)?\s*\b{name}\b", "", text)
+    return text
 
 
 def fit_json(out: dict, limit: int) -> str:
@@ -123,7 +147,12 @@ def render(text: str) -> tuple[str, list[dict], list[str]]:
         except (ValueError, KeyError, TypeError):
             pass
     titles = {(c["type"], str(c["id"])): c["title"] for c in cards}
-    text = re.sub(_MARK.pattern + r"(?=\s*\()", lambda m: titles.get((m.group(1), m.group(2)), ""), text)
+
+    def title(m):  # метка вместо названия: "[[product:1]] (вендор)"; название уже написано словами: не дублируем
+        name = titles.get((m.group(1), m.group(2)), "")
+        return "" if m.string[:m.start()].rstrip().lower().endswith(name.lower()) else name
+
+    text = re.sub(_MARK.pattern + r"(?=\s*\()", title, text)
     choices = []
     m = _CHOICES.search(text)
     if m:
@@ -131,6 +160,7 @@ def render(text: str) -> tuple[str, list[dict], list[str]]:
     clean = _CHOICES.sub("", re.sub(r"[ \t]*" + _MARK.pattern, "", _FACTS.sub("", text)))
     clean = re.sub(r"(?<!\.)\.\.(?!\.)", ".", clean)             # метка стояла перед точкой: "руб. [[offer:1]]."
     clean = re.sub(r"[ \t]+([,;])", r"\1", re.sub(r"[ \t]{2,}", " ", clean))
+    clean = re.sub(r",(?=[.;])", "", clean)                      # метка стояла после запятой: "за позицию, [[offer:1]]."
     clean = re.sub(r"[ \t]+\n", "\n", re.sub(r"\n{3,}", "\n\n", clean)).strip()
     return clean, cards, choices
 
@@ -197,6 +227,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
                                                                  previous)}] + _history(sid)
     trace, usage, reply, corrected = [], [0, 0, 0, 0], "", False
     started, called = time.monotonic(), set()
+    vocabulary = set(_FIELD.findall(prompts.SYSTEM + json.dumps(tools.specs())))  # имена, которые модель видит
 
     for step in range(MAX_STEPS if not budget_spent() else 0):
         if config.TURN_DEADLINE and time.monotonic() - started > config.TURN_DEADLINE:
@@ -224,6 +255,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             called.add(key)
             usage[3] += 1
             prices.collect(out, known)
+            vocabulary |= field_names(out)
             _remember_items(items, name, out)
             if out.get("first_product"):  # поиск сразу вернул варианты однозначно найденного продукта
                 _remember_items(items, "get_product", out["first_product"])
@@ -232,19 +264,25 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             msgs.append({"role": "assistant", "content": res.text, "tool_call": res.tool_call, "extra": res.extra})
             msgs.append({"role": "tool", "name": name, "content": fit_json(tools.slim(name, out), TOOL_RESULT_LIMIT)})
             continue
-        bad = prices.unknown(res.text, known)
-        if bad and not corrected:
-            corrected = True
-            trace.append({"kind": "guard", "name": "price", "output": bad})
-            store.add_step(sid, turn, "guard", "price", {"text": res.text}, {"unknown": bad})
+        bad, names = prices.unknown(res.text, known), internal_names(res.text, vocabulary)
+        if (bad or names) and not corrected:
+            corrected, notes = True, []
+            if bad:
+                trace.append({"kind": "guard", "name": "price", "output": bad})
+                store.add_step(sid, turn, "guard", "price", {"text": res.text}, {"unknown": bad})
+                notes.append("В ответе названы суммы, которых нет в данных "
+                             f"каталога: {', '.join(bad)}. Перепишите ответ клиенту: суммы только из результатов "
+                             "инструментов этого диалога. Сумму из справки или свой расчет уберите; итог за "
+                             "несколько лицензий получите через calc_total.")
+            if names:
+                trace.append({"kind": "guard", "name": "wording", "output": names})
+                store.add_step(sid, turn, "guard", "wording", {"text": res.text}, {"names": names})
+                notes.append(f"В ответе есть служебные имена полей: {', '.join(names)}. Клиент их не знает: "
+                             "перепишите ответ, скажите то же обычными словами.")
             msgs.append({"role": "assistant", "content": res.text})
-            msgs.append({"role": "user", "content":
-                         "[Служебная проверка, клиент этого не видит] В ответе названы суммы, которых нет в данных "
-                         f"каталога: {', '.join(bad)}. Перепишите ответ клиенту: суммы только из результатов "
-                         "инструментов этого диалога. Сумму из справки или свой расчет уберите; итог за несколько "
-                         "лицензий получите через calc_total."})
+            msgs.append({"role": "user", "content": "[Служебная проверка, клиент этого не видит] " + " ".join(notes)})
             continue
-        reply = res.text if not bad else prices.mask_unknown(res.text, known)
+        reply = drop_internal(res.text if not bad else prices.mask_unknown(res.text, known), names)
         break
 
     if not reply.strip():

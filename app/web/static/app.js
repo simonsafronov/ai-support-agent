@@ -138,7 +138,8 @@ async function send(message) {
           let k = 0;
           for (const t of ev.trace || []) {
             if (t.kind === "tool" && pending[k]) { const s = summary(t.name, t.output); if (s) pending[k].insertAdjacentHTML("beforeend", `<div class="o">${esc(s)}</div>`); k++; }
-            if (t.kind === "guard") step("guard", "Проверка цен", null, "В черновике ответа была сумма не из каталога: " + (t.output || []).join(", ") + ". Ответ переписан.");
+            if (t.kind === "guard" && t.name === "price") step("guard", "Проверка цен", null, "В черновике ответа была сумма не из каталога: " + (t.output || []).join(", ") + ". Ответ переписан.");
+            if (t.kind === "guard" && t.name === "wording") step("guard", "Проверка текста", null, "В черновике ответа были служебные имена полей. Ответ переписан.");
             if (t.kind === "error") step("guard", "Сбой", null, String(t.output));
           }
           showReply(ev); meter(ev.usage);

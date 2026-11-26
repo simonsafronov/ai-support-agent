@@ -64,3 +64,5 @@ MANAGER_MIN_PER_REQUEST = float(env("MANAGER_MIN_PER_REQUEST", "10"))  # мин�
 MANAGER_RUB_PER_HOUR = float(env("MANAGER_RUB_PER_HOUR", "600"))        # стоимость часа менеджера для компании
 CARD_SAVES_SHARE = float(env("CARD_SAVES_SHARE", "0.5"))  # какую долю времени снимает готовая карточка обращения
 REQUESTS_PER_HALF_YEAR = int(env("REQUESTS_PER_HALF_YEAR", "500"))      # объем обращений: цифра заказчика
+MODEL_BUDGET_HALF_YEAR_RUB = float(env("MODEL_BUDGET_HALF_YEAR_RUB", "7000"))  # расход на модель за полгода, который
+# заказчик назвал приемлемым (5-7 тыс. руб.): верхняя граница; 0 = не показывать

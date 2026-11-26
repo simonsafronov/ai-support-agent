@@ -41,6 +41,13 @@ def test_tool_call_then_reply_with_card(product):
     assert llm.calls[1][-1]["role"] == "tool" and "products" in llm.calls[1][-1]["content"]
 
 
+def test_marker_does_not_repeat_the_written_title(product):
+    mark = f"[[product:{product['product_id']}]]"
+    clean, cards, _ = loop.render(f"Есть {product['title']} {mark} (вендор), цена за позицию, {mark}.")
+    assert clean == f"Есть {product['title']} (вендор), цена за позицию." and len(cards) == 1
+    assert loop.render(f"Есть {mark} (вендор).")[0] == f"Есть {product['title']} (вендор)."
+
+
 def test_price_from_catalog_passes_guard(product, offer):
     llm = Scripted([
         {"name": "get_product", "args": {"product_id": str(product["product_id"])}},
@@ -69,6 +76,25 @@ def test_amount_named_by_client_is_allowed():
     llm = Scripted(["В бюджет 300 000 руб. подберу два варианта. Сколько сотрудников?"])
     res = loop.run_turn(None, "Бюджет 300 000 рублей, нужна защита почты", llm=llm)
     assert not res["trace"] and "300 000" in res["reply"]
+
+
+def test_field_names_are_sent_back_for_rewrite():
+    llm = Scripted(["Вендор российский (поле russian_vendor), отметки in_ru_registry нет.",
+                    "В каталоге вендор отмечен как российский, номера в реестре нет."])
+    res = loop.run_turn(None, "Это российский продукт?", llm=llm)
+    assert [(t["kind"], t["name"], t["output"]) for t in res["trace"]] == [
+        ("guard", "wording", ["in_ru_registry", "russian_vendor"])]
+    assert "отмечен как российский" in res["reply"] and "russian_vendor" in llm.calls[1][-1]["content"]
+
+
+def test_field_names_never_reach_the_client():
+    stubborn = ("Вендор российский (поле russian_vendor). Условия доставки: https://store.softline.ru/delivery_info/ "
+                "[[facts: org_type=коммерческая]]")
+    res = loop.run_turn(None, "Это российский продукт?", llm=Scripted([stubborn, stubborn]))
+    assert res["reply"] == "Вендор российский. Условия доставки: https://store.softline.ru/delivery_info/"
+    known = loop.field_names({"offers": [{"offer_id": 1, "price_for": "за комплект", "name": "auto_model"}]})
+    assert known == {"offer_id", "price_for"}
+    assert loop.internal_names("Товар auto_model, артикул LBP-AC-12M-50-A3, цена price_for", known) == ["price_for"]
 
 
 def test_calc_total_feeds_the_guard(offer):

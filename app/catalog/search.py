@@ -792,6 +792,7 @@ _VALUE_SYNONYMS = {  # как клиент называет значение -> 
                      ("продл", "Продление"), ("подпис", "Подписка"), ("обновл", "Обновление"),
                      ("поддержк", "Техподдержка"), ("миграц", "Миграция")),
 }
+_WORD_FILTERS = ("org_type", "user_type")  # значения-перечисления: совпадение с начала слова
 _EMPTY_PASSES = ("org_type", "user_type", "platform")  # поле не заполнено: ограничения нет, вариант подходит
 
 
@@ -804,13 +805,15 @@ def _catalog_value(key: str, value) -> str:
     return str(value)
 
 
-def _substring_check(columns: tuple[str, ...], value, empty_passes: bool = False):
+def _substring_check(columns: tuple[str, ...], value, empty_passes: bool = False, word_start: bool = False):
+    """word_start: значение должно начинать слово, иначе "коммерческая" находится внутри "некоммерческая"."""
     needle = norm(str(value))
+    found = re.compile(r"(?<![0-9a-zа-я])" + re.escape(needle)).search if word_start else (lambda text: needle in text)
 
     def check(row) -> bool:
         if empty_passes and all(not row[column] for column in columns):
             return True
-        return any(needle in norm(row[column]) for column in columns)
+        return any(found(norm(row[column])) for column in columns)
     return check
 
 
@@ -818,7 +821,7 @@ def _value_check(key: str, value):
     value = _catalog_value(key, value)
     if key == "version":  # "1.8" у Astra Linux записано в названии варианта, а не в поле версии
         return _substring_check(("version", "name"), value)
-    return _substring_check((key,), value, empty_passes=key in _EMPTY_PASSES)
+    return _substring_check((key,), value, empty_passes=key in _EMPTY_PASSES, word_start=key in _WORD_FILTERS)
 
 
 def _apply_value_filters(rows: list, filters: dict) -> list:

@@ -43,7 +43,7 @@ function economy(e) {
   const a = e.assumptions, m = e.measured, field = (key, label, hint, step) => `<label><span>${label}<i>${hint}</i></span><input type="number" min="0" step="${step}" data-eco="${key}" value="${a[{ minutes: "minutes_per_request", rub_hour: "manager_rub_per_hour", card_share: "card_saves_share", volume: "requests_per_half_year" }[key]]}"></label>`;
   const part = (title, x, extra) => x ? `<div><h3>${title}</h3><div class="big">${rub(x.net_rub)}</div><dl>
       ${extra}<dt>Снято с менеджеров</dt><dd>${num(x.saved_hours, 1)} ч</dd><dt>Это стоит компании</dt><dd>${rub(x.saved_rub)}</dd>
-      <dt>Расход на модель</dt><dd>${rub(x.model_cost_rub)}</dd><dt>Рубль на модель возвращает</dt><dd>${x.return_x == null ? "нет данных" : num(x.return_x, 1) + " ₽"}</dd></dl></div>`
+      <dt>Расход на модель${x.model_budget_rub ? `, заказчик согласен на ${rub(x.model_budget_rub)}` : ""}</dt><dd>${rub(x.model_cost_rub)}</dd><dt>Рубль на модель возвращает</dt><dd>${x.return_x == null ? "нет данных" : num(x.return_x, 1) + " ₽"}</dd></dl></div>`
     : `<div><h3>${title}</h3><div class="big">нет данных</div><p class="sub">Появится после первых диалогов на стенде.</p></div>`;
   $("eco").innerHTML = `<h2>Экономика<small>выгода за вычетом расхода на модель; замеры стенда и допущения разделены</small></h2>
     <div class="res">

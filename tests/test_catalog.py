@@ -417,3 +417,13 @@ def test_single_licence_goes_before_tiers_that_start_higher():
     pid = search_products("Handy Backup", limit=1)["products"][0]["product_id"]
     res = get_product(pid, filters={"users": 1, "nodes": 1, "qty": 1}, limit=6)
     assert res["tier_notes"] and res["offers"][0].get("qty_min") is None
+
+
+def test_org_type_filter_matches_whole_value():
+    """'коммерческая' не должна находиться внутри 'Академическая, Некоммерческая'."""
+    from app.catalog import search
+    commercial = search._value_check("org_type", "коммерческая")
+    assert commercial({"org_type": "Коммерческая"}) and commercial({"org_type": "Государственная, Коммерческая"})
+    assert not commercial({"org_type": "Академическая, Некоммерческая"})
+    assert commercial({"org_type": None})  # поле не заполнено: ограничения нет
+    assert search._value_check("org_type", "нко")({"org_type": "Академическая, Некоммерческая"})

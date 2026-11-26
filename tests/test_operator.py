@@ -215,6 +215,7 @@ def test_economy_separates_measurements_from_assumptions():
                           "return_x": 8.8}
     assert e["half_year"]["requests"] == 500 and e["half_year"]["closed"] == 375
     assert e["half_year"]["saved_rub"] == 43750 and e["half_year"]["model_cost_rub"] == 5000
+    assert e["half_year"]["model_budget_rub"] == 7000 and "model_budget_rub" not in e["stand"]
     assert economy.calc(0, 0, 0.0)["measured"] is None
     stats = client.get("/api/admin/stats?minutes=20&rub_hour=900").json()["economy"]
     assert stats["assumptions"]["minutes_per_request"] == 20 and stats["assumptions"]["manager_rub_per_hour"] == 900
