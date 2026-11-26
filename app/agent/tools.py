@@ -205,35 +205,45 @@ def _words(text: str) -> str:
     return " ".join(re.findall(r"[0-9a-zа-я]+", str(text).lower().replace("ё", "е")))
 
 
-def _client_said(ctx, key: str, value: str) -> bool:
-    """Есть ли значение реквизита в сообщениях самого клиента в этом диалоге.
+def _said_at(said: list[str], key: str, value: str) -> tuple[int, int] | None:
+    """Где клиент в последний раз написал значение реквизита: номер его сообщения и место в нем; не писал: None.
 
-    Зачем: модель могла переписать ИНН с ошибкой или взять его не из слов клиента, и тогда ее значение заменило бы
-    реквизиты, которые клиент назвал сам. ИНН и КПП сверяются по знакам (цифры, разбитые пробелами или дефисами,
-    тоже считаются), название по словам.
+    ИНН и КПП сверяются по знакам (цифры, разбитые пробелами или дефисами, тоже считаются), название по словам.
     """
-    said = [m["content"] for m in store.messages(ctx.session_id, limit=10_000) if m["role"] == "user"]
+    last = None
     if key == "company":
         name = _words(value)
-        return bool(name) and any(f" {name} " in f" {_words(t)} " for t in said)
+        for n, t in enumerate(said):
+            if name and f" {name} " in f" {_words(t)} ":
+                last = (n, 0)
+        return last
     code = re.sub(r"[^0-9A-Z]", "", str(value).upper())
-    runs = set()
-    for t in said:
-        for group in re.findall(r"[0-9A-Z]+(?:[ -][0-9A-Z]+)*", t.upper()):
-            runs.update(group.replace("-", " ").split())
-            runs.add(re.sub(r"[ -]", "", group))
-    return bool(code) and code in runs
+    for n, t in enumerate(said):
+        for group in re.finditer(r"[0-9A-Z]+(?:[ -][0-9A-Z]+)*", t.upper()):
+            if code and re.sub(r"[ -]", "", group.group()) == code:
+                last = (n, group.start())
+            for part in re.finditer(r"[0-9A-Z]+", group.group()):
+                if code and part.group() == code:
+                    last = (n, group.start() + part.start())
+    return last
 
 
 def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", kpp: str = "", contact: str = "",
                 discount_percent: float = 0):
     """Реквизиты графы «Заказчик» помнит диалог: названные раньше подставляются сами, новые запоминаются.
 
-    Реквизит от модели принимается, только если клиент сам его написал; иначе остается сохраненный.
+    Зачем сверка со словами клиента: модель могла переписать реквизит с ошибкой, взять его не из слов клиента или
+    вернуть ИНН, который клиент потом исправил. Реквизит от модели принимается, только если клиент сам его написал;
+    ИНН и КПП, кроме того, только если клиент назвал их не раньше сохраненных: в КП идет последнее названное.
     """
-    given = {k: v for k, v in (("company", customer), ("inn", inn), ("kpp", kpp))
-             if str(v or "").strip() and "[" not in str(v)  # метка вместо реквизита: настоящий уже записан кодом
-             and _client_said(ctx, k, v)}
+    said = [m["content"] for m in store.messages(ctx.session_id, limit=10_000) if m["role"] == "user"]
+    given = {}
+    for key, value in (("company", customer), ("inn", inn), ("kpp", kpp)):
+        if not str(value or "").strip() or "[" in str(value):  # метка вместо реквизита: настоящий уже записан кодом
+            continue
+        at, saved = _said_at(said, key, value), ctx.facts.get(FACT_FIELDS[key])
+        if at and (key == "company" or not saved or at > (_said_at(said, key, saved) or (-1, 0))):
+            given[key] = value
     if given:
         save_facts(ctx, given)
     res = kp.make_quote(ctx.session_id, customer=ctx.facts.get("компания", ""), items=items,

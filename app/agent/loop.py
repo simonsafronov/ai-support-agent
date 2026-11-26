@@ -68,25 +68,34 @@ def inn_valid(inn: str) -> bool:
 
 
 def mask_requisites(text: str) -> tuple[str, dict]:
-    """ИНН и КПП клиента в модель не уходят: вместо них метки, настоящие значения код кладет в память диалога."""
-    found = {}
+    """ИНН и КПП клиента в модель не уходят: вместо них метки, настоящие значения код кладет в память диалога.
+
+    В сообщении два ИНН (свой и контрагента, ошибочный и исправленный): запоминается тот, что стоит последним.
+    """
+    found, said = {}, text
+
+    def keep(key: str, value: str):  # проходы ниже идут не по порядку текста: последнее значение видно по месту в нем
+        if key not in found or said.rfind(value) > said.rfind(found[key]):
+            found[key] = value
 
     def both(m):  # "ИНН/КПП 7707083893/770701001"
-        found.update(inn=m.group(2), kpp=m.group(4))
+        keep("inn", m.group(2))
+        keep("kpp", m.group(4))
         return f"{m.group(1)}[ИНН]{m.group(3)}[КПП]"
 
     def hide(key: str, mark: str, checked: bool = False):
         def repl(m):
             if checked and not inn_valid(m.group(2)):
                 return m.group(0)
-            found[key] = m.group(2)
+            keep(key, m.group(2))
             return m.group(1) + mark
         return repl
 
     def pair(m):  # два числа подряд это реквизиты, если ИНН верен по контрольной цифре или у обоих один код налоговой
         if not (inn_valid(m.group(1)) or m.group(1)[:4] == m.group(3)[:4]):
             return m.group(0)
-        found.update(inn=m.group(1), kpp=m.group(3))
+        keep("inn", m.group(1))
+        keep("kpp", m.group(3))
         return f"[ИНН]{m.group(2)}[КПП]"
 
     def bare(m):  # ИНН без слова "ИНН": только с верной контрольной цифрой; десять цифр на 9 это мобильный телефон
