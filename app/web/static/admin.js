@@ -244,8 +244,8 @@ async function load(force = false) {
   const pct = (v) => v == null ? "нет данных" : Math.round(v * 100) + "%";
   $("kpi").innerHTML = `<a href="#queue" id="towait" class="${late ? "late" : ""}"><b>${num(qu.waiting)}</b><span>ждут менеджера${late ? `, просрочено ${num(qu.overdue)}` : ""}</span></a>` + [
     // две доли рядом, у каждой числитель и знаменатель: число диалогов и обращений видно в них
-    [pct(st.without_human_share), `без передачи среди диалогов с агентом: ${num(st.closed_dialogs)} из ${num(st.dialogs)}`],
-    [pct(st.requests_without_human_share), `без менеджера среди всех обращений, включая вызов менеджера кнопкой: ${num(st.closed_dialogs)} из ${num(st.requests)}`],
+    [pct(st.without_human_share), `без передачи среди диалогов с агентом: ${num(st.closed_dialogs)}\u00a0из\u00a0${num(st.dialogs)}`],
+    [pct(st.requests_without_human_share), `без менеджера среди всех обращений, включая вызов менеджера кнопкой: ${num(st.closed_dialogs)}\u00a0из\u00a0${num(st.requests)}`],
     [num(st.quotes), "черновиков КП"],
     [rub(st.cost_rub_per_turn), "стоимость одного запроса"], [rub(st.cost_rub_per_dialog), "стоимость диалога"],
     [st.avg_model_seconds_per_turn == null ? "нет данных" : String(st.avg_model_seconds_per_turn).replace(".", ",") + " с", "модель думает на запрос"],
