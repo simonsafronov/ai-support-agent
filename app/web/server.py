@@ -320,6 +320,8 @@ def _brief(name: str, out) -> dict:
                             for r in (out.get("results") or [])[:2]]}
     if name == "note_facts":
         return {"saved": out.get("saved") or {}}
+    if name == "match_spec":  # сколько строк списка в каждом статусе и сумма по найденным точно
+        return {"total": out.get("total"), "counts": out.get("counts") or {}}
     return {k: out[k] for k in ("ok", "number", "total", "ticket") if k in out}
 
 
@@ -1073,6 +1075,7 @@ def proof_page():
 if config.WEBIM_TOKEN:  # чат сайта в Webim: агент отвечает там как бот (app/webim.py, docs/webim.md)
     from app import webim
     app.include_router(webim.router)
+    DELIVERY["webim-"] = webim.deliver  # ответ, проверенный менеджером, уходит в окно Webim
 
 
 @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)

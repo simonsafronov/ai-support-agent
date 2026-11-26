@@ -132,12 +132,22 @@ def work(chat_id: int, action: str, text: str, received: float):
 
 
 def answer(chat_id: int, text: str, received: float):
-    """Ход агента и его ответ: текст с карточками, КП файлом, варианты кнопками или перевод к людям."""
+    """Ход агента и его ответ посетителю. В режиме "ответ проверяет менеджер" посетитель получает срок проверки,
+    а ответ уйдет после решения менеджера через deliver."""
     web, sid = _web(), session_id(chat_id)
     body = web.ChatIn(message=text[:4000], session_id=sid, client_id=sid)
     with web.session_lock(sid):
         res = web.turn_in_slot(sid, body.message, body, received, None)
-    failed = any(t["kind"] == "error" for t in res["trace"])  # модель не ответила, срок хода вышел, сбой кода
+    if res.get("review"):
+        if not send(chat_id, {"kind": "operator", "text": res["review"]["text"]}):
+            redirect(chat_id, "")
+        return
+    reply(chat_id, res)
+
+
+def reply(chat_id: int, res: dict):
+    """Ответ агента в окно Webim: текст с карточками, КП файлом, варианты кнопками или перевод к людям."""
+    failed = any(t["kind"] == "error" for t in res.get("trace") or [])  # модель не ответила, срок хода вышел, сбой кода
     handed = any(e["type"] == "handoff" for e in res["events"])
     delivered = send(chat_id, {"kind": "operator", "text": message_text(res)})
     for e in res["events"]:
@@ -150,6 +160,15 @@ def answer(chat_id: int, text: str, received: float):
     elif res["choices"]:
         send(chat_id, {"kind": "keyboard", "buttons": [[{"id": f"choice-{i}", "text": c}]
                                                        for i, c in enumerate(res["choices"], 1)] + [[MANAGER]]})
+
+
+def deliver(sid: str, res: dict):
+    """Ответ после проверки менеджером: ответ агента целиком, текст менеджера одним сообщением."""
+    chat_id = int(sid.split("-")[1])
+    if res.get("from") == "manager":
+        send(chat_id, {"kind": "operator", "text": plain(res["reply"])})
+    else:
+        reply(chat_id, res)
 
 
 def call_manager(chat_id: int):

@@ -55,7 +55,7 @@ const STATUS = { new: "ждет менеджера", taken: "в работе", a
 const TOOL = {  // подписи шагов как в чате покупателя
   search_products: "Поиск в каталоге", get_product: "Варианты лицензий", browse_categories: "Категории каталога",
   find_analogs: "Аналоги", kb_search: "База знаний", note_facts: "Память о клиенте", calc_total: "Расчет суммы",
-  make_quote: "Черновик КП", handoff_to_manager: "Передача менеджеру",
+  make_quote: "Черновик КП", handoff_to_manager: "Передача менеджеру", match_spec: "Сверка списка с каталогом",
 };
 const GUARD = { price: "Проверка цен", discount: "Проверка скидки", wording: "Проверка текста" };
 // Допущения экономики: ключ запроса, ключ в ответе, подпись, пояснение, шаг, границы как у сервера

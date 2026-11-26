@@ -212,7 +212,10 @@ function summary(name, out) {
   }
   if (name === "note_facts") return esc(Object.entries(out.saved || {}).map(([k, v]) => `${k}: ${v}`).join("; "));
   if (name === "calc_total") return out.total ? `Итого ${rub(out.total)}` : "";
-  if (name === "match_spec") return out.total ? `Итого по найденным точно ${rub(out.total)}` : "Точных совпадений нет";
+  if (name === "match_spec") {
+    const counts = Object.entries(out.counts || {}).map(([k, v]) => `${k} ${v}`).join(", ");
+    return (counts ? counts + ". " : "") + (out.total ? `Итого по найденным точно ${rub(out.total)}` : "Точных совпадений нет");
+  }
   if (name === "make_quote") return out.ok ? esc(`${out.number}, итого ${rub(out.total)}`) : "";
   if (name === "handoff_to_manager") return out.ticket ? `Обращение № ${esc(out.ticket)}` : "";
   return "";

@@ -312,3 +312,28 @@ def test_server_mounts_the_adapter_only_with_a_bot_token(tmp_path):
     env.update(APP_DB=str(tmp_path / "app.sqlite"), QUOTES_DIR=str(tmp_path / "quotes"))
     assert _server_answer({**env, "WEBIM_TOKEN": "t", "WEBIM_SECRET": "s1"}) == '200 {"result":"ok"}'
     assert _server_answer(env).startswith("404")
+
+
+def test_review_mode_sends_the_review_note_then_the_checked_answer(fake, jobs, monkeypatch):
+    """Режим "ответ проверяет менеджер": посетитель Webim сначала получает срок проверки, ответ агента уходит в окно
+    Webim после "Отправить", текст менеджера после "Править"."""
+    monkeypatch.setitem(server.DELIVERY, "webim-", webim.deliver)
+    store.set_setting(server.REVIEW, "1")
+    try:
+        reply = "Kaspersky на 10 ПК подберу по сроку: на год или на два?"
+        model(monkeypatch, Scripted([reply, "Второй ответ агента."]))
+        post(new_message(9101, visitor("Сколько стоит Kaspersky на 10 ПК")))
+        settle(jobs)
+        (method, note), = sent(fake, 9101)
+        assert method == "send_message" and "проверяет менеджер" in note["text"] and reply not in note["text"]
+        sid = webim.session_id(9101)
+        draft = store.drafts("d.session_id=? AND d.status=?", (sid, "new"))[-1]
+        assert server.review_draft(draft["id"], "send")["ok"]
+        assert sent(fake, 9101)[-1] == ("send_message", {"kind": "operator", "text": reply})
+        post(new_message(9101, visitor("А на два года?")))
+        settle(jobs)
+        draft = store.drafts("d.session_id=? AND d.status=?", (sid, "new"))[-1]
+        assert server.review_draft(draft["id"], "edit", "На два года выгоднее, пришлю расчет.")["ok"]
+        assert sent(fake, 9101)[-1] == ("send_message", {"kind": "operator", "text": "На два года выгоднее, пришлю расчет."})
+    finally:
+        store.set_setting(server.REVIEW, "0")
