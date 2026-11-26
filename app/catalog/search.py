@@ -671,7 +671,24 @@ def _offer_dict(row: sqlite3.Row) -> dict:
             item[key] = _short(row[key])
     item["russian_vendor"] = bool(row["russian_vendor"])
     item.update(_price_flags(row))
+    price_for = _price_for(row)
+    if price_for:
+        item["price_for"] = price_for
     return item
+
+
+def _price_for(row: sqlite3.Row) -> str | None:
+    """За что цена варианта, словами: за одну лицензию в ступени количества или за комплект."""
+    if row["price"] is None:
+        return None
+    if row["qty_pricing"] == "per_unit":
+        top = f"до {row['qty_max']}" if row["qty_max"] else "и больше"
+        return f"за 1 лицензию при покупке от {row['qty_min']} {top}"
+    if row["qty_pricing"] == "per_tier":
+        return "за весь комплект этой ступени"
+    if row["users_max"] and row["qty_min"] is None:
+        return f"за комплект на {row['users_max']} пользователей"
+    return None
 
 
 def _as_int(value) -> int | None:
@@ -868,6 +885,9 @@ def get_product(product_id: str | int, filters: dict | None = None, limit: int =
         "ignored_filters": sorted(set(filters) - known),
     }
     result.update({key: value for key, value in optional.items() if value})
+    if not rows and all_rows:
+        result["note"] = "С такими фильтрами вариантов нет. В facets значения, которые есть у продукта без фильтров."
+        result["facets"] = _facets_for_output(facet_counts(all_rows))[0]
     return result
 
 
@@ -889,6 +909,7 @@ def get_offer(offer_id: int | str) -> dict:
     item["price_ambiguous"] = bool(row["price_ambiguous"])
     item["same_code_prices"] = json.loads(row["same_code_prices"] or "null")
     item["params"] = json.loads(row["params_json"] or "{}")
+    item["price_for"] = _price_for(row)
     return item
 
 
@@ -940,9 +961,14 @@ def browse_categories(query: str | None = None, parent_id: int | None = None,
     if not rows and len(q.groups) > 1:
         rows = conn.execute(sql, (q.fts("OR"),)).fetchall()
 
+    def hits(row: sqlite3.Row, field: str) -> int:
+        return sum(1 for hit in q.coverage(_doc_tokens(row[field])) if hit)
+
+    best = max((hits(r, "path") for r in rows), default=0)
+    rows = [r for r in rows if hits(r, "path") == best]  # слабые совпадения по одному слову из многих отсекаются
+
     def order(row: sqlite3.Row) -> tuple:
-        in_name = sum(1 for hit in q.coverage(_doc_tokens(row["name"])) if hit)
-        return (-in_name, -row["n_available"], -row["n_products"], row["name"])
+        return (-hits(row, "name"), -row["n_available"], -row["n_products"], row["name"])
 
     rows.sort(key=order)
     return {"total": len(rows), "categories": [_category_dict(conn, r) for r in rows[:limit]]}

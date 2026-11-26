@@ -346,3 +346,18 @@ def test_long_polite_message_still_finds_the_product():
     result = search_products("добрый день интересует возможность приобретения лицензии kaspersky endpoint "
                              "security для бизнеса расширенный сроком на 3 года для 100 пользователей")
     assert "kaspersky endpoint security" in result["products"][0]["title"].lower()
+
+
+def test_price_for_tells_unit_from_pack():
+    """Живая база: у лесенки по количеству цена за одну лицензию, у пакета на N пользователей за комплект."""
+    from app.catalog import search
+    if not DEFAULT_DB.exists():
+        pytest.skip("нет собранной базы каталога")
+    live = sqlite3.connect(DEFAULT_DB)
+    live.row_factory = sqlite3.Row
+    rows = {r["id"]: r for r in live.execute(
+        "SELECT * FROM offers WHERE id IN (4857, 477652)")}
+    if len(rows) < 2:
+        pytest.skip("в базе нет контрольных вариантов")
+    assert search._price_for(rows[4857]) == "за 1 лицензию при покупке от 50 до 99"
+    assert search._price_for(rows[477652]) == "за комплект на 30 пользователей"

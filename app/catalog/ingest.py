@@ -555,7 +555,7 @@ def qty_pricing(offers: list[sqlite3.Row]) -> dict[int, str]:
     for steps in ladders.values():
         steps.sort(key=lambda o: (o["qty_min"], o["qty_max"] or float("inf")))
         mode = _ladder_mode([o["price"] for o in steps])
-        if mode and len({o["qty"] for o in steps}) > 1:
+        if mode and len({(o["qty_min"], o["qty_max"]) for o in steps}) > 1:
             modes.update((o["id"], mode) for o in steps)
     return modes
 
