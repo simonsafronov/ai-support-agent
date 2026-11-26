@@ -191,10 +191,6 @@ _LABELED = re.compile(rf"({_REQ_LABEL}(?:\s*(?:/|,|и)\s*{_REQ_LABEL})*[\s:№#=
 # ИНН группами цифр без названия: только с верными контрольными цифрами
 _SPACED = re.compile(r"(?<![\w.,/-])\d{2,4}(?:[ \u00a0-]\d{2,4}){1,4}(?![\w/-])" + _MONEY_AFTER, re.I)
 _NOT_REQUISITE = re.compile(r"(?:арт\w*|код\w*|sku|offer\w*|id)[\s.:№#-]*$", re.I)  # артикул и коды остаются
-_NAME_WORD = r"(?:[А-ЯЁA-Z][а-яёa-z]+(?:-[А-ЯЁA-Z][а-яёa-z]+)?|[А-ЯЁ]\.\s?(?:[А-ЯЁ]\.)?)"
-# имя после "контактное лицо", "меня зовут", "ФИО": до трех слов с заглавной буквы или инициалов
-_NAME = re.compile(rf"((?<![А-Яа-яЁёA-Za-z])(?i:контактн\w*\s+лиц\w*|меня\s+зовут|ФИО)[\s:—–-]*)"
-                   rf"{_NAME_WORD}(?:\s+{_NAME_WORD}){{0,2}}")
 # адреса в мессенджерах: @имя, ссылки t.me, vk.com, wa.me и "telegram: имя"
 _MESSENGER = re.compile(
     r"(?i)(?:https?://)?(?:www\.|m\.)?(?:t\.me|telegram\.me|telegram\.dog|vk\.com|vk\.ru|wa\.me|"
@@ -220,7 +216,7 @@ def hide_personal(text: str) -> str:
         return repl
 
     text = _MESSENGER.sub("[контакт]", loop.mask_contacts(text)[0])
-    text = _NAME.sub(lambda m: m.group(1) + "[имя]", _LABELED.sub(labeled, text))
+    text = loop.mask_name(_LABELED.sub(labeled, text))
     text = _SPACED.sub(bare(lambda v: len(d := re.sub(r"\D", "", v)) in (10, 12) and loop.inn_valid(d)), text)
     return _REQUISITE.sub(bare(lambda v: True), text)
 
@@ -731,6 +727,12 @@ def admin_case(session_id: str, body: CaseIn):
 def proof_run():
     """Показ проверки цен: подставная модель называет выдуманную цену, настоящая проверка ее ловит."""
     return proof.price_guard()
+
+
+@app.get("/api/proof/attacks")
+def proof_attacks():
+    """Набор атак на агента, защита кода от каждой и итог последнего прогона: данные для страницы /proof."""
+    return proof.attacks()
 
 
 class AnswerIn(BaseModel):

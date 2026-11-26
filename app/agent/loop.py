@@ -51,7 +51,14 @@ _NOT_REQUISITE = re.compile(r"(?:арт\w*|код\w*|заказ\w*|сч[её]т\
 _PHONE = re.compile(
     r"(?<![\w+])(?:\+7|7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?![\w])"     # +7 916 123-45-67, 7 916 ...
     r"|(?<![\w+])\+\d{1,3}[\s(-]*\d{2,4}[\s)-]*\d{2,3}[\s-]*\d{2}[\s-]*\d{2,3}(?!\d)"   # +375 29 123-45-67
-    rf"|(?<![\w/.,+№#-])9\d{{2}}[\s-]?\d{{3}}[\s-]?\d{{2}}[\s-]?\d{{2}}(?![\w/-]){_NOT_MONEY}", re.I)  # 9161234567
+    rf"|(?<![\w/.,+№#-])9\d{{2}}[\s-]?\d{{3}}[\s-]?\d{{2}}[\s-]?\d{{2}}(?![\w/-]){_NOT_MONEY}"  # 9161234567
+    # городской номер без +7 и 8: код в скобках (495) 123-45-67, (8412) 12-34-56, и семь цифр через дефис 123-45-67
+    r"|(?<![\w+(])\(\d{3,5}\)[\s-]*\d{1,3}(?:[\s-]?\d{2}){2}(?!\d)"
+    rf"|(?<![\w/.,+№#-])\d{{3}}[-–]\d{{2}}[-–]\d{{2}}(?![\w/-]){_NOT_MONEY}", re.I)
+
+
+_SEVEN_DIGITS = re.compile(r"\d{3}[-–]\d{2}[-–]\d{2}")
+_ARTICLE_BEFORE = re.compile(r"(?:арт\w*|код\w*|заказ\w*|сч[её]т\w*|кп|offer\w*|id|sku|модел\w*)[\s.:№#-]*$", re.I)
 
 
 def inn_valid(inn: str) -> bool:
@@ -136,8 +143,34 @@ def mask_contacts(text: str) -> tuple[str, list[str]]:
     """
     text = _PASSPORT.sub(lambda m: m.group(1) + "[паспорт]", text)
     text = _CARD.sub(lambda m: "[карта]" if m.group(1) or luhn_valid(m.group(2)) else m.group(0), text)
-    found = _EMAIL.findall(text) + [m.group(0) for m in _PHONE.finditer(text)]
-    return _PHONE.sub("[телефон]", _EMAIL.sub("[email]", text)), found
+    found = _EMAIL.findall(text)
+
+    def phone(m):
+        if _SEVEN_DIGITS.fullmatch(m.group(0)) and _ARTICLE_BEFORE.search(m.string[max(0, m.start() - 24):m.start()]):
+            return m.group(0)  # "арт. 123-45-67" это артикул, а не телефон
+        found.append(m.group(0))
+        return "[телефон]"
+
+    text = _PHONE.sub(phone, _EMAIL.sub("[email]", text))
+    return text, found
+
+
+_NAME_WORD = r"(?:[А-ЯЁA-Z][а-яёa-z]+(?:-[А-ЯЁA-Z][а-яёa-z]+)?|[А-ЯЁ]\.\s?(?:[А-ЯЁ]\.)?)"
+# имя после "контактное лицо", "ФИО": до трех слов с заглавной буквы или инициалов
+_NAME_LABELED = re.compile(rf"((?<![А-Яа-яЁёA-Za-z])(?i:контактн\w*\s+лиц\w*|ФИО)[\s:—–-]*)"
+                           rf"{_NAME_WORD}(?:\s+{_NAME_WORD}){{0,2}}")
+# имя после "меня зовут", "мое имя": клиенты пишут его и с маленькой буквы. Первое слово любое, кроме предлога, следующие
+# слова с заглавной буквы или с окончанием отчества и фамилии: слово после имени ("евгений компания ооо") не скрывается
+_SURNAME = r"[а-яё]{2,}(?:ов|ев|ёв|ин|ын|ск(?:ий|ая)|цк(?:ий|ая)|енко|вич|вна|ичн?а?)а?"
+_NAME_SPOKEN = re.compile(rf"((?<![А-Яа-яЁёA-Za-z])(?i:меня\s+зовут|мо[её]\s+имя)[\s:—–-]*)"
+                          rf"(?!(?i:на|в|во|к|по|и|а|но|из|с|со|от|до|за|для|не|ни|ли|же|бы)\b)"
+                          rf"(?:[А-Яа-яЁёA-Za-z][а-яёa-z]+(?:-[А-Яа-яЁёA-Za-z][а-яёa-z]+)?|[А-ЯЁ]\.\s?(?:[А-ЯЁ]\.)?)"
+                          rf"(?:\s+(?:{_NAME_WORD}|{_SURNAME})){{0,2}}")
+
+
+def mask_name(text: str) -> str:
+    """Имя клиента после слов "меня зовут", "мое имя", "контактное лицо", "ФИО" заменяется меткой [имя]."""
+    return _NAME_LABELED.sub(lambda m: m.group(1) + "[имя]", _NAME_SPOKEN.sub(lambda m: m.group(1) + "[имя]", text))
 
 
 def field_names(obj) -> set[str]:
@@ -342,10 +375,10 @@ _SERVICE_LOOKALIKE = re.compile(r"\[\s*((?:служебн|системн)[^\[\]]
 
 
 def for_model(text: str) -> str:
-    """Сообщение клиента в том виде, в каком его видит модель: без контактов, без служебных меток [[...]] и без
+    """Сообщение клиента в том виде, в каком его видит модель: без контактов и имени, без служебных меток [[...]] и без
     скобок, в которых клиент выдает свой текст за служебное сообщение цикла."""
     text = _SERVICE_LOOKALIKE.sub(r"(клиент пишет: \1)", re.sub(r"\[\[|\]\]", " ", text))
-    return mask_contacts(mask_requisites(text)[0])[0]
+    return mask_name(mask_contacts(mask_requisites(text)[0])[0])
 
 
 def budget_spent() -> bool:
