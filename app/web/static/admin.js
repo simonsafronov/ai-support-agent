@@ -82,7 +82,7 @@ function card(h, now) {
   const kv = (o) => Object.entries(o).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ");
   const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}`).join("<br>");
   const money = [c.calc_total ? `расчет ${rub(c.calc_total)}` : "", c.quote ? `${c.quote.url ? `<a href="${esc(c.quote.url)}" target="_blank" rel="noopener">черновик ${esc(c.quote.number)}</a>` : `черновик ${esc(c.quote.number)}`} на ${rub(c.quote.total)}${c.quote.url ? "" : ", КП доступен оператору"}` : ""].filter(Boolean).join(" · ");
-  const client = [kv(c.client), c.client["контакт"] || h.from_run ? "" : '<em class="nc">контакта нет: ответьте здесь, клиент увидит ответ в чате сайта</em>'].filter(Boolean).join("<br>");
+  const client = [kv(c.client), c.client["контакт"] || h.from_run || done ? "" : '<em class="nc">контакта нет: ответьте здесь, клиент увидит ответ в чате сайта</em>'].filter(Boolean).join("<br>");
   const rows = [
     ["Нужно", esc(h.summary)],
     c.next ? ["Дальше", esc(c.next), "next"] : null,
