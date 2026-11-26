@@ -4,50 +4,87 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Экран оператора: ИИ-консультант Softline Store</title>
+<meta name="description" content="Рабочее место менеджера Softline Store: очередь обращений от ИИ-консультанта с готовыми карточками, ответ клиенту в чат, шаги агента и экономика.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 <style>
-.wrap{max-width:1680px;margin:0 auto;padding:var(--s32);display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s32);align-items:start}
-.wide{grid-column:1/-1}
-.note{padding:var(--s8) var(--s16);background:var(--rose);border-radius:var(--r);color:var(--crimson-dark)}
-.bar{display:flex;flex-wrap:wrap;gap:var(--s16);align-items:center;font-size:var(--f12);color:var(--muted)}
-.bar span{flex:1 1 320px}
+.wrap{max-width:1680px;margin:0 auto;padding:var(--s24) var(--s32) var(--s32);display:grid;grid-template-columns:minmax(0,1fr);gap:var(--s24)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.note{padding:var(--s8) var(--s16);background:var(--rose);border-radius:var(--r);color:var(--crimson-dark);display:flex;flex-wrap:wrap;gap:var(--s8) var(--s16);align-items:center}
+.bar{display:flex;flex-wrap:wrap;gap:var(--s8) var(--s16);align-items:center;font-size:var(--f12);color:var(--muted)}
+.bar p{flex:1 1 320px;margin:0}
 .btn{font:inherit;font-size:var(--f12);padding:var(--s8) var(--s16);border:1px solid var(--line);border-radius:var(--r);background:#fff;color:var(--navy);cursor:pointer;text-decoration:none;white-space:nowrap}
 .btn:hover{border-color:var(--crimson);color:var(--crimson)}
+.btn:disabled{color:var(--muted);border-color:var(--line);cursor:default}
 .btn.main{background:var(--crimson);border-color:var(--crimson);color:#fff}
 .btn.main:hover{background:var(--crimson-dark);color:#fff}
-.kpi{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s16)}
-.kpi div{background:var(--panel);border-radius:var(--r);padding:var(--s16)}
+h2{margin:0}
+h2 small{font-size:var(--f12);font-weight:400;color:var(--muted);margin-left:var(--s8)}
+h3{margin:0;font-size:var(--f12);font-weight:500;color:var(--muted)}
+
+/* Показатели: первая плитка ведет в очередь, просрочка выделена */
+.kpi{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:var(--s16)}
+.kpi>*{background:var(--panel);border-radius:var(--r);padding:var(--s16);color:var(--ink);text-decoration:none}
 .kpi b{display:block;font-size:var(--f28);font-weight:400;line-height:1.2}
 .kpi span{font-size:var(--f12);color:var(--muted)}
-h2{margin-bottom:var(--s16)}
-h2 small{font-size:var(--f12);font-weight:400;color:var(--muted);margin-left:var(--s8)}
+.kpi a{border:1px solid var(--navy)}
+.kpi a:hover span{color:var(--crimson)}
+.kpi a.late{background:var(--rose);border-color:var(--crimson)}
+.kpi a.late b,.kpi a.late span{color:var(--crimson-dark)}
 
-/* Экономика: слева результат, справа допущения, которые можно поменять */
-.eco{border:1px solid var(--line);border-radius:var(--r);padding:var(--s24);display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s32)}
-.eco h2{grid-column:1/-1;margin:0}
+/* Экономика: в свернутом виде главные суммы за полгода, по клику расчет и допущения */
+.eco{border:1px solid var(--line);border-radius:var(--r)}
+.eco summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s4) var(--s16);padding:var(--s16) var(--s24);cursor:pointer;list-style:none}
+.eco summary::-webkit-details-marker{display:none}
+.eco summary b{font-size:var(--f18);font-weight:600}
+.eco summary .more{margin-left:auto;color:var(--crimson);font-size:var(--f12);white-space:nowrap}
+.eco summary .more::after{content:" ▾"}
+.eco[open] summary .more::after{content:" ▴"}
+.eco .body{padding:0 var(--s24) var(--s24);display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--s32)}
 .eco .res{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s24)}
-.eco h3{margin:0 0 var(--s8);font-size:var(--f12);font-weight:500;color:var(--muted)}
+.eco h3{margin-bottom:var(--s8)}
 .eco .big{font-size:var(--f28);line-height:1.2}
+.eco .cap{margin:0;font-size:var(--f12);color:var(--muted)}
 .eco dl{margin:var(--s8) 0 0;display:grid;grid-template-columns:1fr auto;gap:var(--s4) var(--s16)}
 .eco dt{color:var(--muted)}.eco dd{margin:0;text-align:right;white-space:nowrap}
+.eco dt i,.eco label span i{font-style:normal;font-size:var(--f12);color:var(--muted);display:block}
 .eco .in{display:grid;gap:var(--s8);align-content:start}
 .eco label{display:grid;grid-template-columns:1fr 96px;gap:var(--s16);align-items:center}
-.eco label span i{font-style:normal;font-size:var(--f12);color:var(--muted);display:block}
 .eco input{font:inherit;padding:var(--s4) var(--s8);border:1px solid var(--line);border-radius:var(--r);text-align:right;width:100%;height:32px}
+.eco input[aria-invalid=true]{border-color:var(--crimson)}
+.eco .warn{grid-column:1/-1;margin:0;color:var(--crimson-dark);font-size:var(--f12)}
+
+/* Рабочая зона: очередь и диалоги слева, панель диалога справа */
+.work{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);grid-template-areas:"q d" "t d";gap:var(--s32);align-items:start}
+#queue{grid-area:q}#dialogs{grid-area:t}.detail{grid-area:d}
+.head{display:flex;flex-wrap:wrap;gap:var(--s8) var(--s16);align-items:center;margin-bottom:var(--s16)}
+.head h2{margin-right:auto}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.seg button{border:0;border-right:1px solid var(--line);background:#fff;color:var(--navy);font-size:var(--f12);padding:var(--s4) var(--s16);min-height:32px}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed=true]{background:var(--navy);color:#fff}
+.find{font:inherit;font-size:var(--f12);padding:var(--s4) var(--s8);border:1px solid var(--line);border-radius:var(--r);min-height:32px;width:240px;max-width:100%}
+.open{border:0;background:none;padding:0;margin:0;font:inherit;color:inherit;text-align:left;cursor:pointer}
+.open:hover{color:var(--crimson)}
 
 /* Карточка обращения */
 .cards{display:grid;gap:var(--s16)}
-.card{overflow-wrap:anywhere;border:1px solid var(--line);border-left:4px solid var(--line);border-radius:var(--r);padding:var(--s16);display:grid;gap:var(--s8);cursor:pointer}
-.card.high{border-left-color:var(--crimson)}.card.normal{border-left-color:var(--navy)}
-.card.on{background:var(--rose)}.card.done{opacity:.6}
+.cards .card{width:auto;align-self:stretch;overflow-wrap:anywhere;border:1px solid var(--line);border-left:4px solid var(--line);border-radius:var(--r);padding:var(--s16);display:grid;gap:var(--s8);cursor:pointer;background:#fff}
+.cards .card.high{border-left-color:var(--crimson)}.cards .card.normal{border-left-color:var(--navy)}
+.cards .card.on{background:var(--rose)}
+.cards .card.done{background:var(--panel);border-left-color:var(--muted)}
+.cards .card.done .tag.u{background:var(--muted)}
 .card .hd{display:flex;flex-wrap:wrap;gap:var(--s8);align-items:center}
-.card .hd b{font-weight:600}
+.card .hd .open{font-weight:600}
 .card .hd .due{margin-left:auto;font-size:var(--f12);color:var(--muted)}
 .card .hd .due.late{color:var(--crimson);font-weight:500}
-.card .row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:var(--s16);align-items:start}
+.cards .card .row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:var(--s16);align-items:start;margin:0;font-size:var(--f14);color:var(--ink)}
 .card .row>span:first-child{font-size:var(--f12);color:var(--muted);padding-top:2px}
+.card .row.next>span:last-child{font-weight:500;color:var(--navy)}
+.card .nc{font-style:normal;color:var(--crimson-dark)}
 .card .act{display:flex;flex-wrap:wrap;gap:var(--s8);align-items:center;margin-top:var(--s4)}
 .card .act em{font-style:normal;font-size:var(--f12);color:var(--muted)}
+.fold{display:flex;flex-wrap:wrap;gap:var(--s8) var(--s16);align-items:center;justify-content:space-between;padding:var(--s8) var(--s16);border:1px dashed var(--line);border-radius:var(--r);color:var(--muted);font-size:var(--f12)}
 
 table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:var(--s8) var(--s16) var(--s8) 0;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
@@ -59,21 +96,70 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
 .tag{display:inline-block;padding:0 var(--s8);border-radius:var(--r);font-size:var(--f12);background:var(--panel);color:var(--navy);white-space:nowrap}
 .tag.h{background:var(--rose);color:var(--crimson-dark)}
 .tag.u{background:var(--crimson);color:#fff}
-.block{margin-bottom:var(--s32)}
+
+/* Панель диалога */
 .detail{position:sticky;top:var(--s16);max-height:calc(100vh - 32px);overflow:auto;border:1px solid var(--line);border-radius:var(--r);padding:var(--s16);background:var(--bg)}
+.detail .dh{display:flex;flex-wrap:wrap;gap:var(--s8);align-items:baseline;justify-content:space-between}
+.detail .id{margin:var(--s4) 0 var(--s8);font-size:var(--f12);color:var(--muted);overflow-wrap:anywhere}
+.detail .back{display:none}
+.detail h3{margin-top:var(--s24)}
 .detail .msg{max-width:100%;margin-bottom:var(--s8)}
-.detail .who{font-size:var(--f12);color:var(--muted);margin-top:var(--s16)}
+.detail .who{display:block;font-size:var(--f12);color:var(--muted);margin-top:var(--s16)}
 .st{font-size:var(--f12);border-left:2px solid var(--line);padding:var(--s4) 0 var(--s4) var(--s16);margin:var(--s4) 0;overflow-wrap:anywhere}
 .st.tool{border-color:var(--crimson)}.st.guard,.st.error{border-color:var(--navy)}
 .st b{font-weight:500}
+.st details summary{color:var(--muted);cursor:pointer}
 .st pre{margin:var(--s4) 0 0;white-space:pre-wrap;color:var(--muted);font:inherit;max-height:160px;overflow:auto}
-.ans,.case{margin:var(--s16) 0;display:grid;gap:var(--s8);padding-top:var(--s16);border-top:1px solid var(--line)}
-.ans textarea,.case input[type=text],.case select{width:100%;font:inherit;padding:var(--s8);border:1px solid var(--line);border-radius:var(--r)}
+.steps{margin:0 0 var(--s8);font-size:var(--f12)}
+.steps>summary{cursor:pointer;color:var(--navy);padding:var(--s4) 0}
+.ans,.case{margin:var(--s16) 0;display:grid;gap:var(--s8);padding:var(--s16);border-radius:var(--r)}
+.ans{background:var(--rose)}
+.case{border:1px solid var(--line);margin-top:var(--s24)}
+.ans .who{margin:0;font-weight:500;color:var(--ink);font-size:var(--f14)}
+.case h3{margin:0}
+.case p{margin:0;font-size:var(--f12);color:var(--muted)}
+.ans textarea,.case input[type=text],.case select{width:100%;font:inherit;padding:var(--s8);border:1px solid var(--line);border-radius:var(--r);background:#fff}
 .ans textarea{min-height:88px;resize:vertical}
-.ans label,.case label{font-size:var(--f12);color:var(--muted);display:flex;gap:var(--s8);align-items:flex-start}
+.case>label{font-size:var(--f12);color:var(--muted)}
+.chk{font-size:var(--f12);color:var(--muted);display:flex;gap:var(--s8);align-items:flex-start}
 .ans div,.case div{display:flex;gap:var(--s8);align-items:center;flex-wrap:wrap}
-@media (max-width:700px){td:first-child{white-space:normal}table th:nth-child(4),table td:nth-child(4),table th:nth-child(5),table td:nth-child(5){display:none}.card .row{grid-template-columns:minmax(0,1fr);gap:0}.card .hd .due{margin-left:0;flex-basis:100%}.eco{padding:var(--s16)}.eco input{height:44px}.card .row a{display:inline-flex;align-items:center;min-height:44px}}
-@media (max-width:1100px){.wrap{grid-template-columns:minmax(0,1fr);padding:var(--s16)}.kpi{grid-template-columns:repeat(2,minmax(0,1fr))}.eco,.eco .res{grid-template-columns:minmax(0,1fr)}.detail{position:static;max-height:none}}
+.hint{font-size:var(--f12);color:var(--crimson-dark)}
+
+@media (max-width:1100px){
+  .wrap{padding:var(--s16)}
+  .kpi{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .kpi a{grid-column:1/-1}
+  .eco .body,.eco .res{grid-template-columns:minmax(0,1fr)}
+  .work{grid-template-columns:minmax(0,1fr);grid-template-areas:"q" "d" "t"}
+  .detail{position:static;max-height:none}
+  .detail:not(.has){display:none}
+  .detail .back{display:inline-flex}
+}
+@media (max-width:700px){
+  .kpi{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s8)}
+  .kpi>*{padding:var(--s8) var(--s16)}
+  .kpi b{font-size:var(--f18)}
+  .eco summary,.eco .body{padding-left:var(--s16);padding-right:var(--s16)}
+  .eco summary .more{margin-left:0}
+  .seg{display:flex;width:100%}.seg button{flex:1 1 auto;justify-content:center}
+  .find{width:100%}
+  .card .row{grid-template-columns:minmax(0,1fr);gap:0}
+  .card .hd .due{margin-left:0;flex-basis:100%}
+  #dialogs thead{display:none}
+  #dialogs tbody tr{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--s4) var(--s8);padding:var(--s8) 0;border-bottom:1px solid var(--line)}
+  #dialogs tbody tr:hover,#dialogs tbody tr.on{background:var(--rose)}
+  #dialogs td{border:0;padding:0;background:none!important}
+  #dialogs td:nth-child(2){grid-column:1/-1;grid-row:1;overflow-wrap:break-word}
+  #dialogs td:nth-child(4),#dialogs td:nth-child(5){display:none}
+  #dialogs td.empty{grid-column:1/-1}
+}
+/* Зоны нажатия на телефоне и сенсорном экране не меньше 44px */
+@media (max-width:700px),(pointer:coarse){
+  .btn,.seg button,.find,.case select,.case input[type=text],.eco input{min-height:44px}
+  .btn,.seg button{display:inline-flex;align-items:center}
+  .st a,.card .row a{display:inline-flex;align-items:center;min-height:44px}
+  .chk input{width:20px;height:20px;flex:none}
+}
 </style>
 </head>
 <body>
@@ -81,19 +167,31 @@ tbody tr:hover td,tbody tr.on td{background:var(--rose)}
   <div class="brand"><b>Softline Store</b><span>экран оператора</span><span id="model"></span></div>
   <nav><a href="/">Чат покупателя</a><a href="/proof">Проверка цен</a></nav>
 </header>
-<div class="wrap">
-  <div class="note wide" id="demo" hidden>Режим просмотра: почта и телефоны клиентов скрыты, ответы клиентам, выгрузка журнала и обновление каталога отключены. Полный доступ открывается по ссылке с ключом оператора.</div>
-  <div class="note wide" id="err" role="alert" hidden></div>
-  <div class="bar wide" id="snote" hidden></div>
-  <div class="kpi wide" id="kpi"></div>
-  <section class="eco wide" id="eco"></section>
-  <div class="bar wide"><span id="cat"></span><button type="button" class="btn op" id="upd">Обновить каталог сейчас</button><a class="btn op" id="exp" href="/api/admin/export.csv">Выгрузить журнал диалогов (CSV)</a></div>
-  <div>
-    <div class="block"><h2>Обращения к менеджеру<small id="handn"></small></h2><div class="cards" id="hand"></div></div>
-    <div class="block"><h2>Диалоги</h2><table><thead><tr><th>Начало</th><th>Первое сообщение</th><th>Итог</th><th class="num">Ходов</th><th class="num">Токенов</th><th class="num">Стоимость</th></tr></thead><tbody id="rows"></tbody></table></div>
+<main class="wrap">
+  <h1 class="vh">Экран оператора: обращения к менеджеру, диалоги ИИ-консультанта и экономика</h1>
+  <div class="note" id="lerr" role="alert" hidden><span></span><button type="button" class="btn" id="retry">Повторить</button></div>
+  <div class="note" id="demo" hidden></div>
+  <div class="note" id="err" role="alert" hidden></div>
+  <div class="bar" id="snote" hidden></div>
+  <div class="kpi" id="kpi"></div>
+  <details class="eco" id="eco"><summary id="ecosum"><b>Экономика</b><span class="more">расчет и допущения</span></summary>
+    <div class="body"><div class="res" id="ecores"></div><div class="in" id="ecoin"></div><p class="warn" id="ecowarn" role="alert" hidden></p></div></details>
+  <div class="bar"><p><span id="cat"></span><br><span id="learn"></span></p><button type="button" class="btn op" id="upd">Обновить каталог сейчас</button><button type="button" class="btn op" id="exp">Выгрузить журнал диалогов (CSV)</button></div>
+  <div class="work">
+    <section id="queue" aria-labelledby="qh">
+      <div class="head"><h2 id="qh">Обращения к менеджеру<small id="handn" aria-live="polite"></small></h2>
+        <div class="seg" role="group" aria-label="Какие обращения показать" id="qseg"><button type="button" data-q="wait" aria-pressed="true">Ждут ответа</button><button type="button" data-q="all" aria-pressed="false">Все</button><button type="button" data-q="run" aria-pressed="false">Проверочный прогон</button></div></div>
+      <div class="cards" id="hand"></div>
+    </section>
+    <section id="dialogs" aria-labelledby="dlh">
+      <div class="head"><h2 id="dlh">Диалоги<small id="rown"></small></h2>
+        <div class="seg" role="group" aria-label="Какие диалоги показать" id="rseg"><button type="button" data-r="all" aria-pressed="true">Все</button><button type="button" data-r="handoff" aria-pressed="false">Менеджеру</button><button type="button" data-r="agent" aria-pressed="false">Агент</button><button type="button" data-r="quote" aria-pressed="false">С КП</button></div>
+        <input type="search" class="find" id="find" placeholder="Поиск по первому сообщению" aria-label="Поиск по первому сообщению клиента"></div>
+      <table><thead><tr><th>Обновлен, МСК</th><th>Первое сообщение</th><th>Итог</th><th class="num">Ходов</th><th class="num">Токенов</th><th class="num">Стоимость</th></tr></thead><tbody id="rows"></tbody></table>
+    </section>
+    <aside class="detail" id="detail" aria-label="Панель диалога"><span class="empty">Выберите обращение или диалог: откроется переписка, ответ клиенту и каждый шаг агента.</span></aside>
   </div>
-  <div class="detail" id="detail"><span class="empty">Выберите обращение или диалог: откроется переписка и каждый шаг агента с вызовами инструментов и токенами.</span></div>
-</div>
+</main>
 <script src="admin.js"></script>
 </body>
 </html>
