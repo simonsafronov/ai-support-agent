@@ -113,7 +113,7 @@ def test_unknown_tool_and_bad_args_do_not_break_turn():
 
 def test_facts_survive_between_turns_and_visits():
     llm = Scripted([
-        {"name": "note_facts", "args": {"facts": {"компания": "ООО Ромашка", "пользователей": 50}}},
+        {"name": "note_facts", "args": {"company": "ООО Ромашка", "users": 50, "unknown_field": "x"}},
         "Записал. Какая задача?",
     ])
     first = loop.run_turn(None, "Мы ООО Ромашка, 50 человек", client_id="c1", llm=llm)
@@ -155,3 +155,13 @@ def test_page_hint_names_product_from_url():
 ])
 def test_unknown_prices(text, known, bad):
     assert loop.unknown_prices(text, known) == bad
+
+
+def test_long_tool_result_stays_valid_json():
+    import json
+    out = {"query": "x", "products": [{"title": "Продукт " * 30, "n": i} for i in range(40)], "total": 40}
+    text = loop.fit_json(out, 3000)
+    data = json.loads(text)
+    assert len(text) <= 3000 and 1 <= len(data["products"]) < 40
+    assert data["truncated"]["products"] == 40 - len(data["products"])
+    assert json.loads(loop.fit_json({"a": 1}, 3000)) == {"a": 1}

@@ -51,11 +51,18 @@ def _kb_search(ctx, query: str):
     return res
 
 
-def _note_facts(ctx, facts: dict):
-    facts = {str(k): str(v) for k, v in (facts or {}).items() if v not in (None, "")}
-    ctx.facts.update(facts)
+FACT_FIELDS = {  # что агент запоминает о клиенте: ключ -> как показывать в контексте и оператору
+    "company": "компания", "inn": "ИНН", "org_type": "тип организации", "users": "пользователей",
+    "devices": "устройств", "os": "ОС и инфраструктура", "task": "задача", "budget": "бюджет",
+    "term": "срок лицензии", "contact": "контакт", "other": "прочее",
+}
+
+
+def _note_facts(ctx, **facts):
+    saved = {FACT_FIELDS[k]: str(v) for k, v in facts.items() if k in FACT_FIELDS and v not in (None, "")}
+    ctx.facts.update(saved)
     store.update_session(ctx.session_id, facts=ctx.facts)
-    return {"saved": facts, "known": ctx.facts}
+    return {"saved": saved, "known": ctx.facts}
 
 
 def _calc_total(ctx, items: list[dict]):
@@ -149,9 +156,21 @@ TOOLS = [
                                    "'доставка электронной лицензии', 'способы оплаты', 'закрывающие документы'"}},
                         ["query"])},
     {"name": "note_facts", "handler": _note_facts,
-     "description": "Запомнить, что стало известно о клиенте и его задаче, чтобы не спрашивать повторно: "
-                    "компания, ИНН, тип организации, число пользователей, устройства, ОС, бюджет, задача, контакт.",
-     "parameters": _obj({"facts": {"type": "object", "description": "пары 'что': 'значение'"}}, ["facts"])},
+     "description": "Запомнить, что стало известно о клиенте и его задаче, чтобы не спрашивать повторно. "
+                    "Передавайте только то, что клиент сказал сам.",
+     "parameters": _obj({
+         "company": {"type": "string", "description": "наименование организации"},
+         "inn": {"type": "string"},
+         "org_type": {"type": "string", "description": "коммерческая, государственная, образовательная, физлицо"},
+         "users": {"type": "string", "description": "число пользователей или рабочих мест"},
+         "devices": {"type": "string", "description": "число устройств, узлов, серверов"},
+         "os": {"type": "string", "description": "ОС и инфраструктура: Windows, Linux, облако, свой сервер"},
+         "task": {"type": "string", "description": "какую задачу решает клиент"},
+         "budget": {"type": "string"},
+         "term": {"type": "string", "description": "нужный срок лицензии"},
+         "contact": {"type": "string", "description": "почта или телефон"},
+         "other": {"type": "string", "description": "другое важное для подбора"},
+     })},
     {"name": "calc_total", "handler": _calc_total,
      "description": "Посчитать стоимость: цена варианта на количество и итог по нескольким позициям. Любую сумму, "
                     "кроме цены из каталога, называйте клиенту только после этого инструмента.",

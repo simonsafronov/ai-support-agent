@@ -16,7 +16,7 @@ from app.catalog import search as catalog
 
 MAX_STEPS = 8           # вызовов модели на один ход клиента
 HISTORY_MESSAGES = 14   # сколько прошлых реплик диалога видит модель
-TOOL_RESULT_LIMIT = 7000
+TOOL_RESULT_LIMIT = 6000
 
 FALLBACK = ("Сейчас не получается ответить автоматически. Передаю вопрос менеджеру, он ответит в рабочее время. "
             "Оставьте, пожалуйста, почту или телефон для связи.")
@@ -56,6 +56,29 @@ def unknown_prices(text: str, known: set) -> list[str]:
         if v is not None and v >= 1 and round(v) not in known:
             bad.append(m.group(0).strip())
     return bad
+
+
+def fit_json(out: dict, limit: int) -> str:
+    """Ответ инструмента для модели: всегда целый JSON не длиннее limit.
+
+    Длинный ответ не режется по символам (модель получила бы битый JSON): из самых длинных списков
+    по одному убираются последние элементы, в ответе остается пометка, сколько убрано.
+    """
+    text = json.dumps(out, ensure_ascii=False)
+    if len(text) <= limit:
+        return text
+    out = json.loads(text)
+    lists = {k: v for k, v in out.items() if isinstance(v, list) and v}
+    cut = dict.fromkeys(lists, 0)
+    while len(text) > limit and any(len(v) > 1 for v in lists.values()):
+        key = max(lists, key=lambda k: len(json.dumps(lists[k], ensure_ascii=False)) if len(lists[k]) > 1 else -1)
+        lists[key].pop()
+        cut[key] += 1
+        out["truncated"] = {k: n for k, n in cut.items() if n}
+        text = json.dumps(out, ensure_ascii=False)
+    if len(text) > limit:
+        text = json.dumps({"error": "ответ слишком большой, сузьте запрос фильтрами"}, ensure_ascii=False)
+    return text
 
 
 def page_hint(page_url: str) -> str:
@@ -177,8 +200,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             store.add_step(sid, turn, "tool", name, args, out)
             trace.append({"kind": "tool", "name": name, "input": args, "output": out})
             msgs.append({"role": "assistant", "content": res.text, "tool_call": res.tool_call, "extra": res.extra})
-            msgs.append({"role": "tool", "name": name,
-                         "content": json.dumps(out, ensure_ascii=False)[:TOOL_RESULT_LIMIT]})
+            msgs.append({"role": "tool", "name": name, "content": fit_json(out, TOOL_RESULT_LIMIT)})
             continue
         bad = unknown_prices(res.text, known)
         if bad and not corrected:
