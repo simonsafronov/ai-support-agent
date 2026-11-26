@@ -151,9 +151,29 @@ def update_quote(quote_id: int, customer: str, items: list[dict], total: float):
 
 
 def previous_session(client_id: str, exclude: str) -> dict | None:
-    """Прошлый диалог того же клиента: память между визитами."""
+    """Прошлый диалог того же клиента: память между визитами. Старые визиты не вспоминаются: цены уже не те."""
     if not client_id:
         return None
-    row = db().execute("SELECT id FROM sessions WHERE client_id=? AND id<>? ORDER BY updated_at DESC LIMIT 1",
-                       (client_id, exclude)).fetchone()
+    row = db().execute("SELECT id FROM sessions WHERE client_id=? AND id<>? AND updated_at>=? "
+                       "ORDER BY updated_at DESC LIMIT 1",
+                       (client_id, exclude, time.time() - config.PREVIOUS_VISIT_DAYS * 86400)).fetchone()
     return get_session(row["id"]) if row else None
+
+
+def tokens_since(ts: float) -> tuple[int, int]:
+    """Сколько токенов ушло в модель с момента ts: для суточного потолка расхода."""
+    row = db().execute("SELECT COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0) FROM steps "
+                       "WHERE kind='llm' AND ts>=?", (ts,)).fetchone()
+    return row[0], row[1]
+
+
+def purge(days: int) -> int:
+    """Удаляет диалоги старше days дней вместе с шагами, обращениями и КП. Знания из ответов менеджеров остаются."""
+    con = db()
+    old = [r[0] for r in con.execute("SELECT id FROM sessions WHERE updated_at<?", (time.time() - days * 86400,))]
+    for sid in old:
+        for table in ("messages", "steps", "handoffs", "quotes"):
+            con.execute(f"DELETE FROM {table} WHERE session_id=?", (sid,))
+        con.execute("DELETE FROM sessions WHERE id=?", (sid,))
+    con.commit()
+    return len(old)

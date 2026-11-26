@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from app import config, store
-from app.agent import loop
+from app.agent import loop, prices
 
 ROOT = Path(__file__).parent
 ASK = {  # о чем агент должен спросить -> по каким словам это видно в его вопросе
@@ -74,10 +74,10 @@ def check(case: dict, run: dict) -> dict:
     # цены: любая сумма в ответах должна быть в данных инструментов этого диалога или в словах клиента
     known: set = set()
     for t in turns:
-        known.update(round(v) for v in map(loop._num, loop._NUMBER.findall(t["user"])) if v)
+        known.update(prices.client_amounts(t["user"]))
         for x in t["tools"]:
-            loop._collect_prices(x["output"], known)
-    bad = [p for r in replies for p in loop.unknown_prices(r, known)]
+            prices.collect(x["output"], known)
+    bad = [p for r in replies for p in prices.unknown(r, known)]
     out["цены_из_каталога"] = not bad
 
     ask = [a for a in exp["ask_about"] if a in ASK]
@@ -100,11 +100,13 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default=str(ROOT / "runs"))
     ap.add_argument("--merge", nargs="+", default=[], help="каталоги прогонов: собрать общий отчет")
+    ap.add_argument("--min-pass", type=float, default=0.0,
+                    help="порог: доля диалогов, прошедших все проверки (0.7); ниже него команда завершается с ошибкой")
     args = ap.parse_args()
 
     cases = [json.loads(line) for line in (ROOT / "cases.jsonl").read_text(encoding="utf-8").splitlines() if line]
     if args.merge:
-        return merge(cases, args.merge, Path(args.out))
+        return gate(merge(cases, args.merge, Path(args.out)), args.min_pass)
     if args.only:
         cases = [c for c in cases if c["id"] in set(args.only.split(","))]
     if args.limit:
@@ -133,6 +135,14 @@ def main():
 
     report(rows, out_dir)
     print("Отчет:", out_dir / "report.md")
+    gate(rows, args.min_pass)
+
+
+def gate(rows: list[dict], min_pass: float):
+    """Порог для автоматической проверки перед выкладкой: прошло меньше min_pass диалогов, выходим с ошибкой."""
+    share = sum(r["passed"] for r in rows) / max(1, len(rows))
+    if share < min_pass:
+        raise SystemExit(f"Прошло {share:.0%} диалогов, порог {min_pass:.0%}")
 
 
 def judge(case: dict, run: dict) -> dict:
@@ -162,6 +172,7 @@ def merge(cases: list[dict], dirs: list[str], out: Path):
     (out_dir / "transcripts.jsonl").write_text("\n".join(line(r) for r in rows) + "\n", encoding="utf-8")
     report(rows, out_dir)
     print("Отчет:", out_dir / "report.md")
+    return rows
 
 
 def report(rows: list[dict], out_dir: Path):

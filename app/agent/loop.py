@@ -5,12 +5,14 @@
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
+import time
 from urllib.parse import urlparse
 
 from app import config, store
-from app.agent import prompts, tools
+from app.agent import prices, prompts, tools
 from app.agent.llm import LLMError, get_llm
 from app.catalog import search as catalog
 
@@ -18,11 +20,15 @@ MAX_STEPS = 8           # вызовов модели на один ход кл�
 HISTORY_MESSAGES = 14   # сколько прошлых реплик диалога видит модель
 TOOL_RESULT_LIMIT = 6000
 
+LAST_STEP = ("[Служебное сообщение, клиент его не видит] Это последний шаг хода: инструменты больше не вызывайте, "
+             "ответьте клиенту по тому, что уже известно, и скажите, что уточните дальше.")
+REPEAT = {"repeat": True, "note": "Этот вызов с теми же аргументами в этом ходе уже был, результат выше. "
+                                  "Ответьте клиенту или измените запрос."}
+MSK = datetime.timezone(datetime.timedelta(hours=3))
+
 FALLBACK = ("Сейчас не получается ответить автоматически. Передаю вопрос менеджеру, он ответит в рабочее время. "
             "Оставьте, пожалуйста, почту или телефон для связи.")
 
-_MONEY = re.compile(r"(?<![\d.,])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:₽|руб|р\.)", re.I)
-_NUMBER = re.compile(r"\d[\d\s\u00a0\u202f]*(?:[.,]\d{1,2})?")
 _MARK = re.compile(r"\[\[(product|offer):\s*([\w-]+)\]\]")
 _CHOICES = re.compile(r"\[\[choices:\s*(.+?)\]\]", re.S)
 _FACTS = re.compile(r"\[\[facts:\s*(.+?)\]\]", re.S)
@@ -34,37 +40,6 @@ def mask_contacts(text: str) -> tuple[str, list[str]]:
     """Почта и телефон клиента в модель не уходят: вместо них метки, сами значения видит только оператор."""
     found = _EMAIL.findall(text) + _PHONE.findall(text)
     return _PHONE.sub("[телефон]", _EMAIL.sub("[email]", text)), found
-
-
-def _num(s: str) -> float | None:
-    s = re.sub(r"[\s  ]", "", s).replace(",", ".")
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def _collect_prices(obj, acc: set):
-    """Все числа из полей с ценами и суммами в ответе инструмента."""
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and re.search(r"price|total|sum|vat|amount", k):
-                acc.add(round(float(v)))
-            else:
-                _collect_prices(v, acc)
-    elif isinstance(obj, list):
-        for v in obj:
-            _collect_prices(v, acc)
-
-
-def unknown_prices(text: str, known: set) -> list[str]:
-    """Суммы в тексте ответа, которых нет в данных каталога этого диалога."""
-    bad = []
-    for m in _MONEY.finditer(text):
-        v = _num(m.group(1))
-        if v is not None and v >= 1 and round(v) not in known:
-            bad.append(m.group(0).strip())
-    return bad
 
 
 def fit_json(out: dict, limit: int) -> str:
@@ -92,7 +67,8 @@ def fit_json(out: dict, limit: int) -> str:
 
 def page_hint(page_url: str) -> str:
     """Подсказка по странице, с которой пишет клиент: на карточке товара вопрос обычно про этот товар."""
-    if not page_url:
+    page_url = re.sub(r"[\[\]\s<>\"']", "", page_url)[:200]  # адрес приходит из браузера: в инструкцию только чистый
+    if not page_url.startswith(("http://", "https://")):
         return ""
     parts = [p for p in urlparse(page_url).path.split("/") if p]
     hint = f"Клиент пишет со страницы {page_url}."
@@ -172,8 +148,21 @@ def take_facts(text: str) -> dict:
 
 def _history(session_id: str) -> list[dict]:
     msgs = store.messages(session_id, limit=HISTORY_MESSAGES)
-    return [{"role": m["role"], "content": mask_contacts(m["content"])[0] if m["role"] == "user" else m["content"]}
-            for m in msgs if m["role"] in ("user", "assistant")]
+    return [{"role": m["role"], "content": for_model(m["content"]) if m["role"] == "user"
+             else mask_contacts(m["content"])[0]} for m in msgs if m["role"] in ("user", "assistant")]
+
+
+def for_model(text: str) -> str:
+    """Сообщение клиента в том виде, в каком его видит модель: без контактов и без служебных меток [[...]]."""
+    return mask_contacts(re.sub(r"\[\[|\]\]", " ", text))[0]
+
+
+def budget_spent() -> bool:
+    """Исчерпан ли суточный потолок расхода на модель (сутки московские)."""
+    if not config.DAILY_BUDGET_RUB:
+        return False
+    midnight = datetime.datetime.now(MSK).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    return cost_rub(*store.tokens_since(midnight)) >= config.DAILY_BUDGET_RUB
 
 
 def cost_rub(prompt_tokens: int, completion_tokens: int) -> float:
@@ -197,19 +186,24 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
         tools.save_facts(ctx, {"contact": ", ".join(dict.fromkeys(known_contacts + contacts))})
         s["facts"] = dict(ctx.facts)
     items = s["items"]
-    known = {round(o["price"]) for o in items.get("offers", []) if o.get("price")}
+    known = {float(o["price"]) for o in items.get("offers", []) if o.get("price")}
     known.update(items.get("prices", []))  # суммы из прошлых ходов: итог расчета или КП можно повторить
-    # суммы, которые назвал сам клиент (бюджет, цена из чужого счета), агент вправе повторить
     for m in store.messages(sid):
         if m["role"] == "user":
-            known.update(round(v) for v in map(_num, _NUMBER.findall(m["content"])) if v)
+            known.update(prices.client_amounts(m["content"]))
     s["quote"] = store.last_quote(sid)
     previous = store.previous_session(s["client_id"], sid) if turn == 1 else None
     msgs = [{"role": "system", "content": prompts.system_prompt(s, page_hint(page_url or s.get("page_url") or ""),
                                                                  previous)}] + _history(sid)
     trace, usage, reply, corrected = [], [0, 0, 0, 0], "", False
+    started, called = time.monotonic(), set()
 
-    for _ in range(MAX_STEPS):
+    for step in range(MAX_STEPS if not budget_spent() else 0):
+        if config.TURN_DEADLINE and time.monotonic() - started > config.TURN_DEADLINE:
+            trace.append({"kind": "error", "name": "deadline", "output": f"ход дольше {config.TURN_DEADLINE:.0f} с"})
+            break
+        if step == MAX_STEPS - 1:
+            msgs.append({"role": "user", "content": LAST_STEP})
         try:
             res = llm.chat(msgs, tools.specs())
         except LLMError as e:
@@ -225,9 +219,11 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
         if res.tool_call:
             name, args = res.tool_call["name"], res.tool_call["args"]
             emit({"type": "tool", "name": name, "args": args})
-            out = tools.call(ctx, name, args)
+            key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+            out = REPEAT if key in called else tools.call(ctx, name, args)
+            called.add(key)
             usage[3] += 1
-            _collect_prices(out, known)
+            prices.collect(out, known)
             _remember_items(items, name, out)
             if out.get("first_product"):  # поиск сразу вернул варианты однозначно найденного продукта
                 _remember_items(items, "get_product", out["first_product"])
@@ -236,7 +232,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
             msgs.append({"role": "assistant", "content": res.text, "tool_call": res.tool_call, "extra": res.extra})
             msgs.append({"role": "tool", "name": name, "content": fit_json(tools.slim(name, out), TOOL_RESULT_LIMIT)})
             continue
-        bad = unknown_prices(res.text, known)
+        bad = prices.unknown(res.text, known)
         if bad and not corrected:
             corrected = True
             trace.append({"kind": "guard", "name": "price", "output": bad})
@@ -248,7 +244,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
                          "инструментов этого диалога. Сумму из справки или свой расчет уберите; итог за несколько "
                          "лицензий получите через calc_total."})
             continue
-        reply = res.text if not bad else _MONEY.sub("цена по запросу", res.text)
+        reply = res.text if not bad else prices.mask_unknown(res.text, known)
         break
 
     if not reply.strip():

@@ -2,7 +2,7 @@
 import pytest
 
 from app import store
-from app.agent import loop
+from app.agent import loop, prices
 from app.agent.llm import LLMError, Scripted
 from app.catalog import search as catalog
 
@@ -159,13 +159,28 @@ def test_page_hint_names_product_from_url():
 
 
 @pytest.mark.parametrize("text,known,bad", [
-    ("Цена 1 325,80 ₽ за лицензию", {1326}, []),
+    ("Цена 1 325,80 ₽ за лицензию", {1325.8}, []),
+    ("Цена 1 326 ₽ за лицензию", {1325.8}, []),                    # без копеек: допустимо
     ("Цена 1 325,80 ₽ за лицензию", set(), ["1 325,80 ₽"]),
+    ("Цена 1 999 руб.", {2000}, ["1 999 руб."]),                    # ошибка на рубль не проходит
     ("Итого 66 290 руб. с НДС", {66290}, []),
+    ("Примерно 5 тыс. руб., или ₽5 100, или 5200р", {5000.0}, ["₽5 100", "5200р"]),
+    ("Стоит 30 448 рублей", set(), ["30 448 рублей"]),
     ("На 50 пользователей и 3 года", set(), []),
+    ("до 14 лицензий 1 841,40 руб., от 15 до 19 1 710,90 руб.", {1841.4, 1710.9}, []),
 ])
 def test_unknown_prices(text, known, bad):
-    assert loop.unknown_prices(text, known) == bad
+    assert prices.unknown(text, known) == bad
+
+
+def test_client_numbers_count_as_money_only_when_they_look_like_money():
+    assert prices.client_amounts("нас 50 человек, бюджет 22000, ИНН 7701234567") == {22000.0}
+    assert prices.client_amounts("у конкурента 450 руб. за штуку") == {450.0}
+
+
+def test_only_unknown_sums_are_masked():
+    text = prices.mask_unknown("Лицензия 1 325,80 ₽, итого 99 999 руб.", {1325.8})
+    assert text == "Лицензия 1 325,80 ₽, итого цена по запросу"
 
 
 def test_long_tool_result_stays_valid_json():
@@ -241,11 +256,6 @@ def test_contact_is_hidden_from_model_and_reaches_manager():
 def test_marker_used_instead_of_name_gets_the_name(offer):
     clean, cards, _ = loop.render(f"Есть варианты, например [[offer:{offer['offer_id']}]] (цена в карточке).")
     assert cards and cards[0]["title"] in clean and "например (" not in clean
-
-
-def test_quantity_range_next_to_price_is_not_glued_into_one_sum():
-    assert loop.unknown_prices("до 14 лицензий 1 841,40 руб., от 15 до 19 1 710,90 руб.", {1841, 1711}) == []
-    assert loop.unknown_prices("до 14 1 841,40 руб.", {1841}) == []
 
 
 def test_unambiguous_search_brings_variants_in_the_same_step(product):
