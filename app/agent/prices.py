@@ -268,9 +268,9 @@ def mask_unknown(text: str, known, said=(), positions=None, named=()) -> str:
 # списка названа известная позиция (метка [[offer:id]], артикул, название варианта или продукта из ответов
 # инструментов) и есть цена за единицу. Если ни одна сумма фразы к этой позиции не относится, а одна из них это цена
 # за единицу другой позиции диалога, цена стоит не у своей позиции. Названо несколько позиций ("А стоит 20 000 руб.,
-# а Б стоит 10 000 руб."): фраза делится на отрезки от названия до следующего названия, и так же проверяется отрезок
-# с одной суммой и словом о цене. Позицию однозначно определить нельзя (две суммы в отрезке, за суммой метка другой
-# позиции, сравнение "А дороже Б на ...", названия нет): проверка молчит, ложная тревога хуже пропуска.
+# а Б стоит 10 000 руб."): фраза делится на отрезки от названия до следующего названия, и так же проверяется каждый
+# отрезок с одной суммой. Позицию однозначно определить нельзя (две суммы в отрезке, за суммой метка другой позиции,
+# сравнение "А дороже Б на ...", названия нет): проверка молчит, ложная тревога хуже пропуска.
 OWN, FOREIGN, OTHER = "своя", "чужая", "прочая"
 _ROWS = ("offers", "lines", "items")  # где в ответах инструментов лежат позиции: варианты, строки расчета и КП
 _UNIT_PRICE = re.compile(r"стоит|стоимост|\bцен[аыуе]\b|ценой|\bпо\s+\d|за (?:одну |1 |кажд\w+ )?(?:лицензи|штук|шт\b|"
@@ -331,8 +331,9 @@ _TIGHT = re.compile(r"(?:[\s:;,.()«»\"“”„—–-]|\d+(?:[.,]\d+)?\s*%?|�
 _QUOTES = "«»\"“”„'"
 # сравнение позиций: сумма в нем это разница, а не цена ("А дороже Б на 5 000 руб.")
 _COMPARE = re.compile(r"дороже|дешевле|разниц|выгодн|эконом|переплат|доплат|больше|меньше|выше|ниже", re.I)
-# метка после новой части фразы с названием подписывает название, а не сумму перед ним: ", Standard [[offer:2]]"
-_SUBJECT = re.compile(r"(?:[,;]|\s(?:и|а))\s+[«\"A-ZА-ЯЁ][^,;]*$")
+# метка в новой части фразы после суммы подписывает ее подлежащее, а не сумму: ", а вариант [[offer:2]]",
+# ", Standard [[offer:2]]", " и Advanced [[offer:2]]"; в "руб. для малого и среднего бизнеса [[offer:2]]" это сумма
+_SUBJECT = re.compile(r"(?:[,;]?\s+а\s|[,;]\s+и\s|(?:[,;]|\sи)\s+[«\"A-ZА-ЯЁ])[^,;]*$")
 
 
 def _plain(s: str) -> str:
@@ -410,8 +411,8 @@ def price_pairs(text: str, positions) -> list[tuple[int, int, float, str]]:
         if not _UNIT_PRICE.search(sentence) or any(x <= start < y for x, y in hidden):
             continue
         refs = _named(sentence, positions)
-        sums = [(a, b, v) for a, b, values in mentions(sentence) if not ABROAD.search(sentence[a:b])  # см. _bad
-                for v in values if v >= 1]
+        sums = [(a, b, v) for a, b, values in mentions(sentence) if not ABROAD.search(sentence[a:b])
+                for v in values if v >= 1]  # сумму в чужой валюте ловит _bad: в каталоге ее нет вовсе
         if not refs or not sums:
             continue
         # количество из фразы: цена позиции на него тоже своя; номер в метке [[offer:2]] не количество
@@ -427,7 +428,7 @@ def price_pairs(text: str, positions) -> list[tuple[int, int, float, str]]:
             for k, (_, e, ids) in enumerate(refs):
                 end = refs[k + 1][0] if k + 1 < len(refs) else len(sentence)
                 part = [x for x in sums if e <= x[0] and x[1] <= end]
-                if len(part) != 1 or not _UNIT_PRICE.search(sentence[e:end]):
+                if len(part) != 1:
                     continue
                 if (_REF_MARK.match(sentence, end) and not refs[k + 1][2] <= ids
                         and not _SUBJECT.search(sentence[part[0][1]:end])):
