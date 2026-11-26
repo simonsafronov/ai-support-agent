@@ -7,17 +7,22 @@ const step = (label, text, cls = "") => `<div class="step"><span>${label}</span>
 go.onclick = async () => {
   go.disabled = true;
   try {
-    const r = await (await fetch("/api/proof", { method: "POST" })).json();
+    const res = await fetch("/api/proof", { method: "POST" });
+    if (res.status === 429) throw Object.assign(new Error("Слишком много показов подряд. Подождите минуту и нажмите еще раз."), { refused: true });
+    if (!res.ok) throw new Error("сервер отказал");
+    const r = await res.json();
     out.innerHTML = r.runs.map((x, i) => `<section class="run"><h2>${i + 1}. ${esc(x.title)}</h2>
       ${step("Клиент спросил", esc(r.question))}
       ${step("Модель написала", esc(x.model_said))}
       ${step("Проверка кодом", `<b>Остановлено.</b> Суммы ${x.caught.map(esc).join(", ")} нет ни в каталоге, ни в словах клиента. Модель получила замечание и вторую попытку.`, "bad")}
       ${step("Вторая попытка модели", esc(x.model_second))}
-      ${step("Клиент увидел", esc(x.client_saw) + (i ? "<br><b>Сумму вырезал код:</b> модель повторила выдуманную цену, третьей попытки нет." : ""), "ok")}
+      ${i ? step("Что сделал код", "<b>Сумму вырезал код:</b> модель повторила выдуманную цену, третьей попытки нет.", "bad") : ""}
+      ${step("Клиент увидел", esc(x.client_saw), "ok")}
     </section>`).join("<br>");
     document.getElementById("facts").textContent = `Вариант из каталога: ${r.offer}. Цена в каталоге ${rub(r.real_price)}, модель назвала ${rub(r.fake_price)}. Диалоги этого показа в статистику стенда не попадают.`;
+    go.textContent = "Показать еще раз";
   } catch (e) {
-    out.innerHTML = step("Сбой", "Показ не запустился, обновите страницу.", "bad");
+    out.innerHTML = step("Сбой", e.refused ? esc(e.message) : e instanceof TypeError ? "Нет связи с сервером. Нажмите еще раз." : "Показ не запустился. Нажмите еще раз.", "bad");
   }
-  go.disabled = false; go.textContent = "Показать еще раз";
+  go.disabled = false;
 };

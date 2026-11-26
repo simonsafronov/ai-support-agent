@@ -4,12 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ИИ-консультант Softline Store: демо-стенд</title>
+<meta name="description" content="ИИ-консультант интернет-магазина ПО Softline Store: подбирает лицензии по каталогу, считает стоимость, готовит черновик КП и передает менеджеру то, что решает человек.">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:title" content="ИИ-консультант Softline Store">
+<meta property="og:description" content="Подбор лицензий по каталогу, расчет стоимости, черновик КП и передача менеджеру. Цены в ответах проверяет код.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
+<body class="chat-page">
 <header class="top">
   <div class="brand"><b>Softline Store</b><span>демо-стенд ИИ-консультанта</span></div>
-  <nav><a href="/admin">Экран оператора</a><a href="/proof">Проверка цен</a><a href="https://github.com/simonsafronov/ai-support-agent" target="_blank" rel="noopener">Код</a></nav>
+  <nav><a href="/admin">Экран оператора</a><a href="/proof">Проверка цен</a><a class="code" href="https://github.com/simonsafronov/ai-support-agent" target="_blank" rel="noopener">Код</a></nav>
 </header>
 <main class="grid">
   <section class="shop" aria-label="Витрина">
@@ -20,19 +26,23 @@
     <ul class="goods" id="goods"></ul>
   </section>
 
-  <section class="chat" aria-label="Чат с консультантом">
+  <section class="chat" aria-labelledby="chat-title">
     <div class="chat-head">
-      <div><b>Консультант магазина</b><small>ИИ-помощник, подбирает ПО по каталогу</small></div>
+      <div><h2 id="chat-title">Консультант магазина</h2><small>ИИ-помощник, подбирает ПО по каталогу</small></div>
       <span class="acts"><button type="button" id="call">Позвать менеджера</button><button type="button" id="new">Новый диалог</button></span>
     </div>
-    <div class="log" id="log" aria-live="polite"></div>
-    <div class="starters" id="starters">
-      <p>Попробуйте сценарий:</p>
-      <button type="button">Нужен MDaemon Standard</button>
-      <button type="button">Не знаю, что нужно, но хотим защитить почту и файлы на 50 сотрудников</button>
-      <button type="button">Как я получу лицензию после оплаты?</button>
+    <div class="log" id="log" role="log" aria-live="polite">
+      <div class="starters" id="starters" hidden>
+        <p>Попробуйте сценарий:</p>
+        <button type="button">Нужен MDaemon Standard</button>
+        <button type="button">Не знаю, что нужно, но хотим защитить почту и файлы на 50 сотрудников</button>
+        <button type="button">Нужен MDaemon на 30 пользователей на год, новая лицензия. Сделайте КП на ООО Ромашка, ИНН 7701234567, КПП 770101001</button>
+        <button type="button">Нужна скидка 15% на 100 лицензий Kaspersky Endpoint Security, закупка по 223-ФЗ</button>
+        <button type="button">Как я получу лицензию после оплаты?</button>
+      </div>
     </div>
-    <form class="send" id="f"><textarea id="t" placeholder="Напишите вопрос" aria-label="Сообщение"></textarea><button id="b">Отправить</button></form>
+    <p class="vh" id="say" role="status"></p>
+    <form class="send" id="f"><textarea id="t" rows="1" placeholder="Напишите вопрос" aria-label="Сообщение"></textarea><button id="b">Отправить</button></form>
     <p class="model" id="model" hidden></p>
   </section>
 
