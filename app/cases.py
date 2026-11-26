@@ -7,17 +7,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 from app import config, store
-from app.agent import loop
 
 ADDED = config.CASES_ADDED
 OLD = config.ROOT / "eval" / "cases_added.jsonl"  # прежнее место: читается, пока его кейсы не перейдут в ADDED
 
 
-def from_session(session_id: str, handoff: bool | str, quote: bool, note: str = "") -> dict | None:
-    """Кейс из диалога: реплики клиента без контактов и ожидание, которое задал оператор."""
-    turns = [loop.mask_contacts(m["content"])[0] for m in store.messages(session_id) if m["role"] == "user"]
+def from_session(session_id: str, handoff: bool | str, quote: bool, note: str,
+                 hide: Callable[[str], str]) -> dict | None:
+    """Кейс из диалога: реплики клиента без данных клиента и ожидание, которое задал оператор.
+
+    Набор хранится без срока, чистка диалогов его не трогает: hide убирает из реплик контакты и реквизиты.
+    """
+    turns = [hide(m["content"]) for m in store.messages(session_id) if m["role"] == "user"]
     if not turns:
         return None
     tools = list(dict.fromkeys(s["name"] for s in store.steps(session_id)

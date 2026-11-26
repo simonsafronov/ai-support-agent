@@ -11,6 +11,7 @@ import re
 import time
 
 from app import config, store
+from app.catalog import search as catalog
 
 # Срочность по теме обращения: первая подошедшая строка. Сроки реакции в минутах задает заказчик.
 PRIORITY = (
@@ -35,13 +36,77 @@ FLAGS = (
 CLIENT_FIELDS = ("компания", "ИНН", "КПП", "тип организации", "контакт")
 NEED_FIELDS = ("задача", "пользователей", "устройств", "ОС и инфраструктура", "срок лицензии", "бюджет", "скидка",
                "прочее")
-TEMPLATES = (  # заготовки ответа: менеджер правит текст перед отправкой
+TEMPLATES = (  # заготовки ответа: менеджер правит текст перед отправкой. Сумм и цен в них нет: их называет КП
     ("Уточню наличие", "Здравствуйте. Уточняю наличие и срок поставки у вендора, вернусь с ответом сегодня."),
     ("Подготовлю счет", "Здравствуйте. Черновик КП проверил, готовлю счет. Пришлите, пожалуйста, карточку "
                          "организации, если реквизиты еще не отправляли."),
     ("Перезвоню", "Здравствуйте. Вопрос проще обсудить голосом: перезвоню вам сегодня в рабочее время. "
                   "Если удобнее другое время, напишите его здесь."),
 )
+# По пометке обращения: следующий шаг менеджера и заготовка ответа. Шаг берется по первой подошедшей строке,
+# заготовки подошедших строк встают перед общими в том же порядке.
+BY_FLAG = (
+    ("жалоба", "Позвонить клиенту сегодня",
+     ("Позвоню сегодня", "Здравствуйте. Жаль, что так вышло. Разбираюсь с вашим вопросом и позвоню вам сегодня "
+                         "в рабочее время. Если удобнее другое время, напишите его здесь.")),
+    ("госзакупка", "Запросить ТЗ и условия закупки, проверить срок подачи заявок",
+     ("Условия закупки", "Здравствуйте. Чтобы подготовить предложение для закупки, пришлите, пожалуйста, "
+                         "техническое задание или номер закупки и срок подачи заявок.")),
+    ("просит скидку", "Согласовать скидку{asked} с вендором или подтвердить {given}%",
+     ("Скидка", "Здравствуйте. Запрос на скидку отправил вендору на согласование, вернусь с ответом сегодня.")),
+    ("просит отсрочку", "Согласовать отсрочку платежа",
+     ("Отсрочка", "Здравствуйте. Уточняю, возможна ли отсрочка платежа, и вернусь с ответом сегодня.")),
+    ("цена по запросу", "Запросить цену у вендора",
+     ("Цена у вендора", "Здравствуйте. Запросил цену у вендора, вернусь с ответом сегодня.")),
+    ("просит человека", "Ответить клиенту в чате", None),
+)
+
+
+def next_step(flags: list[str], asked: str, has_quote: bool) -> str:
+    """Следующий шаг менеджера по пометкам обращения: первая подошедшая строка BY_FLAG."""
+    for flag, step, _ in BY_FLAG:
+        if flag in flags:
+            return step.format(asked=f" {asked}" if asked else "", given=f"{config.AGENT_DISCOUNT_MAX:g}")
+    return "Проверить черновик КП и подготовить счет" if has_quote else "Ответить клиенту в чате"
+
+
+def templates(flags: list[str]) -> list[dict]:
+    """Заготовки ответа: сначала по пометкам обращения, затем общие."""
+    own = [t for flag, _, t in BY_FLAG if t and flag in flags]
+    return [{"title": title, "text": body} for title, body in own + list(TEMPLATES)]
+
+
+_AMOUNT = re.compile(r"(?:,\s*)?(?:(?:итого|всего|на сумму|сумма)\s*:?\s*)?"
+                     r"(\d{1,3}(?:[ \u00a0]\d{3})+|\d+)(?:[.,](\d{1,2}))?\s*(?:руб(?:лей|ля|\.)?|₽)", re.I)
+
+
+def _amount(m: re.Match) -> float:
+    return round(float(re.sub(r"\D", "", m.group(1)) + "." + (m.group(2) or "0")), 2)
+
+
+def agreed_summary(summary: str, quote: dict | None, items: list[dict], discount: float) -> str:
+    """Сводка модели, согласованная с последним КП.
+
+    КП мог собраться после передачи в том же ходе (клиент попросил скидку): тогда суммы в сводке модели уже
+    не те, что в КП. Суммы, которых нет в КП, из сводки убираются, итог КП дописывает код.
+    """
+    if not quote or not summary:
+        return summary or ""
+    total = round(float(quote["total"]), 2)
+    known = {total} | {round(float(o[k]), 2) for o in items for k in ("price", "sum") if o.get(k)}
+
+    def drop(m):
+        if _amount(m) in known:
+            return m.group(0)
+        tail = m.string[m.end():]  # сумма стояла в конце фразы: точка остается
+        return "." if m.group(0).endswith(".") and (not tail.strip() or re.match(r"\s+[А-ЯЁA-Z]", tail)) else ""
+
+    text = _AMOUNT.sub(drop, summary).strip()
+    if total not in {_amount(m) for m in _AMOUNT.finditer(text)}:
+        rub = f"{total:,.2f}".replace(",", " ").replace(".", ",").removesuffix(",00")
+        text += f" Последний черновик {quote['number']}: итого {rub} руб." + (
+            f" со скидкой {discount:g}%." if discount else "")
+    return text
 
 
 _PERCENT = re.compile(r"(?<![\d,.])(\d{1,2}(?:[.,]\d)?)\s?%")
@@ -68,13 +133,31 @@ def priority(text: str) -> str:
     return next((p for p, rx in PRIORITY if re.search(rx, text)), "low")
 
 
+def _about(h: dict) -> tuple[list[str], str]:
+    """Реплики клиента и весь текст обращения (причина, сводка, реплики): по нему срочность и пометки."""
+    asked = [m["content"] for m in store.messages(h["session_id"]) if m["role"] == "user"]
+    return asked, " ".join([h["reason"] or "", h["summary"] or "", *asked])
+
+
+def sla_minutes(h: dict) -> int:
+    """Срок реакции менеджера на обращение h (строка таблицы handoffs): тот же, что в его карточке."""
+    return SLA_MINUTES[priority(_about(h)[1])]
+
+
+def _list_price(item: dict, discount: float) -> dict:
+    """Цена позиции КП со скидкой рядом с ценой каталога: менеджер видит, откуда расхождение с каталогом."""
+    if not discount or not item.get("price") or not item.get("offer_id"):
+        return {}
+    listed = catalog.get_offer(item["offer_id"]).get("price")
+    return {"list_price": listed, "discount_percent": discount} if listed and listed > item["price"] else {}
+
+
 def build(h: dict, now: float | None = None) -> dict:
     """h это строка таблицы handoffs. Возвращает карточку: срочность, срок реакции, клиент, запрос, позиции, сумма."""
     now = now or time.time()
     sid = h["session_id"]
     s = store.get_session(sid)
-    asked = [m["content"] for m in store.messages(sid) if m["role"] == "user"]
-    text = " ".join([h["reason"] or "", h["summary"] or "", *asked])
+    asked, text = _about(h)
     level = priority(text)
     due = h["ts"] + SLA_MINUTES[level] * 60
     facts, items = s["facts"], s["items"]
@@ -82,8 +165,10 @@ def build(h: dict, now: float | None = None) -> dict:
     calc = store.last_total(sid)
     done = h["status"] in ("answered", "returned")
     shown = [{"id": o["id"], "name": o["name"], "price": o.get("price")} for o in items.get("offers", [])[:5]]
-    in_quote = [{"id": o.get("offer_id"), "name": o["name"], "price": o.get("price"), "qty": o.get("qty")}
-                for o in json.loads(quote["items_json"] or "[]")] if quote else []
+    quote_items = json.loads(quote["items_json"] or "[]") if quote else []
+    discount = store.quote_discount(sid) if quote else 0.0
+    in_quote = [{"id": o.get("offer_id"), "name": o["name"], "price": o.get("price"), "qty": o.get("qty"),
+                 **_list_price(o, discount)} for o in quote_items]
     flags = [name for name, rx in FLAGS if re.search(rx, text.lower())]
     needs = {SHOWN_AS.get(k, k): facts[k] for k in NEED_FIELDS if facts.get(k)}
     if "дана скидка" in needs:  # зачем: запись "дана скидка 30%" в карточке менеджер прочтет как обещание клиенту
@@ -104,5 +189,7 @@ def build(h: dict, now: float | None = None) -> dict:
         "calc_total": calc,
         "turns": len(asked), "last_message": asked[-1][:300] if asked else "",
         "assignee": h.get("assignee") or "", "taken_at": h.get("taken_at"),
-        "templates": [{"title": t, "text": body} for t, body in TEMPLATES],
+        "summary": agreed_summary(h["summary"], quote, quote_items, discount),
+        "next": "" if done else next_step(flags, needs.get("запрошена скидка", ""), bool(quote)),
+        "templates": templates(flags),
     }

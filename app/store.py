@@ -48,6 +48,7 @@ def db() -> sqlite3.Connection:
         con = sqlite3.connect(config.APP_DB, timeout=30)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA secure_delete=ON")  # удаленный текст затирается, а не остается в свободных страницах
         con.executescript(_SCHEMA)
         _migrate(con)
         _local.con = con
@@ -220,6 +221,16 @@ def last_total(session_id: str) -> float | None:
     return None
 
 
+def quote_discount(session_id: str) -> float:
+    """Скидка в процентах, с которой собран последний КП диалога (0, если без скидки)."""
+    for r in db().execute("SELECT output_json FROM steps WHERE session_id=? AND kind='tool' AND name='make_quote' "
+                          "ORDER BY id DESC", (session_id,)):
+        out = json.loads(r["output_json"])
+        if out.get("ok"):
+            return float(out.get("discount_percent") or 0)
+    return 0.0
+
+
 def drop_session(session_id: str):
     con = db()
     if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tg_cards'").fetchone():
@@ -278,4 +289,6 @@ def purge(days: int) -> int:
         for (number,) in con.execute("SELECT number FROM quotes WHERE session_id=?", (sid,)).fetchall():
             (config.QUOTES_DIR / f"{number}.pdf").unlink(missing_ok=True)
         drop_session(sid)
+    if old:  # прежние версии страниц с удаленным текстом лежат в журнале WAL: переносим его в базу и обнуляем
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return len(old)
