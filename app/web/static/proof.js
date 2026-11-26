@@ -35,7 +35,7 @@ go.onclick = async () => {
     if (!res.ok) throw new Error("сервер отказал");
     const r = await res.json();
     total.textContent = r.last_run
-      ? `Последний прогон набора: ${r.last_run.date}${r.last_run.model ? ", модель " + r.last_run.model : ""}. Прошло ${r.last_run.passed} из ${r.last_run.total} диалогов.`
+      ? `Последний прогон набора: ${r.last_run.date} МСК${r.last_run.model ? ", модель " + r.last_run.model : ""}. Прошло ${r.last_run.passed} из ${r.last_run.total} диалогов.`
       : `Атак в наборе: ${r.attacks.length}. Прогон набора на живой модели пока не выполнен: ниже список атак и защита кода.`;
     list.innerHTML = r.attacks.map((a) => `<div class="row">
       <div class="kind"><b>${esc(a.id)}</b>${esc(a.category)}</div>

@@ -18,11 +18,19 @@ import json
 import re
 import statistics
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app import cases as app_cases, config, store
 from app.agent import loop, prices, prompts, tools
 from eval import quote_check
+
+MSK = timezone(timedelta(hours=3))
+
+
+def msk(fmt: str) -> str:
+    """Текущее время по Москве: каталоги прогонов и шапка отчета не зависят от часового пояса машины."""
+    return datetime.now(MSK).strftime(fmt)
 
 ROOT = Path(__file__).parent
 ASK = {  # о чем агент должен спросить -> по каким словам это видно в его вопросе
@@ -322,7 +330,7 @@ def main():
     if args.limit:
         cases = cases[:args.limit]
 
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+    stamp = msk("%Y%m%d-%H%M%S")
     out_dir = Path(args.out) / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
     config.APP_DB = out_dir / "app.sqlite"   # прогон не смешивается с диалогами стенда
@@ -378,7 +386,7 @@ def merge(cases: list[dict], dirs: list[str], out: Path):
                 run = json.loads(raw)
                 runs[run["id"]] = {k: run[k] for k in ("id", "session_id", "turns", "model_seconds", "wall_seconds")}
     rows = [judge(by_id[i], runs[i]) for i in sorted(runs)]
-    out_dir = out / time.strftime("%Y%m%d-%H%M%S")
+    out_dir = out / msk("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "transcripts.jsonl").write_text("\n".join(line(r) for r in rows) + "\n", encoding="utf-8")
     report(rows, out_dir)
@@ -424,7 +432,7 @@ def report(rows: list[dict], out_dir: Path):
     clean = sum(1 for r in alone if r["passed"] and r["case"]["expect"]["handoff"] is not True)
     price_guard, discount_guard = guard_outcomes(turns, "price"), guard_outcomes(turns, "discount")
 
-    lines = [f"# Прогон проверочных диалогов, {time.strftime('%d.%m.%Y %H:%M')}", "",
+    lines = [f"# Прогон проверочных диалогов, {msk('%d.%m.%Y %H:%M')} МСК", "",
              f"Модель: {config.LLM_MODEL} ({config.LLM_PROVIDER}). Диалогов: {n}, реплик клиента: {len(turns)}.", "",
              "## Итог", "",
              "| Показатель | Значение |", "|---|---|",
