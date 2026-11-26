@@ -96,6 +96,16 @@ TG_TOKEN = env("TG_TOKEN", "")
 TG_CHAT = env("TG_CHAT", "")
 PUBLIC_URL = env("PUBLIC_URL", "")  # адрес стенда: кнопка "Экран оператора" под карточкой обращения в Telegram
 
+# Чат сайта в Webim (app/webim.py, docs/webim.md): агент отвечает посетителю в окне Webim как бот, External Bot API 2.0.
+# WEBIM_TOKEN: токен бота из кабинета Webim, пусто = адаптер выключен. WEBIM_SECRET: окончание адреса бота, который
+# указывается в кабинете: https://<адрес стенда>/api/webim/<секрет>. WEBIM_API_URL: адрес аккаунта Webim.
+# WEBIM_DEP_KEY: ключ отдела, куда агент переводит чат при передаче менеджеру; пусто = общая очередь операторов.
+# Черновик КП Webim скачивает по ссылке от PUBLIC_URL: без него КП в Webim не уходит
+WEBIM_TOKEN = env("WEBIM_TOKEN", "")
+WEBIM_SECRET = env("WEBIM_SECRET", "")
+WEBIM_API_URL = env("WEBIM_API_URL", "https://storesoftlineru.webim.ru")
+WEBIM_DEP_KEY = env("WEBIM_DEP_KEY", "")
+
 # Описание продукта с его страницы в магазине (app/catalog/cards.py): агент получает его вместе с вариантами лицензий
 CARDS_DB = Path(env("CARDS_DB", str(ROOT / "data/db/cards.sqlite")))
 PRODUCT_CARDS = env("PRODUCT_CARDS", "1") == "1"  # 0 = описаний не запрашивать, агент работает только по фиду

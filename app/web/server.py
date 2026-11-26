@@ -911,6 +911,11 @@ def proof_page():
     return FileResponse(STATIC / "proof.html")
 
 
+if config.WEBIM_TOKEN:  # чат сайта в Webim: агент отвечает там как бот (app/webim.py, docs/webim.md)
+    from app import webim
+    app.include_router(webim.router)
+
+
 @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
 def api_not_found(rest: str):
     """Неизвестный адрес /api/ отвечает JSON: иначе его забрала бы статика и отдала страницу 404 для людей."""
