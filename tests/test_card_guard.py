@@ -1,7 +1,11 @@
 """Карточка варианта под ответом строится только по вариантам, которые инструменты показали в диалоге."""
+import pytest
+
 from app.agent import loop
 from app.agent.llm import Scripted
 from app.catalog import search as catalog
+
+pytestmark = pytest.mark.needs_data  # варианты берутся из каталога заказчика
 
 
 def _two_offers():
