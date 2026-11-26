@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path as PathArg, Query, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -41,6 +42,7 @@ log = logging.getLogger("server")
 async def lifespan(_app):
     # по расписанию: чистка старых диалогов всегда, обновление каталога с фида, если он задан
     threading.Thread(target=_update_loop, daemon=True).start()
+    notify.review_with(review_draft)  # решения менеджера по черновикам ответов агента из Telegram
     notify.start(manager_answer)  # карточки обращений в Telegram и ответы менеджеров оттуда, если бот настроен
     yield
 
@@ -426,6 +428,7 @@ def chat(body: ChatIn):
     def work():
         try:
             with session_lock(sid):
+                store.stale_drafts(sid)  # клиент написал снова: неразобранный черновик прошлого ответа устарел
                 res = turn_in_slot(sid, text, body, received, q.put)
             q.put({"type": "reply", **public_reply(res)})
         except Exception as e:  # не записалось и обращение: ответ клиенту все равно уходит
@@ -462,17 +465,46 @@ def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event) -
 
     Место не освободилось до срока: ход не начинается, клиент получает ответ о передаче, а менеджер обращение,
     как при сбое модели. Место получено: циклу агента остается срок минус время ожидания (llm.Limited).
+
+    Через эту функцию идут ходы всех каналов, поэтому режим "ответ проверяет менеджер" держится здесь: ход идет как
+    обычно, а ответ ложится черновиком (store.drafting). Канал получает шаги хода и поле review со сроком и текстом
+    ожидания; текст, карточки и КП клиент получит через deliver, когда менеджер отправит черновик.
     """
     until = received + config.TURN_DEADLINE if config.TURN_DEADLINE else None
     if not _slots.acquire(timeout=None if until is None else max(0.0, until - time.monotonic())):
         return failed_turn(sid, text, TimeoutError(f"нет свободного места у модели за {config.TURN_DEADLINE:.0f} с"))
     try:
-        return loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=on_event,
-                             llm=llm.Limited(loop.get_llm(), until) if until else None)
+        minutes = review_minutes(sid, text) if review_on() else None
+        with store.drafting(minutes) as held:
+            res = loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=on_event,
+                                llm=llm.Limited(loop.get_llm(), until) if until else None)
+        if held:
+            res = {**res, "reply": "", "cards": [], "choices": [], "events": [], "review": review_note(minutes)}
+        return res
     except Exception as e:  # клиент получает ответ, а менеджер обращение при любом сбое
         return failed_turn(sid, text, e)
     finally:
         _slots.release()
+
+
+REVIEW = "review_mode"  # настройка в базе приложения: ответы агента проверяет менеджер
+
+
+def review_on() -> bool:
+    """Режим "ответ проверяет менеджер", первая неделя пилота: оператор включает его на своем экране."""
+    return store.setting(REVIEW) == "1"
+
+
+def review_minutes(sid: str, text: str) -> int:
+    """Срок проверки ответа: срок реакции менеджера по срочности реплик клиента, как у карточки обращения."""
+    asked = [m["content"] for m in store.messages(sid) if m["role"] == "user"]
+    return handoff_card.SLA_MINUTES[handoff_card.priority(" ".join([*asked, text]))]
+
+
+def review_note(minutes: int) -> dict:
+    """Что клиент видит вместо ответа агента, пока ответ проверяет менеджер: одна формулировка для всех каналов."""
+    unit = "минуты" if minutes % 10 == 1 and minutes % 100 != 11 else "минут"
+    return {"minutes": minutes, "text": f"Ответ проверяет менеджер, обычно это занимает до {minutes} {unit}."}
 
 
 def failed_turn(sid: str, text: str, error: Exception) -> dict:
@@ -542,24 +574,42 @@ def session(session_id: str, client_id: str = Query("", max_length=64)):
         msg = {"id": m["id"], "role": m["role"], "content": m["content"], "from": m["meta"].get("from", ""),
                "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
                "events": public_events(m["meta"].get("events", []))}
+        if m["meta"].get("reviewed"):
+            msg["reviewed"] = True  # ответ агента, который менеджер проверил и отправил
         if m["role"] == "user":
             turn, traced = turn + 1, False
         elif not traced and msg["from"] != "manager":  # ответ агента на реплику клиента несет шаги своего хода
             msg["trace"], traced = steps_trace(turns.get(turn, [])), True
         messages.append(msg)
     usage = {k: s[k] for k in ("llm_calls", "tool_calls", "prompt_tokens", "completion_tokens")}
-    return {"session_id": s["id"], "status": s["status"], "messages": messages,
-            "usage": {**usage, "cost_rub": loop.cost_rub(s["prompt_tokens"], s["completion_tokens"])}}
+    out = {"session_id": s["id"], "status": s["status"], "messages": messages,
+           "usage": {**usage, "cost_rub": loop.cost_rub(s["prompt_tokens"], s["completion_tokens"])}}
+    draft = store.pending_draft(session_id)
+    if draft:  # ответ на последнюю реплику ждет проверки менеджера: чат показывает срок и шаги хода, но не текст
+        out["review"] = {**review_note(draft["minutes"]), "trace": steps_trace(turns.get(turn, []))}
+    return out
 
 
 @app.get("/api/session/{session_id}/answers")
 def session_answers(session_id: str, client_id: str = Query("", max_length=64), after: int = 0):
-    """Новые ответы менеджера для открытого чата: чат спрашивает о них, пока клиент на странице."""
+    """Новые ответы для открытого чата: чат спрашивает о них, пока клиент на странице.
+
+    Это ответы менеджера и ответы агента, которые менеджер проверил и отправил: такие идут с карточками и КП.
+    """
     s = store.find_session(own_session(session_id, client_id))
     if s is None:
         raise HTTPException(404, "нет такого диалога")
-    return {"answers": [{"id": m["id"], "content": m["content"]} for m in store.messages(session_id)
-                        if m["id"] > after and m["meta"].get("from") == "manager"]}
+    found = []
+    for m in store.messages(session_id):
+        if m["id"] <= after:
+            continue
+        if m["meta"].get("from") == "manager":
+            found.append({"id": m["id"], "content": m["content"]})
+        elif m["meta"].get("reviewed"):
+            found.append({"id": m["id"], "content": m["content"], "reviewed": True,
+                          "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
+                          "events": public_events(m["meta"].get("events", []))})
+    return {"answers": found}
 
 
 # Витрина без запроса: продукты, о которых чаще всего спрашивают в обращениях (docs/chat_analysis.md)
@@ -799,6 +849,114 @@ def admin_answer(body: AnswerIn, handoff_id: int = HANDOFF_ID):
     return done
 
 
+class ReviewIn(BaseModel):
+    on: bool
+
+
+@app.post("/api/admin/review", dependencies=[Depends(admin)])
+def admin_review(body: ReviewIn):
+    """Оператор включает и выключает режим "ответ проверяет менеджер"."""
+    store.set_setting(REVIEW, "1" if body.on else "0")
+    return {"on": body.on}
+
+
+class DraftIn(BaseModel):
+    action: Literal["send", "edit", "drop"]
+    answer: str = Field(default="", max_length=4000)  # текст менеджера вместо черновика: только для edit
+
+
+DRAFT_ID = PathArg(ge=1, le=2**63 - 1)  # номер черновика в пределах целого SQLite
+
+
+@app.post("/api/admin/draft/{draft_id}", dependencies=[Depends(admin)])
+def admin_draft(body: DraftIn, draft_id: int = DRAFT_ID):
+    """Решение менеджера по черновику ответа агента с экрана оператора."""
+    if body.action == "edit" and not body.answer.strip():
+        raise HTTPException(422, "напишите текст ответа клиенту")
+    done = review_draft(draft_id, body.action, body.answer.strip())
+    if done is None:
+        raise HTTPException(404, "нет такого черновика")
+    return done
+
+
+DECIDED = {"send": "sent", "edit": "edited", "drop": "dropped"}
+MANAGER_TAKES = {"edit": "менеджер поправил ответ агента", "drop": "менеджер не отправил ответ агента"}
+
+
+def review_draft(draft_id: int, action: str, answer: str = "") -> dict | None:
+    """Решение менеджера по черновику с экрана оператора или из Telegram. None, если черновика нет.
+
+    send: клиент получает ответ агента с карточками и КП и пометкой "проверено менеджером". edit: клиент получает
+    текст менеджера ответом на обращение. drop: клиенту ничего, обращение остается у менеджера. Повтор и черновик,
+    который уже разобран или устарел, второго ответа клиенту не дают: ok=False и статус черновика.
+    """
+    d = store.draft(draft_id)
+    if d is None:
+        return None
+    if not store.decide_draft(draft_id, DECIDED[action]):
+        return {"ok": False, "status": store.draft(draft_id)["status"]}
+    sid, meta = d["session_id"], d["meta"]
+    if action == "send":
+        deliver(sid, {"session_id": sid, "reply": d["content"], "cards": meta.get("cards", []),
+                      "choices": meta.get("choices", []), "events": meta.get("events", []), "trace": [],
+                      "reviewed": True})
+    else:
+        hid = manager_handoff(sid, MANAGER_TAKES[action])
+        if action == "edit":
+            manager_answer(hid, answer)
+            deliver(sid, {"session_id": sid, "reply": answer, "from": "manager", "cards": [], "choices": [],
+                          "events": [], "trace": []})
+    return {"ok": True, "status": DECIDED[action]}
+
+
+# Каналы, которые сами переписку не читают: начало client_id диалога -> функция(session_id, ответ), которая отдает
+# ответ клиенту. Чат сайта здесь не нужен: проверенный ответ он забирает из переписки опросом /answers.
+DELIVERY: dict[str, Callable[[str, dict], object]] = {}
+
+
+def deliver(sid: str, result: dict):
+    """Ответ, который менеджер отправил после проверки, уходит в канал диалога.
+
+    result в том же виде, что результат хода (turn_in_slot): reply, cards, choices, events со ссылками на КП без
+    подписи. У ответа агента пометка reviewed, у текста менеджера вместо черновика from="manager". В переписке
+    ответ уже записан: сбой канала пишется в журнал и решение менеджера не отменяет.
+    """
+    client_id = (store.find_session(sid) or {}).get("client_id") or ""
+    for prefix, send in DELIVERY.items():
+        if client_id.startswith(prefix):
+            try:
+                send(sid, result)
+            except Exception:
+                log.exception("доставка проверенного ответа в диалог %s", sid)
+
+
+def manager_handoff(sid: str, reason: str) -> int:
+    """Открытое обращение диалога, а если его нет, новое: дальше клиенту отвечает менеджер."""
+    ticket = store.open_handoff(sid)
+    if ticket:
+        return ticket["id"]
+    asked = [m["content"] for m in store.messages(sid) if m["role"] == "user"]
+    return store.handoff(sid, reason, f"Последнее сообщение клиента: {asked[-1][:500]}" if asked else "",
+                         store.get_session(sid)["facts"].get("контакт", ""))[0]
+
+
+def review_stats(where_id: str) -> dict:
+    """Режим проверки на экране оператора: включен ли он, черновики на проверке и метрика пилота.
+
+    Метрика: сколько ответов менеджер отправил без правок, с правкой и не отправил. Доля без правок считается
+    по разобранным черновикам; устаревшие (клиент написал раньше, чем менеджер их разобрал) в нее не входят.
+    """
+    n = dict(store.db().execute(f"SELECT status, COUNT(*) FROM drafts WHERE {where_id} GROUP BY status").fetchall())
+    decided = sum(n.get(k, 0) for k in DECIDED.values())
+    waiting = [{"id": d["id"], "session_id": d["session_id"], "ts": d["ts"], "due": d["ts"] + d["minutes"] * 60,
+                "asked": d["asked"] or "", "content": d["content"], "cards": d["meta"].get("cards", []),
+                "choices": d["meta"].get("choices", []), "events": d["meta"].get("events", [])}
+               for d in store.drafts(f"d.status='new' AND {where_id}")]
+    return {"on": review_on(), "drafts": waiting, "sent": n.get("sent", 0), "edited": n.get("edited", 0),
+            "dropped": n.get("dropped", 0), "stale": n.get("stale", 0),
+            "clean_share": round(n.get("sent", 0) / decided, 3) if decided else None}
+
+
 FORMULA = ("=", "+", "-", "@", "\t", "\r")  # с этого Excel начинает формулу: такая ячейка идет с апострофом
 
 
@@ -877,6 +1035,7 @@ def admin_stats(request: Request, minutes: float | None = Query(None, gt=0, le=6
             "cost_rub_per_dialog": round(total / dialogs, 2) if dialogs else None,
             "avg_model_seconds_per_turn": round(lat, 1) if lat else None,
             "handoffs": _handoffs(f"WHERE {where_id}"), "queue": _queue(now, where_id),
+            "review": review_stats(where_id),
             "added_cases": len(cases.load()),
             "stand_note": config.STAND_NOTE,
             "economy": eco,

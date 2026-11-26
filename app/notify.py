@@ -8,6 +8,9 @@
 Карточка та же, что на экране оператора: ее собирает код (app/agent/handoff_card.py), модель не вызывается.
 Пока диалог идет, карточка в Telegram обновляется: новые позиции, сумма и КП попадают в то же сообщение.
 
+В режиме "ответ проверяет менеджер" сюда же приходит черновик ответа агента с кнопками "Отправить" и "Не
+отправлять". Текст менеджера реплаем на черновик уходит клиенту вместо черновика.
+
 Включается двумя настройками: TG_TOKEN (ключ бота) и TG_CHAT (номер чата менеджеров). Без них сервер
 работает как раньше, обращения видны на экране оператора.
 """
@@ -35,11 +38,19 @@ HOWTO = "Ответьте на это сообщение: клиент увид�
 HELLO = ("Сюда приходят обращения из чата магазина. Ответьте на карточку обращения реплаем, и клиент увидит "
          "ответ в чате сайта.")
 
+DRAFT_HOWTO = "Ответьте на это сообщение своим текстом: клиент получит его вместо черновика."
+DRAFT_STATUS = {"new": "ждет проверки", "sent": "отправлен клиенту без правок",
+                "edited": "клиенту ушел текст менеджера", "dropped": "не отправлен, обращение у менеджера",
+                "stale": "устарел, клиент написал снова"}
+
 _answer = None  # как записать ответ менеджера: задает сервер при запуске
+_review = None  # как принять решение менеджера по черновику ответа агента: задает сервер (review_with)
 _SCHEMA = ("CREATE TABLE IF NOT EXISTS tg_cards(handoff_id INTEGER PRIMARY KEY, chat_id TEXT, message_id INT, "
            "text TEXT, quote TEXT DEFAULT '', ts REAL)",
-           "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
-_retry_at: dict[int, float] = {}  # номер обращения -> когда снова пробовать отправить или обновить карточку
+           "CREATE TABLE IF NOT EXISTS tg_drafts(draft_id INTEGER PRIMARY KEY, chat_id TEXT, message_id INT, "
+           "status TEXT, ts REAL)")
+# номер обращения или "draft:<номер черновика>" -> когда снова пробовать отправить или обновить сообщение
+_retry_at: dict[int | str, float] = {}
 
 
 def enabled() -> bool:
@@ -193,8 +204,8 @@ def _since(con, now: float) -> float:
     return float(row[0])
 
 
-def _later(handoff_id: int, now: float) -> bool:
-    return _retry_at.get(handoff_id, 0) > now
+def _later(key: int | str, now: float) -> bool:
+    return _retry_at.get(key, 0) > now
 
 
 def sync() -> int:
@@ -244,6 +255,84 @@ def sync() -> int:
         if text != t["text"] or quote != t["quote"]:
             con.execute("UPDATE tg_cards SET text=?, quote=? WHERE handoff_id=?", (text, quote, t["handoff_id"]))
             con.commit()
+    return done + _sync_drafts(con, now)
+
+
+def _card_price(c: dict) -> str:
+    if c.get("price"):
+        return _rub(c["price"])
+    if c.get("price_min"):
+        return ("" if c["price_min"] == c.get("price_max") else "от ") + _rub(c["price_min"])
+    return "цена по запросу"
+
+
+def draft_text(d: dict) -> str:
+    """Черновик ответа агента для Telegram (HTML): реплика клиента, ответ агента и все, что клиент получит с ним."""
+    e = lambda text, n=300: html.escape(_cut(text, n))
+    meta = d["meta"]
+    lines = [f"<b>Черновик ответа агента №{d['id']}</b>: {DRAFT_STATUS[d['status']]}"]
+    if d["status"] == "new":
+        lines.append(f"Клиент ждет в чате сайта, срок проверки {d['minutes']} мин")
+    lines += ["", f"<b>Клиент:</b> {e(d['asked'] or '', 800)}", "", "<b>Ответ агента:</b>", e(d["content"], 2500)]
+    cards = meta.get("cards") or []
+    if cards:
+        lines.append("<b>Карточки под ответом:</b>")
+        lines += [f"- {e(c['title'], 150)}, {_card_price(c)}" for c in cards[:MAX_OFFERS]]
+    if meta.get("choices"):
+        lines.append("<b>Кнопки выбора:</b> " + e("; ".join(meta["choices"])))
+    for ev in meta.get("events") or []:
+        if ev.get("type") == "quote":
+            lines.append(f"<b>Черновик {e(ev['number'], 60)}:</b> {_rub(ev['total'])}")
+        elif ev.get("type") == "handoff":
+            lines.append(f"<b>Передача менеджеру:</b> обращение №{ev['id']}")
+    tail = howto = ["", DRAFT_HOWTO] if d["status"] == "new" else []
+    while len("\n".join(lines + tail)) > LIMIT:  # строки целые: каждая закрывает свои теги сама
+        lines.pop()
+        tail = ["…полностью на экране оператора", *howto]
+    return "\n".join(lines + tail)
+
+
+def _draft_buttons(d: dict) -> dict:
+    rows = [[{"text": "Отправить", "callback_data": f"send:{d['id']}"},
+             {"text": "Не отправлять", "callback_data": f"drop:{d['id']}"}]] if d["status"] == "new" else []
+    if config.PUBLIC_URL:
+        rows.append([{"text": "Экран оператора", "url": config.PUBLIC_URL.rstrip("/") + "/admin"}])
+    return {"inline_keyboard": rows}
+
+
+def _sync_drafts(con, now: float) -> int:
+    """Черновики ответов агента: новый уходит с кнопками, разобранный или устаревший теряет их и показывает итог."""
+    done = 0
+    unsent = store.drafts(  # черновики до первого запуска доставки и диалоги проверочного прогона не шлем
+        f"d.status='new' AND d.ts>=? AND d.id NOT IN (SELECT draft_id FROM tg_drafts) "
+        f"AND d.session_id NOT IN (SELECT id FROM sessions WHERE {store.RUN_CLIENTS})", (_since(con, now) - FRESH,))
+    for d in unsent:
+        key = f"draft:{d['id']}"
+        if _later(key, now):
+            continue
+        sent = _card_call("sendMessage", draft_text(d), chat_id=config.TG_CHAT, reply_markup=_draft_buttons(d))
+        if sent is None:
+            _retry_at[key] = now + RETRY
+            continue
+        _retry_at.pop(key, None)
+        con.execute("INSERT OR REPLACE INTO tg_drafts(draft_id, chat_id, message_id, status, ts) VALUES(?,?,?,?,?)",
+                    (d["id"], str(config.TG_CHAT), sent["message_id"], d["status"], now))
+        con.commit()
+        done += 1
+    changed = con.execute("SELECT t.* FROM tg_drafts t JOIN drafts d ON d.id = t.draft_id "
+                          "WHERE t.status <> d.status AND t.ts > ?", (now - WATCH,)).fetchall()
+    for t in changed:
+        d, key = store.draft(t["draft_id"]), f"draft:{t['draft_id']}"
+        if _later(key, now):
+            continue
+        if _card_call("editMessageText", draft_text(d), chat_id=t["chat_id"], message_id=t["message_id"],
+                      reply_markup=_draft_buttons(d)) is None:
+            _retry_at[key] = now + RETRY
+            continue
+        _retry_at.pop(key, None)
+        con.execute("UPDATE tg_drafts SET status=? WHERE draft_id=?", (d["status"], t["draft_id"]))
+        con.commit()
+        done += 1
     return done
 
 
@@ -259,6 +348,14 @@ def handle(update: dict) -> str:
         action, _, hid = (cb.get("data") or "").partition(":")
         if chat != str(config.TG_CHAT) or not hid.isdigit():
             return "ignored"
+        if action in ("send", "drop"):  # кнопки под черновиком ответа агента
+            done = _review(int(hid), action)
+            if done and done["ok"]:
+                said = "Ответ отправлен клиенту" if action == "send" else "Черновик снят, обращение у менеджера"
+            else:  # повтор нажатия или черновик устарел: клиенту ничего не уходит
+                said = f"Черновик №{hid}: {DRAFT_STATUS[done['status']]}" if done else f"Черновика №{hid} больше нет"
+            call("answerCallbackQuery", callback_query_id=cb["id"], text=said)
+            return action if done and done["ok"] else "stale"
         ok = store.take_handoff(int(hid), _who(cb["from"])) if action == "take" else \
             store.return_handoff(int(hid)) if action == "back" else False
         said = {"take": "Обращение за вами", "back": "Диалог возвращен агенту"}.get(action, "") if ok else \
@@ -275,6 +372,17 @@ def handle(update: dict) -> str:
     reply_to = (msg.get("reply_to_message") or {}).get("message_id")
     row = _db().execute("SELECT handoff_id FROM tg_cards WHERE chat_id=? AND message_id=?",
                         (chat, reply_to)).fetchone() if reply_to else None
+    drafted = _db().execute("SELECT draft_id FROM tg_drafts WHERE chat_id=? AND message_id=?",
+                            (chat, reply_to)).fetchone() if reply_to and row is None else None
+    if drafted:  # текст менеджера реплаем на черновик уходит клиенту вместо черновика
+        n = drafted["draft_id"]
+        done = _review(n, "edit", text[:4000])
+        ok = bool(done and done["ok"])
+        call("sendMessage", chat_id=chat, reply_to_message_id=msg["message_id"],
+             text=f"Клиенту отправлен ваш текст вместо черновика №{n}." if ok else
+             f"Черновик №{n}: {DRAFT_STATUS[done['status']]}. Ваш текст клиенту не ушел." if done else
+             f"Черновика №{n} больше нет: ваш текст клиенту не ушел.")
+        return "edited" if ok else "stale"
     if row is None:
         call("sendMessage", chat_id=chat, text=HELLO)
         return "hint"
@@ -309,6 +417,13 @@ def _poll():
                 handle(u)
             except Exception:
                 log.exception("notify update")
+
+
+def review_with(review):
+    """review(draft_id, action, text) принимает решение менеджера по черновику ответа агента (send, edit или drop)
+    так же, как экран оператора: функцию дает сервер до запуска."""
+    global _review
+    _review = review
 
 
 def start(answer):

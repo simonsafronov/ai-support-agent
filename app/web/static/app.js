@@ -165,7 +165,8 @@ function showReply(r, restoring = false) {
   const log = $("log"), start = log.children.length;
   if (r.reply) {
     const mgr = r.from === "manager";
-    add(mgr ? "msg bot mgr" : "msg bot", `<span class="who">${mgr ? "Менеджер Softline" : "ИИ-консультант"}</span>${text(r.reply)}`);
+    const ok = r.reviewed ? '<span class="ok">проверено менеджером</span>' : "";
+    add(mgr ? "msg bot mgr" : "msg bot", `<span class="who">${mgr ? "Менеджер Softline" : "ИИ-консультант"}${ok}</span>${text(r.reply)}`);
     if (mgr) callState("in");
   }
   for (const c of r.cards || []) add("card", card(c)).querySelector(".take")?.addEventListener("click", (e) => send(e.target.dataset.say));
@@ -180,6 +181,7 @@ function showReply(r, restoring = false) {
       if (!$("call").dataset.state) callState("wait");
     }
   }
+  if (r.review) add("msg sys review", esc(r.review.text));  // режим "ответ проверяет менеджер": срок вместо текста
   if ((r.choices || []).length) {
     const d = add("choices", r.choices.map((c) => `<button type="button">${esc(c)}</button>`).join(""));
     d.querySelectorAll("button").forEach((b) => (b.onclick = () => { d.remove(); send(b.textContent); }));
@@ -300,7 +302,8 @@ async function send(message) {
       saveSession(ev.session_id, gen);
       trace(ev.trace, pending);
       showReply(ev); meter(ev.usage);
-      $("say").textContent = "Ответ получен";
+      if (ev.review) step("turn", "Ответ ушел на проверку менеджеру");
+      $("say").textContent = ev.review ? "Ответ проверяет менеджер" : "Ответ получен";
     }
   };
   try {
@@ -411,7 +414,8 @@ async function goods(q) {
 $("sf").onsubmit = (e) => { e.preventDefault(); goods($("sq").value.trim()); };
 $("ctxoff").onclick = () => { state.page = ""; $("ctx").classList.remove("on"); };
 
-// Ответ менеджера приходит в этот же чат: пока страница открыта, чат раз в несколько секунд спрашивает о новых
+// Ответ менеджера и проверенный менеджером ответ агента приходят в этот же чат: пока страница открыта,
+// чат раз в несколько секунд спрашивает о новых
 async function answersPoll() {
   if (!state.session || state.busy || document.hidden) return;
   const gen = state.gen;
@@ -423,8 +427,9 @@ async function answersPoll() {
     for (const m of found) {
       if (m.id <= state.seen) continue;
       state.seen = state.last = Math.max(state.last, m.id);
-      showReply({ reply: m.content, from: "manager" });
-      step("turn", "Менеджер ответил в чат");
+      document.querySelectorAll("#log .msg.review").forEach((e) => e.remove());  // проверка закончилась
+      showReply(m.reviewed ? { ...m, reply: m.content } : { reply: m.content, from: "manager" });
+      step("turn", m.reviewed ? "Менеджер проверил и отправил ответ" : "Менеджер ответил в чат");
     }
   } catch (e) { /* связь пропала: спросим на следующем круге */ }
 }
@@ -451,10 +456,12 @@ function history(s) {
   msgs.forEach((m, i) => {
     state.last = m.id;
     if (m.role === "user") { add("msg user", esc(m.content)); if (traced) step("turn", said(m.content)); return; }
-    if (m.from === "manager") { state.seen = Math.max(state.seen, m.id); if (traced) step("turn", "Менеджер ответил в чат"); }
+    if (m.from === "manager" || m.reviewed) state.seen = Math.max(state.seen, m.id);  // опрос ответов их не повторит
+    if (m.from === "manager" && traced) step("turn", "Менеджер ответил в чат");
     trace(m.trace);
-    showReply({ reply: m.content, from: m.from, cards: m.cards, events: m.events, choices: i === msgs.length - 1 ? m.choices : [] }, true);
+    showReply({ reply: m.content, from: m.from, reviewed: m.reviewed, cards: m.cards, events: m.events, choices: i === msgs.length - 1 ? m.choices : [] }, true);
   });
+  if (s.review) { trace(s.review.trace); showReply({ review: s.review }, true); }  // ответ на последнюю реплику на проверке
   if (s.usage) meter(s.usage, true);
   if (s.status) callState(s.status === "handoff" ? (state.seen ? "in" : "wait") : "");  // менеджер мог вернуть диалог агенту
   scrollEnd(); document.fonts?.ready.then(scrollEnd);  // шрифт догрузился и переверстал строки: журнал снова внизу
@@ -478,7 +485,7 @@ async function awaitReply(gen) {
       const s = await getSession();
       if (gen !== state.gen) return;
       const msgs = s.messages || [];
-      if (msgs.length && msgs[msgs.length - 1].role !== "user") { typing.remove(); history(s); return; }
+      if (s.review || (msgs.length && msgs[msgs.length - 1].role !== "user")) { typing.remove(); history(s); return; }
     } catch (e) { /* связь пропала: спросим на следующем круге */ }
   }
   typing.remove(); add("msg sys", "Ответ не пришел. Отправьте сообщение еще раз.");
@@ -497,6 +504,6 @@ async function awaitReply(gen) {
   if (!msgs.length) { hello(); lock(false); return; }
   starters.hidden = true;
   history(s);
-  if (msgs[msgs.length - 1].role === "user") await awaitReply(gen);
+  if (msgs[msgs.length - 1].role === "user" && !s.review) await awaitReply(gen);
   if (gen === state.gen) lock(false);
 })();

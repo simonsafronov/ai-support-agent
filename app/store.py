@@ -1,6 +1,8 @@
-"""Хранилище приложения: диалоги, шаги агента, память о клиенте, передачи менеджеру, КП."""
+"""Хранилище приложения: диалоги, шаги агента, память о клиенте, передачи менеджеру, КП, черновики ответов на
+проверке менеджера и настройки, которые меняет оператор."""
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -30,6 +32,11 @@ CREATE TABLE IF NOT EXISTS answers(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, handoff_id INT, session_id TEXT, question TEXT, answer TEXT,
   teach INT DEFAULT 0);
 CREATE VIRTUAL TABLE IF NOT EXISTS answers_fts USING fts5(text);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS drafts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, ts REAL, content TEXT, meta_json TEXT DEFAULT '{}',
+  minutes INT, status TEXT DEFAULT 'new', decided_at REAL);
+CREATE INDEX IF NOT EXISTS ix_drafts_session ON drafts(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_messages_session ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_steps_session ON steps(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_sessions_client ON sessions(client_id, updated_at);
@@ -118,7 +125,33 @@ def add_usage(session_id: str, prompt_tokens: int, completion_tokens: int, llm_c
     db().commit()
 
 
+_drafting = threading.local()
+
+
+@contextlib.contextmanager
+def drafting(minutes: int | None):
+    """Ход в режиме "ответ проверяет менеджер": ответ агента ложится черновиком со сроком проверки minutes.
+
+    Сервер оборачивает в это ход агента, minutes=None значит обычный ход. Цикл агента пишет ответ как всегда,
+    а в переписку, которую читает чат клиента, текст не попадает ни на миг. Отдает номера заведенных черновиков.
+    """
+    held: list[int] = []
+    _drafting.minutes, _drafting.held = minutes, held
+    try:
+        yield held
+    finally:
+        _drafting.minutes = None
+
+
 def add_message(session_id: str, role: str, content: str, meta: dict | None = None) -> int:
+    """Реплика в переписку. Ответ агента в ходе под drafting становится черновиком: возвращается его номер."""
+    minutes = getattr(_drafting, "minutes", None)
+    if role == "assistant" and minutes is not None:
+        cur = db().execute("INSERT INTO drafts(session_id, ts, content, meta_json, minutes) VALUES(?,?,?,?,?)",
+                           (session_id, time.time(), content, _j(meta or {}), minutes))
+        db().commit()
+        _drafting.held.append(cur.lastrowid)
+        return cur.lastrowid
     cur = db().execute("INSERT INTO messages(session_id, ts, role, content, meta_json) VALUES(?,?,?,?,?)",
                        (session_id, time.time(), role, content, _j(meta or {})))
     db().commit()
@@ -129,6 +162,71 @@ def messages(session_id: str, limit: int = 200) -> list[dict]:
     rows = db().execute("SELECT * FROM (SELECT * FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?) "
                         "ORDER BY id", (session_id, limit)).fetchall()
     return [{**dict(r), "meta": json.loads(r["meta_json"])} for r in rows]
+
+
+def setting(key: str) -> str:
+    """Настройка стенда, которую меняет оператор на своем экране. Пустая строка, если ее не меняли."""
+    row = db().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else ""
+
+
+def set_setting(key: str, value: str):
+    db().execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", (key, value))
+    db().commit()
+
+
+# черновик вместе с репликой клиента, на которую он отвечает
+_DRAFTS = ("SELECT d.*, (SELECT content FROM messages m WHERE m.session_id=d.session_id AND m.role='user' "
+           "AND m.ts<=d.ts ORDER BY m.id DESC LIMIT 1) AS asked FROM drafts d")
+
+
+def drafts(where: str = "1", args: tuple = ()) -> list[dict]:
+    """Черновики ответов агента по условию на таблицу drafts d, по порядку."""
+    rows = db().execute(f"{_DRAFTS} WHERE {where} ORDER BY d.id", args).fetchall()
+    return [{**{k: r[k] for k in r.keys() if k != "meta_json"}, "meta": json.loads(r["meta_json"])} for r in rows]
+
+
+def draft(draft_id: int) -> dict | None:
+    found = drafts("d.id=?", (draft_id,))
+    return found[0] if found else None
+
+
+def pending_draft(session_id: str) -> dict | None:
+    """Черновик, который ждет проверки менеджера: у диалога он один, ответ на последнюю реплику клиента."""
+    found = drafts("d.session_id=? AND d.status='new'", (session_id,))
+    return found[-1] if found else None
+
+
+def stale_drafts(session_id: str):
+    """Клиент написал снова: черновик ответа на прошлую реплику устарел и клиенту уже не уходит."""
+    db().execute("UPDATE drafts SET status='stale', decided_at=? WHERE session_id=? AND status='new'",
+                 (time.time(), session_id))
+    db().commit()
+
+
+def decide_draft(draft_id: int, status: str) -> bool:
+    """Решение менеджера по черновику одной транзакцией: sent, edited или dropped. True, если оно принято.
+
+    Решение принимается только по черновику, который ждет проверки: повтор и устаревший черновик ничего не
+    меняют. Черновик со статусом sent становится ответом агента в переписке с пометкой reviewed.
+    """
+    con, now = db(), time.time()
+    if con.in_transaction:
+        con.commit()
+    con.execute("BEGIN IMMEDIATE")  # два нажатия разом: второе видит уже разобранный черновик
+    try:
+        d = con.execute("SELECT * FROM drafts WHERE id=? AND status='new'", (draft_id,)).fetchone()
+        if d:
+            con.execute("UPDATE drafts SET status=?, decided_at=? WHERE id=?", (status, now, draft_id))
+            if status == "sent":
+                con.execute("INSERT INTO messages(session_id, ts, role, content, meta_json) VALUES(?,?,?,?,?)",
+                            (d["session_id"], now, "assistant", d["content"],
+                             _j({**json.loads(d["meta_json"]), "reviewed": True})))
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    return d is not None
 
 
 def add_step(session_id: str, turn: int, kind: str, name: str, inp, out, prompt_tokens: int = 0,
@@ -237,7 +335,11 @@ def drop_session(session_id: str):
         # копия текста карточки Telegram: в ней контакт и реквизиты клиента, она уходит вместе с заявкой
         con.execute("DELETE FROM tg_cards WHERE handoff_id IN (SELECT id FROM handoffs WHERE session_id=?)",
                     (session_id,))
-    for table in ("messages", "steps", "handoffs", "quotes"):
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tg_drafts'").fetchone():
+        # отметка о черновике, отправленном в Telegram, уходит вместе с черновиком
+        con.execute("DELETE FROM tg_drafts WHERE draft_id IN (SELECT id FROM drafts WHERE session_id=?)",
+                    (session_id,))
+    for table in ("messages", "steps", "handoffs", "quotes", "drafts"):
         con.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
     con.execute("DELETE FROM sessions WHERE id=?", (session_id,))
     con.commit()

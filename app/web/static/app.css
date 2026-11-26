@@ -74,6 +74,7 @@ h2{font-size:var(--f18);font-weight:600}
 .msg b{font-weight:600}
 .msg .who{display:block;font-size:var(--f12);color:var(--muted)}
 .msg.mgr .who{color:var(--crimson);font-weight:500}
+.msg .who .ok{color:var(--green);margin-left:var(--s8)}  /* ответ агента, проверенный менеджером */
 .msg .li{display:block;padding-left:1.5em;text-indent:-1.5em}
 .typing{align-self:flex-start;color:var(--muted);font-size:var(--f12);padding-left:var(--s4)}
 .typing i{display:inline-block;width:6px;height:6px;margin-right:3px;border-radius:50%;background:var(--muted);animation:blink 1.2s infinite}
