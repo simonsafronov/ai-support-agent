@@ -66,6 +66,9 @@ const FIELDS = [
   ["card_share", "card_saves_share", "Сколько времени менеджера снимает готовая карточка, %", "допущение, от 0 до 100", 5, 0, 100],
 ];
 const eco = {};  // допущения, которые оператор поменял на экране, в виде параметров запроса
+// Итог черновика ответа агента, который уже разобран
+const DRAFT = { sent: "отправлен клиенту без правок", edited: "клиенту ушел текст менеджера", dropped: "не отправлен", stale: "устарел, клиент написал снова" };
+const editing = {};  // черновик -> текст правки: автообновление и перерисовка его не теряют
 const view = { queue: "wait", runOpen: false, rows: "all", find: "" };  // фильтры живут вне load: автообновление их не сбрасывает
 let current = "", from = "", operator = false, data = null, model = {}, shown = 0;
 
@@ -123,6 +126,48 @@ function renderQueue() {
   }
   const empty = { wait: "Сейчас никто не ждет ответа менеджера.", all: "Передач менеджеру пока нет.", run: "Обращений проверочного прогона нет." };
   paint($("hand"), html || `<div class="empty">${empty[view.queue]}</div>`);
+}
+
+// Режим "ответ проверяет менеджер": переключатель и метрика пилота
+function reviewBar(r) {
+  const done = r.sent + r.edited + r.dropped;
+  $("rvon").checked = r.on;
+  $("rvon").disabled = !operator;
+  $("rvst").innerHTML = (r.on ? "Включен: клиент получает ответ агента после проверки, черновики ждут в очереди обращений."
+    : "Выключен: ответы агента уходят клиенту сразу.") + (operator ? "" : " Переключает оператор по ссылке с ключом.")
+    + (done ? ` Проверено ответов: <b>${num(done)}</b>, без правок <b>${num(r.sent)}</b>, с правкой <b>${num(r.edited)}</b>, не отправлено <b>${num(r.dropped)}</b>; доля без правок <b>${Math.round(r.clean_share * 100)}%</b>.`
+      : " Проверенных ответов пока нет.") + (r.stale ? ` Устарели до проверки: ${num(r.stale)}.` : "");
+}
+
+// Черновик ответа агента: что клиент получит после "Отправить", и решения менеджера
+function draftCard(d, now) {
+  const left = d.due - now, late = left < 0;
+  const price = (c) => c.price ? rub(c.price) : c.price_min ? (c.price_min === c.price_max ? "" : "от ") + rub(c.price_min) : "цена по запросу";
+  const quote = d.events.filter((e) => e.type === "quote").map((q) => `${q.url ? `<a href="${esc(q.url)}" target="_blank" rel="noopener">черновик ${esc(q.number)}</a>` : `черновик ${esc(q.number)}`} на ${rub(q.total)}`).join("<br>");
+  const handed = d.events.filter((e) => e.type === "handoff").map((e) => `обращение № ${esc(e.id)}: ${esc(e.reason)}`).join("<br>");
+  const rows = [
+    ["Клиент", esc(d.asked)],
+    ["Ответ агента", esc(d.content), "txt"],
+    d.cards.length ? ["Карточки", d.cards.map((c) => `${esc(c.title)}: ${price(c)}`).join("<br>")] : null,
+    d.choices.length ? ["Кнопки", d.choices.map(esc).join(" · ")] : null,
+    quote ? ["КП", quote] : null,
+    handed ? ["Передача", handed] : null,
+  ].filter(Boolean).map(([a, b, cls]) => `<div class="row${cls ? " " + cls : ""}"><span>${a}</span><span>${b}</span></div>`).join("");
+  const act = !operator ? "" : d.id in editing
+    ? `<div class="ans"><label class="who" for="dr${d.id}">Ответ клиенту вместо черновика: клиент увидит его как ответ менеджера</label><textarea id="dr${d.id}" data-f="dr${d.id}">${esc(editing[d.id])}</textarea>
+      <div><button type="button" class="btn main" data-r="edit" data-f="de${d.id}">Отправить правку</button><button type="button" class="btn" data-r="cancel" data-f="dc${d.id}">Отмена</button><span class="hint" aria-live="polite"></span></div></div>`
+    : `<div class="act"><button type="button" class="btn main" data-r="send" data-f="ds${d.id}">Отправить</button><button type="button" class="btn" data-r="open" data-f="do${d.id}">Править</button><button type="button" class="btn" data-r="drop" data-f="dd${d.id}">Не отправлять</button></div>`;
+  return `<article class="card drf" data-id="${esc(d.session_id)}" data-d="${d.id}">
+    <div class="hd"><span class="tag u">на проверке</span><button type="button" class="open" data-f="dv${d.id}">Черновик № ${d.id} · ответ агента клиенту</button><span class="due${late ? " late" : ""}">${dt(d.ts)} МСК · ${late ? `просрочено на ${span(left)}` : `проверить до ${hm(d.due)} МСК, осталось ${span(left)}`}</span></div>
+    ${rows}${act}</article>`;
+}
+
+function renderDrafts() {
+  if (!data) return;
+  const list = data.st.review.drafts, box = $("drafts");
+  for (const id of Object.keys(editing)) if (!list.some((d) => String(d.id) === id)) delete editing[id];  // разобран в другом месте
+  box.hidden = !list.length;
+  paint(box, list.length ? `<h3>Ответы агента на проверке: ${list.length}. Клиент получит ответ, когда менеджер его отправит</h3>${list.map((d) => draftCard(d, data.st.now)).join("")}` : "");
 }
 
 const ROWS = { all: () => true, handoff: (s) => s.status === "handoff", agent: (s) => s.status !== "handoff", quote: (s) => s.quotes > 0 };
@@ -257,6 +302,8 @@ async function load(force = false) {
     if (focused) $("ecoin").querySelector(`[data-eco="${focused}"]`)?.focus();
   }
   $("handn").textContent = qu.waiting + qu.from_run ? `ждут ответа: ${qu.waiting}, из них просрочено: ${qu.overdue}` : "";
+  reviewBar(st.review);
+  renderDrafts();
   renderQueue();
   renderRows();
 }
@@ -273,6 +320,33 @@ async function pick(ev, list) {
   await load(); if (current) show(current);
 }
 $("hand").onclick = (ev) => pick(ev, "hand");
+$("rvon").onchange = async () => {
+  const on = $("rvon").checked;
+  if (!await locked([$("rvon")], () => post("/api/admin/review", { on }))) { $("rvon").checked = !on; return; }
+  load();
+};
+// Черновик: клик по карточке открывает диалог, кнопки решают, что получит клиент
+$("drafts").onclick = async (ev) => {
+  const el = ev.target.closest("[data-d]"), b = ev.target.closest("button[data-r]");
+  if (!el || ev.target.closest("a") || (!b && ev.target.closest(".ans"))) return;
+  const id = el.dataset.d;
+  if (!b) { from = "drafts"; show(el.dataset.id, true); return; }
+  if (b.dataset.r === "open" || b.dataset.r === "cancel") {
+    if (b.dataset.r === "open") editing[id] = data.st.review.drafts.find((d) => String(d.id) === id).content;
+    else delete editing[id];
+    renderDrafts();
+    $(b.dataset.r === "open" ? "dr" + id : "do" + id)?.focus();
+    return;
+  }
+  const answer = b.dataset.r === "edit" ? $("dr" + id).value.trim() : "";
+  if (b.dataset.r === "edit" && !answer) { el.querySelector(".hint").textContent = "Напишите ответ клиенту."; $("dr" + id).focus(); return; }
+  const r = await locked([...el.querySelectorAll("button, textarea")], () => post(`/api/admin/draft/${id}`, { action: b.dataset.r, answer }));
+  if (!r) return;  // не ушло: текст правки остается в поле
+  delete editing[id];
+  if (!r.ok) fail(`Черновик № ${id}: ${DRAFT[r.status]}. Клиенту ничего не ушло.`);
+  await load(); if (current) show(current);
+};
+$("drafts").oninput = (ev) => { if (ev.target.matches(".ans textarea")) editing[ev.target.closest("[data-d]").dataset.d] = ev.target.value; };
 $("rows").onclick = (ev) => pick(ev, "rows");
 $("qseg").onclick = (ev) => { const b = ev.target.closest("button"); if (b) { view.queue = b.dataset.q; renderQueue(); } };
 $("rseg").onclick = (ev) => { const b = ev.target.closest("button"); if (b) { view.rows = b.dataset.r; renderRows(); } };
@@ -303,7 +377,7 @@ function answerBox(h) {
 
 async function show(id, opened = false) {
   current = id;
-  document.querySelectorAll("#hand [data-id], #rows [data-id]").forEach((el) => el.classList.toggle("on", el.dataset.id === id));
+  document.querySelectorAll("#drafts [data-id], #hand [data-id], #rows [data-id]").forEach((el) => el.classList.toggle("on", el.dataset.id === id));
   const seq = ++shown;  // быстрые клики: панель рисует только последний выбранный диалог
   let d;
   try { d = await get("/api/admin/session/" + encodeURIComponent(id)); } catch (e) {
@@ -327,7 +401,7 @@ async function show(id, opened = false) {
       html += `<div class="who">Клиент</div><div class="msg user">${esc(m.content)}</div>${stepsBlock(steps.filter((x) => x.turn === turn))}`;
     } else {
       const mgr = m.meta?.from === "manager";
-      html += `<div class="who">${mgr ? "Менеджер" : "Агент"}</div><div class="msg ${mgr ? "mgr" : "bot"}">${esc(m.content)}</div>`;
+      html += `<div class="who">${mgr ? "Менеджер" : m.meta?.reviewed ? "Агент, проверено менеджером" : "Агент"}</div><div class="msg ${mgr ? "mgr" : "bot"}">${esc(m.content)}</div>`;
       for (const c of m.meta?.cards || []) html += `<div class="st">Карточка: ${esc(c.title)}${c.price ? ", " + rub(c.price) : ""}</div>`;
     }
   }
