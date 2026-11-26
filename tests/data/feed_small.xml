@@ -741,6 +741,44 @@
 <param name="Версия">другое или отсутствует</param>
 <param name="Тип продукта">софт</param>
 </offer>
+<offer id="1101" group_id="1000" available="true">
+	<name>Стриж Резервное копирование для сервера, лицензия до 25 пользователей, Windows, на 1 год</name>
+	<vendor>Стриж Софт</vendor>
+	<vendorCode>STRIZH-W-25</vendorCode>
+	<url>https://shop.example/стриж/1101/</url>
+	<price>45000.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>51</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Windows • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>1000</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">25</param>
+</offer>
+<offer id="1102" group_id="1000" available="true">
+	<name>Стриж Резервное копирование для сервера, лицензия до 50 пользователей, Linux, на 1 год</name>
+	<vendor>Стриж Софт</vendor>
+	<vendorCode>STRIZH-L-50</vendorCode>
+	<url>https://shop.example/стриж/1102/</url>
+	<price>82000.00</price>
+	<oldprice>0.00</oldprice>
+	<currencyId>RUR</currencyId>
+	<categoryId>51</categoryId>
+	<description>Срок действия: 12 мес. • Платформа: Linux • Тип лицензии: новая • Минимальная покупка: от 1 шт.</description>
+	<group_id>1000</group_id>
+<param name="Тип лицензии">Новая</param>
+<param name="Срок действия">12 мес.</param>
+<param name="Тип организации">Коммерческая</param>
+<param name="Номер записи в реестре отечественного ПО">другое или отсутствует</param>
+<param name="Версия">другое или отсутствует</param>
+<param name="Тип продукта">софт</param>
+<param name="К-во пользователей до">50</param>
+</offer>
 		</offers>
 	</shop>
 </yml_catalog>

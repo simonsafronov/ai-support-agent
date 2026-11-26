@@ -184,7 +184,8 @@ def test_only_offer_id_and_qty_are_taken_from_the_model(offers):
     assert res["total"] == item["sum"] and res["has_price_on_request"] is False
     text = squeeze(pdf_pages(res["file"])[0])
     assert squeeze("Куда: ООО Тест") in text and "ИНН" not in text and "Контактзаказчика" not in text
-    assert squeeze("Условия оплаты: постоплата 30 дней.") in text
+    assert "постоплат" not in text.lower()  # условие оплаты не берется из вызова: в документе условие магазина
+    assert squeeze(f"Условия оплаты: {kp.DEFAULT_PAYMENT}.") in text
     assert squeeze("Срок поставки: 5 рабочих дней.") in text
     assert "Подмена" not in text and "FAKE" not in text and "рассчитаетменеджер" not in text
 
@@ -622,3 +623,83 @@ def test_signer_comes_from_settings(offers, storage, monkeypatch):
     monkeypatch.setattr(config, "KP_SIGNER_SHORT", "Иванов И.И.")
     text = squeeze(pdf_pages(kp.make_quote("s1", "ООО Тест", [{"offer_id": offers["plain"]["id"], "qty": 1}])["file"])[0])
     assert squeeze("Иванов Иван Руководитель отдела") in text and squeeze("Иванов И.И.") in text
+
+
+# --- вызов make_quote и calc_total моделью: условие оплаты, реквизиты, сноска о цене ---------------------------------
+
+def _dialog(*client_messages: str, **facts) -> "tools.ToolContext":
+    """Диалог, в котором клиент уже написал эти сообщения, а код запомнил эти реквизиты."""
+    from app.agent import tools
+    sid = store.get_session(None)["id"]
+    for text in client_messages:
+        store.add_message(sid, "user", text)
+    if facts:
+        store.update_session(sid, facts=facts)
+    return tools.ToolContext(sid, facts=dict(facts))
+
+
+def test_model_payment_terms_do_not_reach_the_pdf(offers):
+    """Зачем: модель передавала "Постоплата через 30 дней", и это попадало в PDF, хотя отсрочку магазин не дает."""
+    from app.agent import tools
+    spec = next(t for t in tools.specs() if t["name"] == "make_quote")
+    assert "payment" not in spec["parameters"]["properties"]
+    ctx = _dialog("Можно постоплату через 30 дней?")
+    res = tools.call(ctx, "make_quote", {"items": [{"offer_id": offers["plain"]["id"], "qty": 1}],
+                                         "payment": "Постоплата через 30 дней"})  # старый формат вызова: без ошибки
+    assert res["ok"] is True, res
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "Постоплата" not in text and "постоплата" not in text.lower()
+    assert squeeze(f"Условия оплаты: {kp.DEFAULT_PAYMENT}.") in text
+
+
+def test_model_requisites_not_said_by_client_do_not_replace_saved(offers):
+    from app.agent import tools
+    ctx = _dialog("Счет на ООО Ромашка, ИНН 7707083893, КПП 770701001",
+                  **{"компания": "ООО Ромашка", "ИНН": "7707083893", "КПП": "770701001"})
+    res = tools.call(ctx, "make_quote", {"items": [{"offer_id": offers["plain"]["id"], "qty": 1}],
+                                         "customer": "ООО Вектор", "inn": "7701234567", "kpp": "770101001"})
+    assert res["ok"] is True and res["customer"] == "ООО Ромашка", res
+    assert store.get_session(ctx.session_id)["facts"] == {"компания": "ООО Ромашка", "ИНН": "7707083893",
+                                                          "КПП": "770701001"}
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "7707083893" in text and "770701001" in text
+    assert "7701234567" not in text and "770101001" not in text and "Вектор" not in text
+
+
+def test_requisites_corrected_by_client_replace_saved(offers):
+    from app.agent import tools
+    ctx = _dialog("ИНН 7707083893", "Ошибся, правильный ИНН 77 0123 4567, компания «Ромашка-Плюс»",
+                  **{"компания": "ООО Ромашка", "ИНН": "7707083893"})
+    res = tools.call(ctx, "make_quote", {"items": [{"offer_id": offers["plain"]["id"], "qty": 1}],
+                                         "customer": "Ромашка-Плюс", "inn": "7701234567"})
+    assert res["ok"] is True and res["customer"] == "Ромашка-Плюс", res
+    facts = store.get_session(ctx.session_id)["facts"]
+    assert (facts["ИНН"], facts["компания"]) == ("7701234567", "Ромашка-Плюс")
+    text = squeeze(pdf_pages(res["file"])[0])
+    assert "7701234567" in text and "7707083893" not in text
+
+
+def test_quote_without_inn_is_still_built_with_a_note(offers):
+    from app.agent import tools
+    ctx = _dialog("Нужно КП на ООО Ромашка")
+    res = tools.call(ctx, "make_quote", {"items": [{"offer_id": offers["plain"]["id"], "qty": 1}],
+                                         "customer": "ООО Ромашка", "inn": "7701234567"})  # ИНН клиент не называл
+    assert res["ok"] is True and res["customer"] == "ООО Ромашка", res
+    assert res["customer_missing"] == ["ИНН", "КПП"] and "не хватает: ИНН, КПП" in res["note"]
+    assert "ИНН" not in store.get_session(ctx.session_id)["facts"]
+    assert "7701234567" not in squeeze(pdf_pages(res["file"])[0])
+
+
+def test_calc_total_warns_about_article_with_several_prices(offers):
+    """Зачем: в КП у такой позиции сноска, а расчет в чате называл одну из цен артикула без оговорки."""
+    from app.agent import tools
+    ctx = _dialog()
+    items = [{"offer_id": 1082, "qty": 2}, {"offer_id": offers["plain"]["id"], "qty": 1}]
+    res = tools.call(ctx, "calc_total", {"items": items})
+    flagged, plain = res["lines"]
+    assert "подтвердит менеджер" in res["note"] and flagged["name"] in res["note"] and plain["name"] not in res["note"]
+    assert flagged["sum"] == 9900.0 and res["total"] == 9900.0 + plain["sum"]  # суммы те же, что без оговорки
+    with_discount = tools.call(ctx, "calc_total", {"items": items, "discount_percent": 5})
+    assert "подтвердит менеджер" in with_discount["note"]
+    single = tools.call(ctx, "calc_total", {"items": items[1:]})
+    assert "подтвердит менеджер" not in single["note"]

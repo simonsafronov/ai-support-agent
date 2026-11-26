@@ -35,22 +35,46 @@ class LLMError(RuntimeError):
     pass
 
 
-def _post(client: httpx.Client, url: str, **kw) -> dict:
+READ_TIMEOUT, CONNECT_TIMEOUT = 90.0, 15.0  # ожидание ответа модели и соединения, секунд
+MIN_TIMEOUT = 5.0  # меньше этого запрос к модели не успевает и при нормальной работе
+
+
+def _post(client: httpx.Client, url: str, time_left: float | None = None, **kw) -> dict:
+    """POST с повторами при сбое сети и ответах 429 и 5xx.
+
+    time_left: сколько секунд осталось от хода клиента. Ожидание запроса не дольше остатка (но не меньше
+    MIN_TIMEOUT), повторы прекращаются, когда остатка нет. None: без предела, как раньше.
+    """
+    until = time.monotonic() + time_left if time_left is not None else None
     last = None
     for attempt in range(3):
+        if until is not None:
+            left = until - time.monotonic()
+            if attempt and left <= 0:
+                break  # срок хода вышел: повторять незачем, клиент получит ответ о передаче менеджеру
+            wait = max(MIN_TIMEOUT, min(READ_TIMEOUT, left))
+            kw["timeout"] = httpx.Timeout(wait, connect=min(CONNECT_TIMEOUT, wait))
         try:
             r = client.post(url, **kw)
             if r.status_code in (429, 500, 502, 503, 504):
                 last = LLMError(f"{r.status_code}: {r.text[:300]}")
-                time.sleep(1.5 * (attempt + 1))
+                _pause(attempt, until)
                 continue
             if r.status_code >= 400:
                 raise LLMError(f"{r.status_code}: {r.text[:500]}")
             return r.json()
         except httpx.HTTPError as e:
             last = LLMError(f"сеть: {e}")
-            time.sleep(1.5 * (attempt + 1))
+            _pause(attempt, until)
     raise last
+
+
+def _pause(attempt: int, until: float | None):
+    """Пауза перед повтором; с пределом хода не дольше остатка."""
+    pause = 1.5 * (attempt + 1)
+    if until is not None:
+        pause = min(pause, max(0.0, until - time.monotonic()))
+    time.sleep(pause)
 
 
 class GigaChat:
@@ -64,7 +88,7 @@ class GigaChat:
             raise LLMError("не задан GIGACHAT_AUTH_KEY")
         self.auth_key, self.model, self.scope = auth_key, model, scope
         ca = config.ROOT / "certs" / "russian_trusted_root_ca.pem"
-        self.client = httpx.Client(verify=str(ca), timeout=httpx.Timeout(90, connect=15))
+        self.client = httpx.Client(verify=str(ca), timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT))
         self._token, self._exp, self._lock = "", 0.0, threading.Lock()
 
     def _access_token(self) -> str:
@@ -97,7 +121,7 @@ class GigaChat:
         return out
 
     def chat(self, messages: list[dict], tools: list[dict], temperature: float = 0.1,
-             max_tokens: int = 1200) -> LLMResult:
+             max_tokens: int = 1200, time_left: float | None = None) -> LLMResult:
         body = {"model": self.model, "messages": self._to_wire(messages), "temperature": temperature,
                 "max_tokens": max_tokens}
         if tools:
@@ -108,7 +132,7 @@ class GigaChat:
         t0 = time.time()
         data = _post(self.client, f"{self.BASE_URL}/chat/completions",
                      headers={"Authorization": f"Bearer {self._access_token()}", "Accept": "application/json"},
-                     json=body)
+                     json=body, time_left=time_left)
         msg, usage = data["choices"][0]["message"], data.get("usage", {})
         res = LLMResult(text=(msg.get("content") or "").strip(), model=data.get("model", self.model),
                         prompt_tokens=usage.get("prompt_tokens", 0),
@@ -131,7 +155,7 @@ class OpenAICompat:
         if not base_url:
             raise LLMError("не задан LLM_BASE_URL")
         self.base_url, self.model = base_url.rstrip("/"), model
-        self.client = httpx.Client(timeout=httpx.Timeout(90, connect=15),
+        self.client = httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT),
                                    headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
 
     @staticmethod
@@ -151,7 +175,8 @@ class OpenAICompat:
         return out
 
     def chat(self, messages: list[dict], tools: list[dict], temperature: float = 0.1,
-             max_tokens: int = 1200) -> LLMResult:
+             max_tokens: int = 1200, time_left: float | None = None) -> LLMResult:
+        """time_left: секунд до конца хода клиента; запрос и его повторы в него укладываются."""
         body = {"model": self.model, "messages": self._to_wire(messages), "temperature": temperature,
                 "max_tokens": max_tokens}
         if tools:
@@ -159,7 +184,7 @@ class OpenAICompat:
                 "name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
             body["parallel_tool_calls"] = False
         t0 = time.time()
-        data = _post(self.client, f"{self.base_url}/chat/completions", json=body)
+        data = _post(self.client, f"{self.base_url}/chat/completions", json=body, time_left=time_left)
         msg, usage = data["choices"][0]["message"], data.get("usage", {})
         res = LLMResult(text=(msg.get("content") or "").strip(), model=data.get("model", self.model),
                         prompt_tokens=usage.get("prompt_tokens", 0),

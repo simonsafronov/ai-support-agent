@@ -161,7 +161,7 @@ def _over_limit(asked) -> str:
 
 def _calc_total(ctx, items: list[dict], discount_percent: float = 0):
     """Сумма по позициям считается кодом: модель не умножает и не складывает сама."""
-    lines, total, on_request = [], 0.0, []
+    lines, total, on_request, unsure = [], 0.0, [], []
     discount = _discount(ctx, discount_percent)
     for it in items or []:
         o = catalog.get_offer(int(it["offer_id"]))
@@ -181,28 +181,61 @@ def _calc_total(ctx, items: list[dict], discount_percent: float = 0):
             line["price_for"] = o["price_for"]
         if price:
             total += line["sum"]
+            if kp.price_to_confirm(o):  # та же проверка, что дает сноску о цене в КП
+                unsure.append(o["name"])
         else:
             on_request.append(o["name"])
         lines.append(line)
+    check = (f" У артикула позиции {', '.join(unsure)} в каталоге несколько цен, в расчете цена выбранного варианта. "
+             "Скажите клиенту, что цену этой позиции подтвердит менеджер.") if unsure else ""
     if discount:
         return {"lines": lines, "total": round(total, 2), "discount_percent": discount,
                 "total_without_discount": round(sum(ln["sum_without_discount"] for ln in lines if ln["sum"]), 2),
                 "price_on_request": on_request,
-                "note": (f"Суммы посчитаны со скидкой {discount:g}%. " + _over_limit(discount_percent)).strip()}
+                "note": (f"Суммы посчитаны со скидкой {discount:g}%. " + _over_limit(discount_percent)).strip() + check}
     return {"lines": lines, "total": round(total, 2), "price_on_request": on_request,
-            "note": "Цены из каталога, с НДС где он применим. Позиции без цены в сумму не вошли." if on_request
-            else "Цены из каталога, с НДС где он применим."}
+            "note": ("Цены из каталога, с НДС где он применим. Позиции без цены в сумму не вошли." if on_request
+                     else "Цены из каталога, с НДС где он применим.") + check}
 
 
-def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", kpp: str = "", payment: str = "",
-                contact: str = "", discount_percent: float = 0):
-    """Реквизиты графы «Заказчик» помнит диалог: названные раньше подставляются сами, новые запоминаются."""
+def _words(text: str) -> str:
+    """Текст для сравнения названий: нижний регистр, без кавычек и знаков препинания."""
+    return " ".join(re.findall(r"[0-9a-zа-я]+", str(text).lower().replace("ё", "е")))
+
+
+def _client_said(ctx, key: str, value: str) -> bool:
+    """Есть ли значение реквизита в сообщениях самого клиента в этом диалоге.
+
+    Зачем: модель могла переписать ИНН с ошибкой или взять его не из слов клиента, и тогда ее значение заменило бы
+    реквизиты, которые клиент назвал сам. ИНН и КПП сверяются по знакам (цифры, разбитые пробелами или дефисами,
+    тоже считаются), название по словам.
+    """
+    said = [m["content"] for m in store.messages(ctx.session_id, limit=10_000) if m["role"] == "user"]
+    if key == "company":
+        name = _words(value)
+        return bool(name) and any(f" {name} " in f" {_words(t)} " for t in said)
+    code = re.sub(r"[^0-9A-Z]", "", str(value).upper())
+    runs = set()
+    for t in said:
+        for group in re.findall(r"[0-9A-Z]+(?:[ -][0-9A-Z]+)*", t.upper()):
+            runs.update(group.replace("-", " ").split())
+            runs.add(re.sub(r"[ -]", "", group))
+    return bool(code) and code in runs
+
+
+def _make_quote(ctx, items: list[dict], customer: str = "", inn: str = "", kpp: str = "", contact: str = "",
+                discount_percent: float = 0):
+    """Реквизиты графы «Заказчик» помнит диалог: названные раньше подставляются сами, новые запоминаются.
+
+    Реквизит от модели принимается, только если клиент сам его написал; иначе остается сохраненный.
+    """
     given = {k: v for k, v in (("company", customer), ("inn", inn), ("kpp", kpp))
-             if str(v or "").strip() and "[" not in str(v)}  # метка вместо реквизита: настоящий уже записан кодом
+             if str(v or "").strip() and "[" not in str(v)  # метка вместо реквизита: настоящий уже записан кодом
+             and _client_said(ctx, k, v)}
     if given:
         save_facts(ctx, given)
     res = kp.make_quote(ctx.session_id, customer=ctx.facts.get("компания", ""), items=items,
-                        inn=ctx.facts.get("ИНН", ""), kpp=ctx.facts.get("КПП", ""), payment=payment,
+                        inn=ctx.facts.get("ИНН", ""), kpp=ctx.facts.get("КПП", ""),
                         contact=_contact(ctx, contact), discount_percent=_discount(ctx, discount_percent))
     if res.get("ok") and _over_limit(discount_percent):
         res["note"] += " " + _over_limit(discount_percent)
@@ -306,7 +339,6 @@ TOOLS = [
                                  ["offer_id", "qty"])},
          "inn": {"type": "string", "description": "ИНН заказчика: 10 цифр, у ИП 12"},
          "kpp": {"type": "string", "description": "КПП заказчика: 9 знаков, у ИП его нет"},
-         "payment": {"type": "string", "description": "условия оплаты, если клиент назвал"},
          "contact": {"type": "string", "description": "почта или телефон клиента"},
          "discount_percent": {"type": "number", "description": "скидка в процентах, только когда клиент сам попросил "
                               "скидку или отсрочку; сами вы даете до 5, больше согласует менеджер"},

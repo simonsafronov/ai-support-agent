@@ -407,8 +407,10 @@ def test_quote_requisites_are_remembered_between_calls(offer):
     sid = store.get_session(None)["id"]
     ctx = tools.ToolContext(sid)
     item = {"items": [{"offer_id": offer["offer_id"], "qty": offer["qty_min"] or 2}]}  # количество внутри ступени цены
+    store.add_message(sid, "user", "Счет на ООО Ромашка")  # реквизит от модели принимается, если его назвал клиент
     first = tools.call(ctx, "make_quote", {**item, "customer": "ООО Ромашка"})
     assert first["customer_missing"] == ["ИНН", "КПП"]
+    store.add_message(sid, "user", "ИНН 7701234567, КПП 770101001")
     second = tools.call(ctx, "make_quote", {**item, "inn": "7701234567", "kpp": "770101001"})
     assert second["customer"] == "ООО Ромашка" and second["customer_missing"] == [] and second["updated"]
     assert store.get_session(sid)["facts"] == {"компания": "ООО Ромашка", "ИНН": "7701234567", "КПП": "770101001"}

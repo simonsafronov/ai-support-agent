@@ -267,7 +267,11 @@ def tier_problem(offer: dict, qty: int) -> str:
 
 def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "", payment: str = "",
                contact: str = "", delivery: str = "", kpp: str = "", discount_percent: float = 0) -> dict:
-    """Собирает черновик КП: проверяет позиции, считает суммы и НДС, пишет PDF и запись в хранилище."""
+    """Собирает черновик КП: проверяет позиции, считает суммы и НДС, пишет PDF и запись в хранилище.
+
+    payment не используется: условие оплаты в документе всегда DEFAULT_PAYMENT. Отсрочку магазин не дает,
+    просьбу клиента о ней видит менеджер в карточке обращения. Параметр оставлен для старых вызовов.
+    """
     asked, bad_discount = discount_arg(discount_percent)  # до любых записей: неверная скидка не роняет КП
     discount = allowed_discount(asked)
     customer = _clean(customer) or NO_CUSTOMER
@@ -321,7 +325,7 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
     today = datetime.now(MSK).date()
     quote = {
         "customer": customer, "inn": inn, "kpp": kpp, "contact": _clean(contact),
-        "payment": _clean(payment) or DEFAULT_PAYMENT, "delivery": _clean(delivery) or DEFAULT_DELIVERY,
+        "payment": DEFAULT_PAYMENT, "delivery": _clean(delivery) or DEFAULT_DELIVERY,
         "date": today.strftime("%d.%m.%Y"), "valid_until": (today + timedelta(days=VALID_DAYS)).strftime("%d.%m.%Y"),
         "lines": lines, "total": total, "vat_total": vat_total, "has_price_on_request": on_request,
         "has_unavailable": any(not ln["available"] and ln["price"] is not None for ln in lines),

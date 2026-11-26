@@ -6,7 +6,7 @@ import pytest
 from app import config, store
 from app.catalog import ingest
 
-SMALL_FEED = Path(__file__).parent / "data" / "feed_small.xml"  # выдуманный магазин: 39 предложений, 9 продуктов
+SMALL_FEED = Path(__file__).parent / "data" / "feed_small.xml"  # выдуманный магазин: 41 предложение, 10 продуктов
 
 # Каталог и справка собираются из данных заказчика и в репозиторий не входят. На чистом клоне тест, которому
 # они нужны, не падает, а пропускается с подсказкой; с собранными базами проходит весь набор.
