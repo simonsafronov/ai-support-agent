@@ -2,12 +2,17 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const rub = (v) => { const n = Number(v); return n.toLocaleString("ru-RU", { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 }) + " ₽"; };
-const rid = () => Math.random().toString(16).slice(2, 10) + Date.now().toString(16);
+// метка браузера: по ней сервер отдает переписку только ее владельцу, поэтому она не угадывается
+const rid = () => crypto.randomUUID ? crypto.randomUUID()
+  : [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+const BROKEN = "Связь прервалась. Отправьте сообщение еще раз.";
+const IDLE_MS = 60000;  // сервер шлет отметку хода раз в 20 секунд: минута тишины значит, что связь пропала
 
 const state = {
   session: localStorage.getItem("session") || "",
   client: localStorage.getItem("client") || (() => { const c = rid(); localStorage.setItem("client", c); return c; })(),
   page: "", busy: false, steps: 0, tokens: 0, cost: 0, seen: 0,
+  gen: 0, ctrl: null,  // поколение диалога и прерывание хода: ответ хода из прежнего диалога в новый не попадает
 };
 
 const TOOL = {
@@ -105,6 +110,8 @@ function meter(u) {
 async function send(message) {
   message = (message || "").trim();
   if (!message || state.busy) return;
+  const gen = state.gen, ctrl = state.ctrl = new AbortController();
+  let idle = setTimeout(() => ctrl.abort(), IDLE_MS), got = false;
   state.busy = true; $("b").disabled = true; $("starters").hidden = true;
   document.querySelectorAll(".choices").forEach((e) => e.remove());
   add("msg user", esc(message));
@@ -113,16 +120,19 @@ async function send(message) {
   const pending = [];
   try {
     const r = await fetch("/api/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" }, signal: ctrl.signal,
       body: JSON.stringify({ message, session_id: state.session || null, client_id: state.client, page_url: state.page }),
     });
-    if (r.status === 429) throw new Error("слишком много сообщений подряд, подождите минуту");
-    if (!r.ok) throw new Error("сервер ответил " + r.status);
+    const refused = (text) => Object.assign(new Error(text), { refused: true });  // сервер ответил отказом
+    if (r.status === 429) throw refused("слишком много сообщений подряд, подождите минуту");
+    if (!r.ok) throw refused("сервер ответил " + r.status);
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = "";
     for (;;) {
       const { value, done } = await reader.read();
+      if (gen !== state.gen) return;
       if (done) break;
+      clearTimeout(idle); idle = setTimeout(() => ctrl.abort(), IDLE_MS);
       buf += dec.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
@@ -133,7 +143,7 @@ async function send(message) {
           typing.querySelector("span").textContent = WAIT[ev.name] || "Работаю";
           pending.push(step("", TOOL[ev.name] || ev.name, ev.args));
         } else if (ev.type === "reply") {
-          typing.remove();
+          typing.remove(); got = true;
           if (ev.session_id) { state.session = ev.session_id; localStorage.setItem("session", ev.session_id); }
           let k = 0;
           for (const t of ev.trace || []) {
@@ -146,15 +156,23 @@ async function send(message) {
         }
       }
     }
+    if (!got) throw new Error("поток оборвался до ответа");
   } catch (e) {
+    if (gen !== state.gen) return;  // клиент начал новый диалог: прерванный ход молча забыт
     typing.remove();
-    add("msg sys", "Не удалось получить ответ: " + esc(e.message) + ". Отправьте сообщение еще раз.");
+    // сеть, обрыв потока и долгая тишина дают одно сообщение; отказ сервера назван как есть
+    add("msg sys", e.refused ? "Не удалось получить ответ: " + esc(e.message) + ". Отправьте сообщение еще раз." : BROKEN);
+    if (!$("t").value.trim()) $("t").value = message;  // текст вернулся в поле: отправить еще раз одним нажатием
+  } finally {
+    clearTimeout(idle);
   }
-  state.busy = false; $("b").disabled = false; $("t").focus();
+  if (gen !== state.gen) return;
+  state.busy = false; state.ctrl = null; $("b").disabled = false; $("t").focus();
 }
 
 $("call").onclick = async () => {  // клиент сам переключается на менеджера: модель для этого не нужна
   if (state.busy) return;
+  const gen = state.gen;
   state.busy = true; $("starters").hidden = true;
   try {
     const r = await fetch("/api/chat/handoff", {
@@ -163,18 +181,26 @@ $("call").onclick = async () => {  // клиент сам переключает
     });
     if (!r.ok) throw new Error(r.status === 429 ? "слишком много сообщений подряд, подождите минуту" : "сервер ответил " + r.status);
     const ev = await r.json();
+    if (gen !== state.gen) return;
     state.session = ev.session_id; localStorage.setItem("session", ev.session_id);
     step("turn", "Клиент нажал: позвать менеджера");
     showReply(ev);
   } catch (e) {
+    if (gen !== state.gen) return;
     add("msg sys", "Не удалось позвать менеджера: " + esc(e.message) + ". Нажмите еще раз.");
   }
   state.busy = false;
 };
-$("f").onsubmit = (e) => { e.preventDefault(); const v = $("t").value; $("t").value = ""; send(v); };
+$("f").onsubmit = (e) => {  // пока агент отвечает, набранный текст остается в поле и не отправляется
+  e.preventDefault();
+  const v = $("t").value;
+  if (state.busy || !v.trim()) return;
+  $("t").value = ""; send(v);
+};
 $("t").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("f").requestSubmit(); } };
 $("starters").querySelectorAll("button").forEach((b) => (b.onclick = () => send(b.textContent)));
 $("new").onclick = () => {
+  state.gen++; state.ctrl?.abort(); state.ctrl = null; state.busy = false; $("b").disabled = false;
   state.session = ""; localStorage.removeItem("session");
   state.steps = state.tokens = state.cost = state.seen = 0; meter({});
   $("log").innerHTML = ""; $("steps").innerHTML = ""; $("starters").hidden = false;
@@ -203,10 +229,13 @@ $("ctxoff").onclick = () => { state.page = ""; $("ctx").classList.remove("on"); 
 // Ответ менеджера приходит в этот же чат: пока страница открыта, чат раз в несколько секунд спрашивает о новых
 async function answersPoll() {
   if (!state.session || state.busy || document.hidden) return;
+  const gen = state.gen;
   try {
     const r = await fetch(`/api/session/${state.session}/answers?client_id=${encodeURIComponent(state.client)}&after=${state.seen}`);
     if (!r.ok) return;
-    for (const m of (await r.json()).answers || []) {
+    const found = (await r.json()).answers || [];
+    if (gen !== state.gen) return;  // пока шел запрос, клиент начал новый диалог
+    for (const m of found) {
       if (m.id <= state.seen) continue;
       state.seen = m.id;
       showReply({ reply: m.content, from: "manager" });

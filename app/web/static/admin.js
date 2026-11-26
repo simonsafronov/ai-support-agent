@@ -14,6 +14,8 @@ const post = async (u, body) => {
   try {
     const r = await fetch(u, { method: "POST", headers: { ...head, "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
     const data = await r.json().catch(() => ({}));
+    if (r.status === 401 || r.status === 403) { fail("Не отправлено: нет прав. Откройте экран с ключом оператора."); return null; }
+    if (r.status >= 500) { fail("Не отправлено: ошибка сервера, попробуйте еще раз."); return null; }
     if (!r.ok) { fail(`Не выполнено (${r.status}): ${typeof data.detail === "string" ? data.detail : "сервер отклонил запрос"}. Повторите.`); return null; }
     fail("");
     return data;
@@ -21,6 +23,12 @@ const post = async (u, body) => {
     fail("Не выполнено: нет связи с сервером. Текст на месте, повторите отправку.");
     return null;
   }
+};
+// Поля и кнопки заблокированы, пока идет запрос: двойной клик не дает второго ответа клиенту
+const locked = async (els, fn) => {
+  if (els.some((e) => e.disabled)) return null;
+  els.forEach((e) => (e.disabled = true));
+  try { return await fn(); } finally { els.forEach((e) => (e.disabled = false)); }
 };
 if (token) $("exp").href += "?token=" + encodeURIComponent(token);
 const STATUS = { new: "ждет менеджера", taken: "в работе", answered: "отвечено", returned: "возвращено агенту" };
@@ -110,7 +118,7 @@ async function load() {
   });
   document.querySelectorAll(".card button[data-do]").forEach((b) => (b.onclick = async () => {
     const h = b.closest(".card").dataset.h;
-    if (!await post(`/api/admin/handoff/${h}/${b.dataset.do}`, b.dataset.do === "take" ? { who: localStorage.getItem("who") || "менеджер" } : {})) return;
+    if (!await locked([...b.closest(".act").querySelectorAll("button")], () => post(`/api/admin/handoff/${h}/${b.dataset.do}`, b.dataset.do === "take" ? { who: localStorage.getItem("who") || "менеджер" } : {}))) return;
     await load(); if (current) show(current);
   }));
 }
@@ -159,20 +167,24 @@ async function show(id) {
     box.querySelector("button[data-send]").onclick = async () => {
       const answer = area.value.trim();
       if (!answer) return;
-      const sent = await post(`/api/admin/handoff/${box.dataset.h}/answer`, { answer, teach: box.querySelector("input").checked });
+      const teach = box.querySelector("input").checked;
+      const sent = await locked([area, ...box.querySelectorAll("button, input")],
+        () => post(`/api/admin/handoff/${box.dataset.h}/answer`, { answer, teach }));
       if (!sent) return;  // ответ клиенту не ушел: текст менеджера остается в поле
+      area.value = "";  // повторный клик до перерисовки ничего не отправит
       await load(); show(id);
     };
   });
   const box = $("detail").querySelector(".case");
   if (box) box.querySelector("button").onclick = async () => {
-    const pick = box.querySelector("select").value;
-    const r = await post(`/api/admin/session/${id}/case`, { handoff: pick === "any" ? null : pick === "yes", quote: box.querySelector("input[type=checkbox]").checked, note: box.querySelector("input[type=text]").value });
+    const pick = box.querySelector("select").value, quote = box.querySelector("input[type=checkbox]").checked, note = box.querySelector("input[type=text]").value;
+    const r = await locked([...box.querySelectorAll("button, select, input")],
+      () => post(`/api/admin/session/${id}/case`, { handoff: pick === "any" ? null : pick === "yes", quote, note }));
     const tag = box.querySelector(".tag");
     tag.hidden = false; tag.textContent = r && r.ok ? `добавлен кейс ${r.case_id}, со стенда в наборе: ${r.added_cases}` : "не получилось добавить";
     load();
   };
 }
-$("upd").onclick = async () => { if (await post("/api/admin/catalog/update")) load(); };
+$("upd").onclick = async () => { if (await locked([$("upd")], () => post("/api/admin/catalog/update"))) load(); };
 const busy = () => document.querySelector(".ans textarea:focus, .case input:focus, .case select:focus, .eco input:focus") || [...document.querySelectorAll(".ans textarea, .case input[type=text]")].some((e) => e.value);
 load(); setInterval(() => { if (!busy()) load(); }, 15000);
