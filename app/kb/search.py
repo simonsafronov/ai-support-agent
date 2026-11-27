@@ -174,7 +174,8 @@ def _shop_condition() -> str:
     return f"({' OR '.join(parts)}) AND c.heading NOT LIKE '%{API_HEADING_MARK}%'"
 
 
-def kb_search(query: str, limit: int = 5, source: str | None = None, db_path: Path | None = None) -> dict:
+def kb_search(query: str, limit: int = 5, source: str | None = None, db_path: Path | None = None,
+              *, buyer_help: bool = False) -> dict:
     """Поиск кусков базы знаний по запросу на естественном языке.
 
     Возвращает {"query", "results": [{"title", "url", "heading", "snippet", "source", "score"}]},
@@ -195,6 +196,8 @@ def kb_search(query: str, limit: int = 5, source: str | None = None, db_path: Pa
         "FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN docs d ON d.id = c.doc_id "
         "WHERE chunks_fts MATCH ?"
     )
+    if buyer_help:  # инструкции для продавца и API не превращаются в шаги для покупателя
+        sql += " AND " + _shop_condition()
     tail = (" AND d.source = ?" if source else "") + " ORDER BY rank LIMIT ?"
     extra = ([source] if source else []) + [limit]
     # названия продуктов и сокращения латиницей (xspider, vba) должны быть на странице: без них выдача это шум

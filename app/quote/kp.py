@@ -38,7 +38,7 @@ MAX_QTY = 100_000
 
 NO_VAT = "Без НДС"  # ПО из реестра отечественного ПО: пп. 26 п. 2 ст. 149 НК РФ
 ON_REQUEST = "по запросу"
-QUOTE_NOTE = "Черновик КП сформирован, его проверит менеджер."
+QUOTE_NOTE = "КП сформировано по данным каталога. Заказ не создан."
 
 SELLER = "ПАО «Софтлайн»"
 ADDRESS = ("119021, город Москва, ул Льва Толстого, д.",
@@ -46,11 +46,12 @@ ADDRESS = ("119021, город Москва, ул Льва Толстого, д.
            "Т +7 495 232 00 23 | info@softline.com",
            "www.softline.ru | www.softline.com")
 DRAFT_TITLE = "Черновик коммерческого предложения."
-DRAFT_TEXT = "Подготовлен ИИ-консультантом Softline Store, требует проверки менеджером."
-VAT_FOOTNOTE = "НДС рассчитан автоматически, проверяет менеджер."
+DRAFT_TEXT = "Подготовлен ИИ-консультантом Softline Store. Заказ не создан."
+VAT_FOOTNOTE = "НДС рассчитан автоматически."
 ON_REQUEST_LINE = "Позиции с ценой по запросу рассчитает менеджер."
 ON_REQUEST_HEAD = "Позиции с ценой по запросу, в итог не входят, их рассчитает менеджер:"
-UNAVAILABLE_LINE = "Наличие позиций, которых сейчас нет в продаже на сайте, подтвердит менеджер."
+FEED_UNAVAILABLE = "По фиду: нет в наличии"
+FEED_AVAILABLE = "По фиду: в наличии"
 PRICE_MARK = "*"
 PRICE_CHECK_LINE = "У артикула в каталоге несколько цен, цену подтвердит менеджер."
 
@@ -183,6 +184,15 @@ def _clean(text) -> str:
     return " ".join(str(text or "").split())
 
 
+def _with_feed_status(text: str, line: dict) -> str:
+    """Подпись у конкретной строки; старые документы без флага не объявляем отсутствующими."""
+    available = line.get("available")
+    if available is None:
+        return escape(text)
+    status = FEED_AVAILABLE if available else FEED_UNAVAILABLE
+    return f"{escape(text)}<br/>{status}"
+
+
 def _sentence(text: str) -> str:
     return text.rstrip(" .") + "."
 
@@ -245,7 +255,8 @@ def price_to_confirm(offer: dict) -> bool:
     prices = offer.get("same_code_prices") or []
     if isinstance(prices, str):  # из таблицы offers список приходит строкой JSON
         prices = json.loads(prices or "null") or []
-    return bool(offer.get("price_ambiguous")) or (len(prices) > 1 and not offer.get("qty_pricing"))
+    return bool(offer.get("price_to_confirm") or offer.get("price_ambiguous")) or (
+        len(prices) > 1 and not offer.get("qty_pricing"))
 
 
 def discounted(price: Decimal, discount: Decimal) -> Decimal:
@@ -313,7 +324,8 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         check = price is not None and price_to_confirm(offer)
         lines.append({"offer_id": offer_id, "name": _clean(offer.get("name")).strip(" ,;"),
                       "vendor_code": _clean(offer.get("vendor_code")), "qty": qty, "price": price, "sum": amount,
-                      "vat": _vat(amount, registry), "available": bool(offer.get("available")),
+                      "vat": _vat(amount, registry),
+                      "available": bool(offer["available"]) if offer.get("available") is not None else None,
                       **({"price_to_confirm": True} if check else {}),
                       "list": {"price": list_price, "sum": list_sum, "vat": _vat(list_sum, registry)}})
     if problems:
@@ -325,10 +337,10 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
     today = datetime.now(MSK).date()
     quote = {
         "customer": customer, "inn": inn, "kpp": kpp, "contact": _clean(contact),
-        "payment": DEFAULT_PAYMENT, "delivery": _clean(delivery) or DEFAULT_DELIVERY,
+        "payment": DEFAULT_PAYMENT,
+        "delivery": (_clean(delivery) or DEFAULT_DELIVERY) if all(ln["available"] for ln in lines) else "",
         "date": today.strftime("%d.%m.%Y"), "valid_until": (today + timedelta(days=VALID_DAYS)).strftime("%d.%m.%Y"),
         "lines": lines, "total": total, "vat_total": vat_total, "has_price_on_request": on_request,
-        "has_unavailable": any(not ln["available"] and ln["price"] is not None for ln in lines),
         "discount": discount, "list_total": list_total, "list_vat_total": list_vat_total,
     }
     out_items = [{**{k: v for k, v in ln.items() if k != "list"}, "price": _num(ln["price"]), "sum": _num(ln["sum"]),
@@ -363,11 +375,16 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
         saved = {"total_without_discount": float(list_total), "discount_sum": float(list_total - total)}
     note += bad_discount
     if asked > discount:
-        note += (f" Сами вы даете не больше {config.AGENT_DISCOUNT_MAX:g}%: скидку больше согласует менеджер, "
-                 "передайте ему запрос.")
+        note += (f" Запрошено {_percent(asked)}%. Без купона применено {_percent(discount)}%: "
+                 "скидку больше согласует менеджер, передайте ему исходный запрос.")
     if wrong:
         note += (f" {' и '.join(wrong)} в черновик не попал: в ИНН должно быть 10 цифр (у ИП 12), в КПП 9 знаков. "
                  "Уточните у клиента.")
+    unavailable = [ln["name"] for ln in lines if ln["available"] is False and ln["price"] is not None]
+    if unavailable:
+        note += f" {FEED_UNAVAILABLE} — {'; '.join(unavailable)}. Срок поставки не указан."
+    if on_request:
+        note += " " + ON_REQUEST_LINE
     unsure = [ln["name"] for ln in lines if ln.get("price_to_confirm")]
     if unsure:
         note += (f" У артикула позиции {', '.join(unsure)} в каталоге несколько цен, в черновике цена выбранного "
@@ -382,7 +399,7 @@ def make_quote(session_id: str, customer: str, items: list[dict], inn: str = "",
             "valid_until": quote["valid_until"], "customer": customer, "items": out_items, "total": float(total),
             "vat_total": float(vat_total), "has_price_on_request": on_request, "discount_percent": float(discount),
             **saved, "price_to_confirm": unsure,
-            "needs_availability_check": [ln["name"] for ln in lines if not ln["available"] and ln["price"] is not None],
+            "needs_availability_check": unavailable,
             "note": note}
 
 
@@ -474,7 +491,7 @@ def table_cells(q: dict) -> list[dict]:
         priced = cell["price"] is not None
         mark = PRICE_MARK if ln.get("price_to_confirm") else ""
         cells.append({"kind": "item", "code": ln["vendor_code"] or "—", "name": ln["name"], "qty": str(ln["qty"]),
-                      "price": _fmt(cell["price"]) + mark if priced else ON_REQUEST,
+                      "available": ln.get("available"), "price": _fmt(cell["price"]) + mark if priced else ON_REQUEST,
                       "sum": _fmt(cell["sum"]) if priced else ON_REQUEST,
                       "vat": _fmt(cell["vat"]) if isinstance(cell["vat"], Decimal) else (cell["vat"] or "—")})
     if off:
@@ -496,15 +513,16 @@ def _items_table(q: dict) -> Table:
     widths = column_widths(any(c["kind"] == "item" and c["code"] != "—" for c in cells))
     inner = {key: w - 2 * PAD for key, w in widths.items()}
 
-    def flow(kind: str, key: str, text: str):
+    def flow(cell: dict, key: str):
+        text, kind = cell[key], cell["kind"]
         if key == "code":
             return _wrap_code(text, inner[key], S_CODE)
         if key == "name":
-            return Paragraph(escape(text), NAME_STYLE[kind])
+            return Paragraph(_with_feed_status(text, cell), NAME_STYLE[kind])
         return _fit(text, inner[key], S_QTY if key == "qty" else S_NUM_BOLD if kind == "total" else S_NUM)
 
     data = [[Paragraph(title.replace(" ", NBSP), S_HEAD) for key, title in HEAD if key in widths]]
-    data += [[flow(c["kind"], key, c[key]) if c.get(key) else "" for key in widths] for c in cells]
+    data += [[flow(c, key) if c.get(key) else "" for key in widths] for c in cells]
     footnote = VAT_FOOTNOTE
     if any(c.get("price", "").endswith(PRICE_MARK) for c in cells):
         footnote += f"<br/>{PRICE_MARK} {PRICE_CHECK_LINE}"
@@ -529,8 +547,8 @@ def _on_request_block(q: dict) -> list:
     rows = _split(q)[1]
     if not rows:
         return []
-    items = [Paragraph(escape(f"{ln['name']}{', арт. ' + ln['vendor_code'] if ln['vendor_code'] else ''}, "
-                              f"{ln['qty']} шт."), S_REQUEST, bulletText="•") for ln in rows]
+    items = [Paragraph(_with_feed_status(f"{ln['name']}{', арт. ' + ln['vendor_code'] if ln['vendor_code'] else ''}, "
+                                         f"{ln['qty']} шт.", ln), S_REQUEST, bulletText="•") for ln in rows]
     return [Paragraph(ON_REQUEST_HEAD, S_TERMS), *items, Spacer(1, 8)]
 
 
@@ -571,10 +589,10 @@ def _render(q: dict) -> bytes:
     terms = ["Цена указана с учетом всех налогов, сборов, и других обязательных платежей."]
     if q["has_price_on_request"] and not below:
         terms.append(ON_REQUEST_LINE)
-    if q.get("has_unavailable"):
-        terms.append(UNAVAILABLE_LINE)
-    terms += [f"Условия оплаты: {_sentence(q['payment'])}", f"Срок поставки: {_sentence(q['delivery'])}",
-              f"Срок действия коммерческого предложения - до {q['valid_until']}."]
+    terms.append(f"Условия оплаты: {_sentence(q['payment'])}")
+    if q["delivery"]:
+        terms.append(f"Срок поставки: {_sentence(q['delivery'])}")
+    terms.append(f"Срок действия коммерческого предложения - до {q['valid_until']}.")
     draft = Table([[Paragraph(f"<b>{DRAFT_TITLE}</b><br/>{DRAFT_TEXT}", S_DRAFT)]], colWidths=[WIDTH], style=[
         ("BACKGROUND", (0, 0), (-1, -1), BRAND_TINT), ("LINEBEFORE", (0, 0), (0, -1), 3, BRAND),
         ("LEFTPADDING", (0, 0), (-1, -1), 14), ("RIGHTPADDING", (0, 0), (-1, -1), 10),

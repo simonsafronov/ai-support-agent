@@ -269,10 +269,11 @@ def test_before_after_numbers_come_from_economy_and_carry_their_source():
     eco = economy.calc(10, 4, 100.0)  # 6 из 10 без менеджера
     rows = insights.before_after(eco, 0.6, 6, 10)
     cat, first, share, hours = rows
-    assert cat["before"]["value"] == "около 30 мин" and cat["before"]["who"] == "оценка заказчика"
-    assert cat["after"] == {"value": f"{insights.ANSWER_MEDIAN_SEC:.1f} с".replace(".", ","), "note": cat["after"]["note"], "who": "замер стенда"} and "живых ответов" in cat["after"]["note"]
+    assert "с ценой" in cat["title"]
+    assert cat["before"]["value"] == cat["after"]["value"] == "нет замера"
     assert (first["before"]["value"], first["before"]["who"]) == ("2 мин", "замер заказчика")
-    assert (first["after"]["value"], first["after"]["who"]) == ("около 3 с", "замер стенда")
+    assert "среднее" in first["before"]["note"].lower() and "уточняющ" in first["before"]["note"]
+    assert first["after"]["value"] == "нет замера"  # ни медиана всех ходов, ни время до шага не заменяют среднее первых ответов
     assert (share["after"]["value"], share["before"]["value"]) == ("60%", "0%") and "6 из 10" in share["after"]["note"]
     assert hours["before"]["value"] == "250 ч"  # 500 обращений по 30 минут: то же, что в расчете экономики
     saved = eco["half_year"]["saved_hours"]
@@ -283,7 +284,7 @@ def test_before_after_numbers_come_from_economy_and_carry_their_source():
 def test_before_after_without_dialogs_says_no_data():
     rows = insights.before_after(economy.calc(0, 0, 0.0), None, 0, 0)
     assert rows[2]["after"]["value"] == "нет данных" and rows[3]["after"]["value"] == "нет данных"
-    assert rows[0]["after"]["value"] == f"{insights.ANSWER_MEDIAN_SEC:.1f} с".replace(".", ",")
+    assert rows[0]["after"]["value"] == rows[1]["after"]["value"] == "нет замера"
 
 
 def test_before_after_in_stats_matches_economy_block():

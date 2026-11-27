@@ -15,6 +15,7 @@ from app import config, store
 from app.agent import prices, prompts, spec, tools
 from app.agent.llm import LLMError, get_llm
 from app.catalog import search as catalog
+from app.quote import kp
 
 MAX_STEPS = 8           # вызовов модели на один ход клиента
 HISTORY_MESSAGES = 14   # сколько прошлых реплик диалога видит модель
@@ -276,7 +277,7 @@ def _remember_items(items: dict, name: str, out: dict):
         old = [p for p in items.get("products", []) if p["id"] not in {n["id"] for n in new}]
         items["products"] = (new + old)[:10]
     if name == "get_product" and out.get("offers"):
-        new = [{"id": o["offer_id"], "name": o["name"], "price": o.get("price")} for o in out["offers"]]
+        new = [{"id": o["offer_id"], "name": o["name"], "price": o.get("price"), "available": o.get("available")} for o in out["offers"]]
         old = [o for o in items.get("offers", []) if o["id"] not in {n["id"] for n in new}]
         items["offers"] = (new + old)[:10]
         p = out.get("product") or {}
@@ -304,7 +305,8 @@ def render(text: str, offers_seen=None) -> tuple[str, list[dict], list[str]]:
                 if o:
                     cards.append({"type": "offer", "id": o["offer_id"], "title": o["name"], "vendor": o.get("vendor"),
                                   "vendor_code": o.get("vendor_code"), "price": o.get("price"),
-                                  "available": o.get("available"), "url": o.get("url")})
+                                  "available": o.get("available"), "url": o.get("url"),
+                                  **({"price_to_confirm": True} if o.get("price") and kp.price_to_confirm(o) else {})})
                     offers.append((cards[-1], o))
             else:
                 p = (catalog.get_product(ident, limit=0) or {}).get("product")
@@ -393,6 +395,14 @@ def cost_rub(prompt_tokens: int, completion_tokens: int) -> float:
     return round(prompt_tokens / 1000 * config.PRICE_IN_PER_1K + completion_tokens / 1000 * config.PRICE_OUT_PER_1K, 2)
 
 
+# Однозначная короткая просьба о способе оплаты не требует решения модели.
+# Составной вопрос остаётся в обычном цикле: подбор, КП и другие просьбы не теряются.
+_PAYMENT_ONLY = re.compile(
+    r"\s*(?:пожалуйста[, ]+)?(?:(?:можно(?: ли)?|нужна|нужен|дайте|просим|хотим|работаем только)\s+)?"
+    r"(?:(?:с |по )?(?:отсрочк[ауеи]|отсрочкой|постоплат[ауе]|постоплатой)(?: платежа| оплаты)?|"
+    r"оплата после (?:поставки|получения|отгрузки))(?: (?:на |через )?(?:\d+ )?(?:дней|дня|день|месяц))?[?!. ]*", re.I)
+
+
 def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: str = "", llm=None,
              on_event=None) -> dict:
     """Один ход: сообщение клиента -> ответ агента с карточками, кнопками и следом шагов."""
@@ -403,7 +413,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     turn = sum(1 for m in store.messages(sid) if m["role"] == "user") + 1
     store.add_message(sid, "user", text)
 
-    ctx = tools.ToolContext(sid, facts=dict(s["facts"]))
+    ctx = tools.ToolContext(sid, facts=dict(s["facts"]), user_request=text)
     without_requisites, requisites = mask_requisites(text)
     contacts = mask_contacts(without_requisites)[1]  # после реквизитов: ИНН на 9 не должен стать телефоном
     if contacts:  # контакт запоминается кодом: модель видит только метку, менеджер получает настоящий адрес
@@ -451,7 +461,20 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
         if out.get("lines"):
             ctx.events.append({"type": "spec", "rows": out["lines"], "total": out["total"]})
 
-    for step in range(MAX_STEPS if not budget_spent() else 0):
+    if _PAYMENT_ONLY.fullmatch(text):
+        name = "handoff_to_manager"
+        args = {"reason": "Отсрочка платежа", "summary": "" if store.open_handoff(sid) else text.strip()}
+        emit({"type": "tool", "name": name, "args": args})
+        out = tools.call(ctx, name, args)
+        store.add_step(sid, turn, "tool", name, args, out)
+        trace.append({"kind": "tool", "name": name, "input": args, "output": out})
+        usage[3] += 1
+        if out.get("ok"):
+            reply = "Запрос об отсрочке передан менеджеру. Условия оплаты пока не подтверждены."
+            if not ctx.facts.get("контакт"):
+                reply += " Оставьте почту или телефон для ответа."
+
+    for step in range(MAX_STEPS if not reply and not budget_spent() else 0):
         if config.TURN_DEADLINE and time.monotonic() - started > config.TURN_DEADLINE:
             trace.append({"kind": "error", "name": "deadline", "output": f"ход дольше {config.TURN_DEADLINE:.0f} с"})
             break
@@ -545,6 +568,9 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
         store.add_step(sid, turn, "tool", "note_facts", facts, saved)
         trace.append({"kind": "tool", "name": "note_facts", "input": facts, "output": saved})
     clean, cards, choices = render(reply, set(positions))
+    if not clean.strip() and any(t.get("name") == "make_invoice" and t["output"].get("status") == "issued"
+                                 for t in trace if t["kind"] == "tool"):
+        clean = "Учебный счёт доступен в этом чате. Не для оплаты."
     if not clean.strip():  # ответа нет или в нем одни служебные метки: пустое сообщение клиенту не уходит
         clean, cards, choices = FALLBACK, [], []
         if store.open_handoff(sid) is None:  # не статус с начала хода: заявку мог завести инструмент в этом ходе
@@ -555,7 +581,7 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     for c in cards:  # показанные карточки тоже считаются известными позициями
         if c["type"] == "offer":
             _remember_items(items, "get_product", {"offers": [{"offer_id": c["id"], "name": c["title"],
-                                                               "price": c.get("price")}]})
+                                                               "price": c.get("price"), "available": c.get("available")}]})
     items["prices"] = sorted(known)[-400:]
     items["named"] = sorted(named)[-200:]
     items["percents"] = sorted(percents)[-100:]

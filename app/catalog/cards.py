@@ -24,8 +24,13 @@ from app import config
 
 DELAY, PAUSE, TIMEOUT = 2.0, 1800.0, 8.0
 KEEP, RETRY_EMPTY = 6000, 86400.0  # сколько знаков описания хранить; через сколько секунд повторить пустую карточку
+SECTION_LIMIT = 4800  # оставляем место для названия и служебных полей в ответе get_product
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-_ARTICLE = re.compile(r'<li[^>]*data-tab="description"[^>]*>.*?<article[^>]*>(.*?)</article>', re.S)
+# Не перескакиваем из пустой вкладки в <article> соседней (например, отзывы).
+_TAB = re.compile(r'''<li\b[^>]*?\sdata-tab=["']([^"']+)["'][^>]*>''', re.I)
+_ARTICLE = re.compile(r'(?:(?!</?li\b).)*?<article\b[^>]*>(.*?)</article>', re.S | re.I)
+_TABS = {"description": "description", "licensing": "licensing", "requirements": "requirements",
+         "system-requirements": "requirements", "system_requirements": "requirements"}
 _BLOCK = re.compile(r"</(p|li|h[1-6]|tr|div)>|<br\s*/?>", re.I)
 _lock, _state = threading.Lock(), {"last": 0.0, "paused_until": 0.0}
 
@@ -34,18 +39,32 @@ def _db() -> sqlite3.Connection:
     config.CARDS_DB.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(config.CARDS_DB, timeout=10)
     con.execute("CREATE TABLE IF NOT EXISTS cards(product_id TEXT PRIMARY KEY, url TEXT, about TEXT, fetched_at REAL)")
+    con.execute("CREATE TABLE IF NOT EXISTS card_sections(product_id TEXT PRIMARY KEY, url TEXT, "
+                "licensing TEXT, requirements TEXT, fetched_at REAL)")
     return con
 
 
+def _sections(page: str) -> dict[str, str]:
+    tabs = _TAB.split(page)
+    sections = {}
+    for tab, body in zip(tabs[1::2], tabs[2::2]):
+        key = _TABS.get(tab.lower())
+        article = _ARTICLE.match(body) if key else None
+        if article:
+            sections[key] = _plain(article[1])
+    return sections
+
+
 def extract(page: str) -> str:
-    """Текст вкладки "Описание" со страницы продукта: абзацы и пункты списков через перевод строки."""
-    m = _ARTICLE.search(page)
-    if not m:
-        return ""
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", m.group(1), flags=re.S | re.I)
+    """Описание без условий лицензирования и других вкладок."""
+    return _sections(page).get("description", "")[:KEEP]
+
+
+def _plain(article: str) -> str:
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", article, flags=re.S | re.I)
     text = html.unescape(re.sub(r"<[^>]+>", " ", _BLOCK.sub("\n", text))).replace("\xa0", " ")
     lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.split("\n")]
-    return "\n".join(ln for ln in lines if ln)[:KEEP]
+    return "\n".join(ln for ln in lines if ln)
 
 
 def _fetch(url: str) -> str | None:
@@ -56,36 +75,56 @@ def _fetch(url: str) -> str | None:
         time.sleep(max(0.0, _state["last"] + DELAY - time.time()))
         _state["last"] = time.time()
         try:
-            r = httpx.get(url, timeout=TIMEOUT, follow_redirects=True, headers={"User-Agent": UA, "Accept-Language": "ru"})
+            r = httpx.get(url, timeout=TIMEOUT, follow_redirects=False, headers={"User-Agent": UA, "Accept-Language": "ru"})
         except httpx.HTTPError:
             return None
         if r.status_code in (403, 429) or "cf-chl" in r.text[:5000]:
             _state["paused_until"] = time.time() + PAUSE
             return None
+        # Перенаправление на другой товар, каталог или вход не подтверждает запрошенную карточку.
         return r.text if r.status_code == 200 else None
 
 
-def about(product_id: str, url: str | None, limit: int | None = None, fetch: bool = True) -> str:
-    """Описание продукта, обрезанное по границе предложения; пустая строка, если его нет или сайт недоступен."""
+def _cached(product_id: str, url: str | None, section: str, fetch: bool) -> str:
     if not config.PRODUCT_CARDS or not url or not url.startswith("https://store.softline.ru/"):
         return ""
-    limit = limit or config.ABOUT_LIMIT
+    columns = {"description": ("cards", "about"), "licensing": ("card_sections", "licensing"),
+               "requirements": ("card_sections", "requirements")}
+    table, column = columns[section]
     con = _db()
     try:
-        row = con.execute("SELECT about, fetched_at FROM cards WHERE product_id=?", (str(product_id),)).fetchone()
-        if row is None or (not row[0] and time.time() - row[1] > RETRY_EMPTY):
-            if not fetch:
-                return ""
-            page = _fetch(url)
-            if page is None:  # сайт не ответил: в базу не пишем, попробуем при следующем обращении
-                return row[0] if row else ""
-            row = (extract(page), time.time())
-            con.execute("INSERT OR REPLACE INTO cards(product_id, url, about, fetched_at) VALUES(?,?,?,?)",
-                        (str(product_id), url, row[0], row[1]))
-            con.commit()
+        row = con.execute(f"SELECT {column}, fetched_at FROM {table} WHERE product_id=? AND url=?",
+                          (str(product_id), url)).fetchone()
+        if row and (row[0] or time.time() - row[1] <= RETRY_EMPTY):
+            return row[0]
+        page = _fetch(url) if fetch else None
+        if page is None:
+            return ""
+        sections = _sections(page)
+        description = sections.get("description", "")[:KEEP]
+        # После лимита может быть оговорка. Условие либо целиком, либо не передаем.
+        licensing, requirements = (text if len(text) <= SECTION_LIMIT else "" for text in
+                                   (sections.get("licensing", ""), sections.get("requirements", "")))
+        now = time.time()
+        con.execute("INSERT OR REPLACE INTO cards(product_id, url, about, fetched_at) VALUES(?,?,?,?)",
+                    (str(product_id), url, description, now))
+        con.execute("INSERT OR REPLACE INTO card_sections VALUES(?,?,?,?,?)",
+                    (str(product_id), url, licensing, requirements, now))
+        con.commit()
+        return {"description": description, "licensing": licensing, "requirements": requirements}[section]
     finally:
         con.close()
-    return cut(row[0], limit)
+
+
+def about(product_id: str, url: str | None, limit: int | None = None, fetch: bool = True) -> str:
+    """Старый кеш описаний остается пригоден и без загрузки новых вкладок."""
+    return cut(_cached(product_id, url, "description", fetch), limit or config.ABOUT_LIMIT)
+
+
+def terms(product_id: str, url: str | None, section: str) -> str:
+    if section not in ("licensing", "requirements"):
+        return ""
+    return _cached(product_id, url, section, fetch=True)
 
 
 def cut(text: str, limit: int) -> str:

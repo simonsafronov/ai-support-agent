@@ -217,10 +217,10 @@ def _line(n: int, row: dict) -> dict:
     elif kp.price_to_confirm(best):
         status = CHECK
         hints.append("у артикула в каталоге несколько цен, цену подтвердит менеджер")
-    if best.get("price") is not None and not best.get("available"):
-        hints.append("наличие подтвердит менеджер")
+    if best.get("available") is False:
+        hints.append(kp.FEED_UNAVAILABLE)
     out.update(status=status, offer_id=best["offer_id"], name=best["name"], vendor_code=best.get("vendor_code") or "",
-               price=best.get("price"), url=best.get("url") or "")
+               price=best.get("price"), available=best.get("available"), url=best.get("url") or "")
     if status == EXACT:
         out["sum"] = round(best["price"] * qty, 2)
     if hints:

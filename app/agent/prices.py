@@ -498,7 +498,7 @@ def collect_percents(obj, acc: set) -> None:
     в нем не делает такую скидку акцией.
     """
     if isinstance(obj, dict):
-        obj = [v for k, v in obj.items() if k != "about"]
+        obj = [v for k, v in obj.items() if k not in ("about", "licensing", "requirements")]
     if isinstance(obj, list):
         for v in obj:
             collect_percents(v, acc)

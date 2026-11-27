@@ -778,7 +778,7 @@ def _with_details(rows: list, offers: list[dict]) -> dict:
         for i, details in zip(group, found):
             if details:
                 offers[i]["details"] = details
-    terms = [delivery_term(p) for p in params]
+    terms = [None if o.get("available") is False else delivery_term(p) for o, p in zip(offers, params)]
     if terms and terms[0] and not _differs(terms):
         return {"delivery": terms[0]}
     for offer, term in zip(offers, terms):
@@ -795,7 +795,9 @@ def offer_details(offers: list[dict]) -> list[dict]:
         params = [offers[i].get("params") or {} for i in group]
         terms = [delivery_term(p) for p in params]
         for i, details, term in zip(group, distinctions(params), terms):
-            found[i] = {**details, **({_DELIVERY: term} if term and _differs(terms) else {})}
+            found[i] = details
+            if term and offers[i].get("available") is not False and _differs(terms):
+                found[i][_DELIVERY] = term
     return found
 
 

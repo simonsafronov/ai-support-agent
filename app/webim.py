@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app import config, store
+from app.quote import kp
 
 log = logging.getLogger("webim")
 router = APIRouter()
@@ -212,6 +213,10 @@ def card_text(c: dict) -> str:
     """Карточка товара строкой: название, цена из каталога, артикул и ссылка на страницу магазина."""
     if c["type"] == "offer":
         line = f"{c['title']}: {rub(c['price']) if c.get('price') else 'цена по запросу'}"
+        if c.get("available") is False:
+            line += f" · {kp.FEED_UNAVAILABLE}"
+        if c.get("price_to_confirm"):
+            line += " · Цену подтвердит менеджер"
         line += f", артикул {c['vendor_code']}" if c.get("vendor_code") else ""
     else:
         low, high = c.get("price_min"), c.get("price_max")

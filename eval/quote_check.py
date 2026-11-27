@@ -8,6 +8,10 @@
 """
 from __future__ import annotations
 
+from math import isfinite
+
+from app import config
+
 CENT = 0.011  # копейка с запасом на округление
 
 
@@ -54,7 +58,12 @@ def mismatches(want_items: list[dict], quote: dict | None, catalog_price=None) -
 def arithmetic(quote: dict, catalog_price=None) -> list[str]:
     """Расхождения в числах КП: цена строки с каталогом, сумма строки, итог. Годится для любого КП прогона."""
     items, bad = list(quote.get("items") or []), []
-    discount = float(quote.get("discount_percent") or 0)
+    try:
+        discount = float(quote.get("discount_percent") or 0)
+    except (TypeError, ValueError):
+        return ["неверная скидка в КП"]
+    if not isfinite(discount) or not 0 <= discount <= config.AGENT_DISCOUNT_MAX:
+        return ["скидка в КП за пределами полномочий агента"]
     for i in items:
         price, qty = float(i.get("price") or 0), i.get("qty") or 0
         if abs(price * qty - float(i.get("sum") or 0)) > CENT * max(qty, 1):

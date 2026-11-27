@@ -33,6 +33,8 @@ from app import cases, config, economy, insights, notify, store
 from app.agent import handoff_card, llm, loop, proof
 from app.catalog import search as catalog, update as catalog_update
 from app.kb import answers, search as kb
+from app.quote import delivery as invoice_delivery, invoice
+from app.web import tgdesk
 
 STATIC = Path(__file__).parent / "static"
 log = logging.getLogger("server")
@@ -43,6 +45,7 @@ async def lifespan(_app):
     # по расписанию: чистка старых диалогов всегда, обновление каталога с фида, если он задан
     threading.Thread(target=_update_loop, daemon=True).start()
     notify.review_with(review_draft)  # решения менеджера по черновикам ответов агента из Telegram
+    notify.invoice_with(demo_invoice_state, approve_demo_invoice)
     notify.start(manager_answer)  # карточки обращений в Telegram и ответы менеджеров оттуда, если бот настроен
     yield
 
@@ -96,14 +99,19 @@ async def guard(request, call_next):
     if not size.isdigit() or int(size) > MAX_BODY:
         return JSONResponse({"detail": "слишком большой запрос"}, status_code=413)
     response = await call_next(request)
-    if not request.url.path.startswith(("/api/", "/quotes/", "/fonts/")):
+    if request.url.path.startswith(("/api/session/", "/api/admin/", "/api/tgdesk/")):
+        response.headers["Cache-Control"] = "private, no-store"
+    elif not request.url.path.startswith(("/api/", "/quotes/", "/fonts/")):
         response.headers["Cache-Control"] = "no-cache"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
-    if not request.url.path.startswith("/quotes/"):  # PDF открывает встроенный просмотрщик браузера
+    if response.headers.get("content-type") != "application/pdf":  # PDF открывает встроенный просмотрщик браузера
         response.headers["Content-Security-Policy"] = ("default-src 'self'; style-src 'self' 'unsafe-inline'; "
                                                        "img-src 'self' data:; frame-ancestors 'none'")
+    if request.url.path == '/tgdesk':  # Telegram Web embeds only the empty launch shell, never admin or APIs
+        del response.headers['X-Frame-Options']
+        response.headers['Content-Security-Policy'] = tgdesk.SHELL_CSP
     return response
 
 
@@ -563,7 +571,7 @@ def call_manager(body: CallIn):
 
 
 @app.get("/api/session/{session_id}")
-def session(session_id: str, client_id: str = Query("", max_length=64)):
+def session(request: Request, response: Response, session_id: str, client_id: str = Query("", max_length=64)):
     """История диалога для чата после перезагрузки страницы: только его владельцу, чтение ничего не создает."""
     s = store.find_session(own_session(session_id, client_id))
     if s is None:
@@ -580,7 +588,7 @@ def session(session_id: str, client_id: str = Query("", max_length=64)):
             msg["reviewed"] = True  # ответ агента, который менеджер проверил и отправил
         if m["role"] == "user":
             turn, traced = turn + 1, False
-        elif not traced and msg["from"] != "manager":  # ответ агента на реплику клиента несет шаги своего хода
+        elif not traced and msg["from"] not in ("manager", "agent"):  # ответ агента на реплику клиента несет шаги своего хода
             msg["trace"], traced = steps_trace(turns.get(turn, [])), True
         messages.append(msg)
     usage = {k: s[k] for k in ("llm_calls", "tool_calls", "prompt_tokens", "completion_tokens")}
@@ -589,11 +597,12 @@ def session(session_id: str, client_id: str = Query("", max_length=64)):
     draft = store.pending_draft(session_id)
     if draft:  # ответ на последнюю реплику ждет проверки менеджера: чат показывает срок и шаги хода, но не текст
         out["review"] = {**review_note(draft["minutes"]), "trace": steps_trace(turns.get(turn, []))}
+    invoice_cookie(request, response, s, messages)
     return out
 
 
 @app.get("/api/session/{session_id}/answers")
-def session_answers(session_id: str, client_id: str = Query("", max_length=64), after: int = 0):
+def session_answers(request: Request, response: Response, session_id: str, client_id: str = Query("", max_length=64), after: int = 0):
     """Новые ответы для открытого чата: чат спрашивает о них, пока клиент на странице.
 
     Это ответы менеджера и ответы агента, которые менеджер проверил и отправил: такие идут с карточками и КП.
@@ -605,12 +614,17 @@ def session_answers(session_id: str, client_id: str = Query("", max_length=64), 
     for m in store.messages(session_id):
         if m["id"] <= after:
             continue
-        if m["meta"].get("from") == "manager":
-            found.append({"id": m["id"], "content": m["content"]})
+        if m["meta"].get("from") == "agent" and m["meta"].get("invoice_id"):
+            found.append({"id": m["id"], "content": m["content"], "from": "agent",
+                          "events": m["meta"]["events"]})
+        elif m["meta"].get("from") == "manager":
+            events = m["meta"].get("events", [])
+            found.append({"id": m["id"], "content": m["content"], **({"events": events} if events else {})})
         elif m["meta"].get("reviewed"):
             found.append({"id": m["id"], "content": m["content"], "reviewed": True,
                           "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
                           "events": public_events(m["meta"].get("events", []))})
+    invoice_cookie(request, response, s, found)
     return {"answers": found}
 
 
@@ -712,7 +726,9 @@ def admin_session(request: Request, session_id: str):
     s["facts"], s["items"] = json.loads(s.pop("facts_json")), json.loads(s.pop("items_json"))
     # сырые копии *_json не отдаются: рядом лежат разобранные поля, а в строке их не скрыть по имени поля
     rows = lambda items: [{k: r[k] for k in r.keys() if not k.endswith("_json") and k != "file"} for r in items]
+    invoice_state = demo_invoice_state(session_id) if is_operator(request) else None
     return view(request, {
+        **({"demo_invoice": invoice_state} if invoice_state else {}),
         "session": s, "rating": insights.rate_session(con, session_id),
         "messages": rows(store.messages(session_id)), "steps": rows(store.steps(session_id)),
         "handoffs": _handoffs("WHERE session_id=?", (session_id,)),
@@ -849,6 +865,52 @@ def admin_answer(body: AnswerIn, handoff_id: int = HANDOFF_ID):
     if done is None:
         raise HTTPException(404, "нет такого обращения")
     return done
+
+
+demo_invoice_state = invoice_delivery.state
+
+
+def approve_demo_invoice(sid: str, revision: str, who: str) -> dict:
+    # Совместимость со старыми карточками менеджера. Тот же замок, что у запроса покупателя.
+    with session_lock(sid):
+        return invoice_delivery.publish(sid, who, revision=revision)
+
+
+class InvoiceApproval(BaseModel):
+    revision: str = Field(pattern=r"^[a-f0-9]{24}$")
+
+
+@app.post("/api/admin/session/{session_id}/demo-invoice", dependencies=[Depends(admin)])
+def admin_demo_invoice(session_id: str, body: InvoiceApproval):
+    return approve_demo_invoice(session_id, body.revision, "оператор")
+
+
+def _invoice_cookie_value(s: dict) -> str:
+    return hmac.new(s["client_id"].encode(), ("invoice-owner:" + s["id"]).encode(), hashlib.sha256).hexdigest()
+
+
+def invoice_cookie(request: Request, response: Response, s: dict, messages: list):
+    # Only mint the scoped proof when delivering an attachment, not on every poll.
+    if not any(e.get('type') == 'demo_invoice' for m in messages for e in m.get('events', [])):
+        return
+    response.set_cookie("invoice_owner", _invoice_cookie_value(s), path=f"/api/session/{s['id']}/invoices/",
+                        httponly=True, samesite="strict", secure=request.url.scheme == "https")
+
+
+@app.get("/api/session/{session_id}/invoices/{invoice_id}.pdf")
+def demo_invoice_pdf(request: Request, session_id: str, invoice_id: int = PathArg(ge=1, le=2**63 - 1)):
+    s = store.find_session(session_id)
+    proof = request.cookies.get("invoice_owner", "").encode()
+    if s and s["client_id"] and secrets.compare_digest(proof, _invoice_cookie_value(s).encode()):
+        inv = store.invoice(invoice_id)
+        if inv and inv["session_id"] == session_id and inv["status"] == invoice.ISSUED:
+            path = (config.QUOTES_DIR / (inv['number'] + '.pdf')).resolve()
+            delivered = store.db().execute("SELECT 1 FROM messages WHERE session_id=? AND "
+                                           "json_extract(meta_json,'$.invoice_id')=?", (session_id, invoice_id)).fetchone()
+            if delivered and path.parent == config.QUOTES_DIR.resolve() and path.is_file():
+                return FileResponse(path, media_type="application/pdf", filename="demo-invoice.pdf",
+                                    content_disposition_type="inline", headers={"Cache-Control": "private, no-store"})
+    raise HTTPException(404, "нет такого файла")
 
 
 class ReviewIn(BaseModel):
@@ -1076,6 +1138,9 @@ if config.WEBIM_TOKEN:  # чат сайта в Webim: агент отвечае�
     from app import webim
     app.include_router(webim.router)
     DELIVERY["webim-"] = webim.deliver  # ответ, проверенный менеджером, уходит в окно Webim
+
+
+app.include_router(tgdesk.build_router(manager_answer, session_lock))
 
 
 @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)

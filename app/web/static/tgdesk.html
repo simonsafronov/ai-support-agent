@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer"><title>Обращение · Softline Store</title>
+<link rel="stylesheet" href="/tgdesk.css"><script defer src="/tgdesk.js"></script>
+</head>
+<body><div class="desk">
+<header><img src="/logo.png" alt="Softline"><span>Рабочее место менеджера</span></header>
+<p id="notice" role="status">Проверяем доступ…</p>
+<main hidden id="card">
+<article class="ticket">
+<div class="strip"><span id="ref"></span><span class="badge" id="state"></span></div>
+<h1 id="subject"></h1>
+<h2 class="eyebrow">Запрос клиента</h2><p id="request"></p>
+<details id="extra"><summary>Сводка и контакт</summary><p id="summary"></p><p id="contact"></p></details>
+</article>
+<section><h2>Документы <span class="count" id="doc-count"></span></h2><div id="docs"></div></section>
+<section><h2>История сообщений <span class="count" id="msg-count"></span></h2><ol id="history"></ol></section>
+</main>
+<form hidden id="composer"><label for="answer">Ответ в чат клиента</label>
+<textarea id="answer" maxlength="4000" rows="2" placeholder="Напишите сообщение…" required></textarea>
+<button id="send" type="submit" disabled>Отправить ответ <span aria-hidden="true">↗</span></button></form>
+<p role="status" id="feedback"></p>
+</div></body></html>

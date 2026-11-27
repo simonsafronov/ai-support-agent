@@ -134,7 +134,7 @@ def test_sums_vat_and_pdf(offers, storage):
     assert res["vat_total"] == float(vat_of(plain_sum))
     assert res["has_price_on_request"] is True
     assert res["customer"] == "ООО «Ромашка»"
-    assert res["note"].startswith("Черновик КП сформирован, его проверит менеджер.")
+    assert res["note"].startswith(kp.QUOTE_NOTE) and "его проверит менеджер" not in res["note"]
     assert res["customer_missing"] == ["КПП"]
     assert "уточнит менеджер" not in res["note"] and "ради реквизитов не заводите" in res["note"]
 
@@ -159,11 +159,11 @@ def test_sums_vat_and_pdf(offers, storage):
     assert text.index("Итого") < text.index(squeeze(kp.ON_REQUEST_HEAD)) < text.index(squeeze("Цена указана"))
     assert squeeze(f"{by_id[req['id']]['name']}{article}, 2 шт.") in text
     for phrase in ("Уважаемый заказчик!", "Наименование", "В т.ч. НДС", kp.ON_REQUEST_HEAD,
-                   "НДС рассчитан автоматически, проверяет менеджер.",
-                   "Условия оплаты: Предоплата.", f"Срок поставки: {kp.DEFAULT_DELIVERY}.",
+                   "НДС рассчитан автоматически.",
+                   "Условия оплаты: Предоплата.", "Заказ не создан.",
                    f"Срок действия коммерческого предложения - до {res['valid_until']}.",
                    "Черновик коммерческого предложения.",
-                   "Подготовлен ИИ-консультантом Softline Store, требует проверки менеджером.",
+                   "Подготовлен ИИ-консультантом Softline Store.",
                    config.KP_SIGNER_NAME, config.KP_SIGNER_TITLE):
         assert squeeze(phrase) in text, phrase
 
@@ -189,6 +189,28 @@ def test_only_offer_id_and_qty_are_taken_from_the_model(offers):
     assert squeeze(f"Условия оплаты: {kp.DEFAULT_PAYMENT}.") in text
     assert squeeze("Срок поставки: 5 рабочих дней.") in text
     assert "Подмена" not in text and "FAKE" not in text and "рассчитаетменеджер" not in text
+
+
+def test_priced_but_unavailable_is_not_a_price_question(monkeypatch):
+    fake_catalog(monkeypatch, {
+        1: {"name": "Вариант А", "price": "100.10", "available": 0},
+        2: {"name": "Вариант Б", "price": 1, "available": 1},
+        3: {"name": "Вариант В", "price": None, "available": 0},
+    })
+    monkeypatch.setattr(config, "AGENT_DISCOUNT_MAX", 5)
+    items = [{"offer_id": n, "qty": 3, "available": True} for n in (1, 2, 3)]
+    res = kp.make_quote("s1", "ООО Тест", items, delivery="завтра", discount_percent=12)
+    assert res["ok"] and res["discount_percent"] == 5
+    assert [(i["available"], i["price"], i["sum"]) for i in res["items"]] == [
+        (False, 95.10, 285.30), (True, 0.95, 2.85), (False, None, None)]
+    assert res["total"] == 288.15 and res["has_price_on_request"] and not res["price_to_confirm"]
+    assert res["needs_availability_check"] == ["Вариант А"]
+    assert "Запрошено 12%" in res["note"] and "Без купона применено 5%" in res["note"]
+    text = squeeze("".join(pdf_pages(res["file"])))
+    assert squeeze("Вариант А По фиду: нет в наличии") in text
+    assert squeeze("Вариант Б По фиду: в наличии") in text
+    assert squeeze("Вариант В, 3 шт. По фиду: нет в наличии") in text
+    assert "завтра" not in text and "1-3" not in text and "Заказнесоздан" in text
 
 
 def test_errors_do_not_create_pdf(offers, missing_id, storage):

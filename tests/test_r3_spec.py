@@ -111,9 +111,10 @@ def test_statuses_on_customer_catalog():
             o = catalog.get_offer(ln["offer_id"])
             assert (ln["name"], ln["vendor_code"], ln["price"]) == (o["name"], o["vendor_code"], o["price"])
     exact = [ln for ln in lines if ln["status"] == spec.EXACT]
-    assert [(ln["vendor_code"], ln["qty"], ln["sum"]) for ln in exact] == [
-        ("KL4867RAQFS", 50, round(lines[0]["price"] * 50, 2)), ("NC260P_CNL_12M_ACC_PROLONG", 3, 73800),
-        ("X5-STD-CF-RDNL-A", 10, 65300)]
+    assert [(ln["vendor_code"], ln["qty"]) for ln in exact] == [
+        ("KL4867RAQFS", 50), ("NC260P_CNL_12M_ACC_PROLONG", 3), ("X5-STD-CF-RDNL-A", 10)]
+    for ln in exact:  # фид обновляется: ожидаемую сумму берем из цены выбранного предложения
+        assert ln["sum"] == round(catalog.get_offer(ln["offer_id"])["price"] * ln["qty"], 2)
     assert out["total"] == round(sum(ln["sum"] for ln in exact), 2)
     assert "sum" not in lines[1] and "sum" not in lines[2]  # сумма только у точных строк
     # артикул для 250-499 узлов, а нужно 30: кандидат того же названия под 30 и подсказка

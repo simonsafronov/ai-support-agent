@@ -189,11 +189,12 @@ def build(h: dict, now: float | None = None) -> dict:
     quote = store.last_quote(sid)
     calc = store.last_total(sid)
     done = h["status"] in ("answered", "returned")
-    shown = [{"id": o["id"], "name": o["name"], "price": o.get("price")} for o in items.get("offers", [])[:5]]
+    shown = [{"id": o["id"], "name": o["name"], "price": o.get("price"), "available": o.get("available")}
+             for o in items.get("offers", [])[:5]]
     quote_items = json.loads(quote["items_json"] or "[]") if quote else []
     discount = store.quote_discount(sid) if quote else 0.0
     in_quote = [{"id": o.get("offer_id"), "name": o["name"], "price": o.get("price"), "qty": o.get("qty"),
-                 **_list_price(o, discount)} for o in quote_items]
+                 "available": o.get("available"), **_list_price(o, discount)} for o in quote_items]
     flags = [name for name, rx in FLAGS if re.search(rx, text.lower())]
     needs = {SHOWN_AS.get(k, k): facts[k] for k in NEED_FIELDS if facts.get(k)}
     if "дана скидка" in needs:  # зачем: запись "дана скидка 30%" в карточке менеджер прочтет как обещание клиенту

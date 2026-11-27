@@ -83,7 +83,7 @@ function card(h, now) {
   const due = done ? STATUS[h.status] : h.from_run ? "диалог проверочного прогона"
     : late ? `просрочено на ${span(left)}` : `ответить до ${left > 12 * 3600 ? dt(c.sla_due) : hm(c.sla_due)} МСК, осталось ${span(left)}`;
   const kv = (o) => Object.entries(o).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ");
-  const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}${o.list_price ? ` (со скидкой ${num(o.discount_percent)}%, по каталогу ${rub(o.list_price)})` : ""}`).join("<br>");
+  const offers = c.offers.slice(0, 3).map((o) => `${esc(o.name)}${o.qty > 1 ? ", " + num(o.qty) + " шт." : ""}: ${o.price ? rub(o.price) : "цена по запросу"}${o.available === false ? " · По фиду: нет в наличии" : ""}${o.list_price ? ` (со скидкой ${num(o.discount_percent)}%, по каталогу ${rub(o.list_price)})` : ""}`).join("<br>");
   const money = [c.calc_total ? `расчет ${rub(c.calc_total)}` : "", c.quote ? `${c.quote.url ? `<a href="${esc(c.quote.url)}" target="_blank" rel="noopener">черновик ${esc(c.quote.number)}</a>` : `черновик ${esc(c.quote.number)}`} на ${rub(c.quote.total)}${c.quote.url ? "" : ", КП доступен оператору"}` : ""].filter(Boolean).join(" · ");
   const client = [kv(c.client), c.client["контакт"] || h.from_run || done ? "" : '<em class="nc">контакта нет: ответьте здесь, клиент увидит ответ в чате сайта</em>'].filter(Boolean).join("<br>");
   const rows = [
@@ -206,14 +206,14 @@ function economy(e) {
       ${rows}<dt>Снято с менеджеров</dt><dd>${hours(x, rate)}</dd><dt>Стоимость снятых часов</dt><dd>${rub(x.saved_rub)}</dd>
       <dt>Расход на модель${x.model_budget_rub ? "<i>бюджет заказчика 5-7 тыс. ₽</i>" : ""}</dt><dd>${rub(x.model_cost_rub)}</dd><dt>Рубль на модель возвращает</dt><dd>${x.return_x == null ? "нет данных" : num(x.return_x, 1) + " ₽"}</dd></dl></div>`
     : `<div><h3>${title}</h3><div class="big">нет данных</div><p class="cap">Появится после первых диалогов на стенде.</p></div>`;
-  $("ecores").innerHTML = part("На этом стенде", e.stand, m ? `<dt>Обращений клиентов</dt><dd>${num(m.dialogs)}</dd><dt>Из них без менеджера</dt><dd>${num(m.closed)} (${Math.round(m.closed_share * 100)}%)</dd>` : "")
-    + part(`За полгода при ${num(n)} ${word}`, hy, hy ? `<dt>Закроет сам</dt><dd>${num(hy.closed)}</dd><dt>Передаст карточкой</dt><dd>${num(hy.handed)}</dd>` : "");
+  $("ecores").innerHTML = part("На этом стенде", e.stand, m ? `<dt>Обращений клиентов</dt><dd>${num(m.dialogs)}</dd><dt>Из них без передачи менеджеру</dt><dd>${num(m.closed)} (${Math.round(m.closed_share * 100)}%)</dd>` : "")
+    + part(`За полгода при ${num(n)} ${word}`, hy, hy ? `<dt>Без передачи (оценка)</dt><dd>${num(hy.closed)}</dd><dt>Передаст карточкой</dt><dd>${num(hy.handed)}</dd>` : "");
   const value = (key, v) => key === "card_share" ? Math.round(v * 100) : v;
   const pd = e.per_workday, day = pd && Math.round(pd.requests);
   $("ecoin").innerHTML = `<h3>На чем стоит расчет: поменяйте допущения под свои данные</h3>
     ${FIELDS.map(([key, ans, label, hint, step, lo, hi]) => `<label><span>${label}<i>${hint}</i></span><input type="number" inputmode="decimal" min="${lo}" max="${hi}" step="${step}" data-eco="${key}" value="${value(key, a[ans])}"></label>`).join("")}
     ${pd ? `<label><span>Расход на модель в рабочий день<i>${day ? `около ${num(day)} ${plural(day, ["обращения", "обращений", "обращений"])}` : "меньше одного обращения"}, ${num(pd.tokens)} ${plural(pd.tokens, ["токен", "токена", "токенов"])}; 21 рабочий день в месяце</i></span><span class="tag">${rub(pd.model_cost_rub)}</span></label>` : ""}
-    <label><span>Доля без менеджера среди всех обращений и стоимость обращения<i>замер этого стенда, от этой доли идет расчет; вызов менеджера кнопкой входит в обращения</i></span><span class="tag">${m ? Math.round(m.closed_share * 100) + "% · " + rub(m.cost_per_dialog_rub) : "нет данных"}</span></label>`;
+    <label><span>Доля без передачи менеджеру среди всех обращений и стоимость обращения<i>замер этого стенда, от этой доли идет расчет; вызов менеджера кнопкой входит в обращения</i></span><span class="tag">${m ? Math.round(m.closed_share * 100) + "% · " + rub(m.cost_per_dialog_rub) : "нет данных"}</span></label>`;
   $("ecoin").querySelectorAll("input").forEach((i) => {
     i.onchange = () => apply(i);
     i.onkeydown = (ev) => { if (ev.key === "Enter") apply(i); };
@@ -338,7 +338,7 @@ async function load(force = false) {
   $("kpi").innerHTML = `<a href="#queue" id="towait" class="${late ? "late" : ""}"><b>${num(qu.waiting)}</b><span>ждут менеджера${late ? `, просрочено ${num(qu.overdue)}` : ""}</span></a>` + [
     // две доли рядом, у каждой числитель и знаменатель: число диалогов и обращений видно в них
     [pct(st.without_human_share), `без передачи среди диалогов с агентом: ${num(st.closed_dialogs)}\u00a0из\u00a0${num(st.dialogs)}`],
-    [pct(st.requests_without_human_share), `без менеджера среди всех обращений, включая вызов менеджера кнопкой: ${num(st.closed_dialogs)}\u00a0из\u00a0${num(st.requests)}`],
+    [pct(st.requests_without_human_share), `без передачи менеджеру среди всех обращений, включая вызов менеджера кнопкой: ${num(st.closed_dialogs)}\u00a0из\u00a0${num(st.requests)}`],
     [num(st.quotes), "черновиков КП"],
     [rub(st.cost_rub_per_turn), "стоимость одного запроса"], [rub(st.cost_rub_per_dialog), "стоимость диалога"],
     [st.avg_model_seconds_per_turn == null ? "нет данных" : String(st.avg_model_seconds_per_turn).replace(".", ",") + " с", "модель думает на запрос"],
@@ -453,6 +453,11 @@ async function show(id, opened = false) {
     <div class="st">Стоимость ${rub(s.cost_rub)} · вызовов модели ${count("llm")} · инструментов ${count("tool")}${facts ? "<br>Память о клиенте: " + facts : ""}</div>
     ${d.rating ? `<div class="st">Оценка диалога <b>${d.rating.score} из 5</b>: ${d.rating.problems.map((p) => esc(p.label)).join("; ") || "замечаний нет"}</div>` : ""}`;
   if (operator) html += d.handoffs.filter((x) => x.status === "new" || x.status === "taken").map(answerBox).join("");
+  if (operator && d.demo_invoice) {
+    html += `<div class="st"><b>Демо-счёт по ${esc(d.demo_invoice.quote_number)}</b><p>По просьбе покупателя агент выдаёт образец сам. Не для оплаты; это не подтверждение поставки.</p>
+      ${d.demo_invoice.sent ? "Уже отправлен в чат клиента." : '<button type="button" class="btn main" data-invoice>Выдать образец вручную</button>'}
+      <span class="hint" data-invoice-status role="status"></span></div>`;
+  }
   html += "<h3>Переписка</h3>";
   let turn = 0;
   for (const m of d.messages) {
@@ -476,6 +481,14 @@ async function show(id, opened = false) {
   }
   const panel = $("detail");
   panel.innerHTML = html;
+  const approve = panel.querySelector("[data-invoice]");
+  if (approve) approve.onclick = async () => {
+    const status = panel.querySelector("[data-invoice-status]");
+    const result = await locked([approve], () => post(`/api/admin/session/${encodeURIComponent(id)}/demo-invoice`, { revision: d.demo_invoice.revision }));
+    if (!result || current !== id) return;
+    status.textContent = result.detail;
+    if (result.ok) approve.hidden = true;
+  };
   panel.classList.add("has");
   panel.scrollTop = 0;
   panel.querySelectorAll(".ans").forEach((box) => {

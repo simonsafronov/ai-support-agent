@@ -46,6 +46,8 @@ def test_new_handoff_goes_to_telegram_once_with_the_card(tg):
     text = sent["text"]
     assert f"Обращение №{hid}" in text and "ждет ответа" in text
     assert "скидка больше 5%" in text and "Просит 15% на 30 лицензий" in text
+    assert '<blockquote>' in text and '</blockquote>' in text
+    assert text.index('Просит 15%') < text.index('ivanov@romashka.example')
     assert "просит скидку" in text and "ivanov@romashka.example" in text  # контакт подставил код, а не модель
     buttons = [b for row in sent["reply_markup"]["inline_keyboard"] for b in row]
     assert [b.get("callback_data") for b in buttons[:2]] == [f"take:{hid}", f"back:{hid}"]
@@ -129,6 +131,18 @@ def test_quote_file_follows_the_card(tg, monkeypatch):
     assert "Черновик KP-1" in tg[0][1]["text"] and "3 000,00 руб." in tg[0][1]["text"]
     notify.sync()
     assert len(tg) == 2  # тот же КП второй раз не отправляется
+
+
+def test_webapp_button_only_for_configured_manager_in_private_chat(tg, monkeypatch):
+    monkeypatch.setenv('TG_MANAGER_IDS', '987')
+    h = {'id': 12, 'status': 'new'}
+    for chat in ('-100500', '123', '987'):
+        monkeypatch.setattr(notify.config, 'TG_CHAT', chat)
+        link = notify._buttons(h)['inline_keyboard'][-1][0]
+        if chat == '987':
+            assert link['web_app'] == {'url': 'https://stand.example/tgdesk?handoff=12'}
+        else:
+            assert link['url'] == 'https://stand.example/admin' and 'web_app' not in link
 
 
 def test_without_settings_nothing_starts(monkeypatch):

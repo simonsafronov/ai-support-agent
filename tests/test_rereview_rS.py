@@ -100,6 +100,8 @@ ROUTES = {
     ("POST", "/api/admin/draft/{draft_id}"): 403,
     ("GET", "/api/session/{session_id}"): 404,                    # переписка только владельцу по его client_id
     ("GET", "/api/session/{session_id}/answers"): 404,
+    ("POST", "/api/admin/session/{session_id}/demo-invoice"): 403,
+    ("GET", "/api/session/{session_id}/invoices/{invoice_id}.pdf"): 404,
 }
 
 
@@ -111,7 +113,7 @@ def test_every_operator_and_session_route_is_checked_without_key(stand_dialogs):
     sid, hid = stand_dialogs["visitor"], store.open_handoff(stand_dialogs["visitor"])["id"]
     bodies = {"answer": {"answer": "Ответ"}, "case": {"handoff": False}, "take": {"who": "Анна"}}
     for (method, path), status in ROUTES.items():
-        url = path.format(session_id=sid, handoff_id=hid, draft_id=1)
+        url = path.format(session_id=sid, handoff_id=hid, draft_id=1, invoice_id=1)
         r = client.request(method, url, json=bodies.get(url.rsplit("/", 1)[1], {}))
         assert r.status_code == status, (method, path)
         assert "Ромашка-Север" not in r.text and "w3-rS-visitor" not in r.text, (method, path)

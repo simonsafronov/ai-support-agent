@@ -25,6 +25,7 @@ import time
 import httpx
 
 from app import config, store
+from app.quote import kp
 from app.agent import handoff_card
 
 log = logging.getLogger("notify")
@@ -43,6 +44,7 @@ DRAFT_STATUS = {"new": "ждет проверки", "sent": "отправлен 
                 "edited": "клиенту ушел текст менеджера", "dropped": "не отправлен, обращение у менеджера",
                 "stale": "устарел, клиент написал снова"}
 
+_invoice_state = _invoice_action = None  # supplied by the server; no model or Telegram document delivery
 _answer = None  # как записать ответ менеджера: задает сервер при запуске
 _review = None  # как принять решение менеджера по черновику ответа агента: задает сервер (review_with)
 _SCHEMA = ("CREATE TABLE IF NOT EXISTS tg_cards(handoff_id INTEGER PRIMARY KEY, chat_id TEXT, message_id INT, "
@@ -105,7 +107,10 @@ def card_text(h: dict, card: dict) -> str:
     head = f"<b>Обращение №{h['id']}</b>: {STATUS.get(h['status'], h['status'])}"
     if h.get("assignee"):
         head += f", {e(h['assignee'], 60)}"
-    lines = [head, f"Срочность {card['priority_name']}, срок реакции {card['sla_minutes']} мин"]
+    lines = [head, f"Срочность {e(card['priority_name'])} · срок реакции <b>{int(card['sla_minutes'])} мин</b>",
+             f"<b>Причина:</b> {e(h['reason'] or '')}"]
+    if card['summary']:
+        lines += ["<b>Запрос покупателя</b>", f"<blockquote>{e(card['summary'], 700)}</blockquote>"]
     if card["flags"]:
         lines.append("Пометки: " + e(", ".join(card["flags"])))
     lines.append("")
@@ -116,9 +121,6 @@ def card_text(h: dict, card: dict) -> str:
     contact = h.get("contact") or card["client"].get("контакт")
     if contact:
         lines.append(f"<b>Контакт:</b> {e(contact)}")
-    lines.append(f"<b>Причина:</b> {e(h['reason'] or '')}")
-    if card["summary"]:
-        lines.append(f"<b>Запрос:</b> {e(card['summary'], 1000)}")
     for k, v in card["needs"].items():
         lines.append(f"{e(k[:1].upper() + k[1:], 60)}: {e(v, 200)}")
     if card["offers"]:
@@ -128,6 +130,8 @@ def card_text(h: dict, card: dict) -> str:
             price = f", {_rub(o['price'])}" if o.get("price") else ", цена по запросу"
             if o.get("list_price"):
                 price += f" (со скидкой {o['discount_percent']:g}%, по каталогу {_rub(o['list_price'])})"
+            if o.get("available") is False:
+                price += f" · {kp.FEED_UNAVAILABLE}"
             lines.append(f"- {e(o['name'], 150)}{qty}{price}")
         if len(card["offers"]) > MAX_OFFERS:
             lines.append(f"и еще {len(card['offers']) - MAX_OFFERS}")
@@ -159,14 +163,32 @@ def _card_call(method: str, text: str, **params):
     return res
 
 
-def _buttons(h: dict) -> dict:
+def _manager_card(h, now):
+    state = _invoice_state(h['session_id']) if _invoice_state and h['status'] in ('new', 'taken') else None
+    revision = state['revision'] if state and not state['sent'] else ''
+    card = handoff_card.build(h, now)
+    text = card_text(h, card)
+    # Compare both text and keyboard on refresh, even for an equal-price quote revision.
+    mark = text + ('\ninv:' + revision if revision else '')
+    return card, text, mark, _buttons(h, revision)
+
+
+def _buttons(h: dict, revision: str = '') -> dict:
     rows = []
     if h["status"] == "new":
         rows.append([{"text": "Взять в работу", "callback_data": f"take:{h['id']}"}])
     if h["status"] in ("new", "taken"):
         rows.append([{"text": "Вернуть агенту", "callback_data": f"back:{h['id']}"}])
+    if revision:
+        rows.append([{"text": "Выдать образец вручную (не для оплаты)", "callback_data": f"inv:{h['id']}:{revision}"}])
     if config.PUBLIC_URL:
-        rows.append([{"text": "Экран оператора", "url": config.PUBLIC_URL.rstrip("/") + "/admin"}])
+        base = config.PUBLIC_URL.rstrip('/')
+        managers = {v.strip() for v in (config.env('TG_MANAGER_IDS', '') or '').split(',')}
+        chat = str(config.TG_CHAT)
+        if base.startswith('https://') and chat.isdecimal() and chat in managers:
+            rows.append([{'text': 'Открыть обращение в Mini App', 'web_app': {'url': f"{base}/tgdesk?handoff={h['id']}"}}])
+        else:
+            rows.append([{"text": "Экран оператора", "url": base + "/admin"}])
     return {"inline_keyboard": rows}
 
 
@@ -223,44 +245,43 @@ def sync() -> int:
     for h in map(dict, unsent):
         if _later(h["id"], now):
             continue
-        card = handoff_card.build(h, now)
-        text = card_text(h, card)
-        sent = _card_call("sendMessage", text, chat_id=config.TG_CHAT, reply_markup=_buttons(h))
+        card, text, mark, buttons = _manager_card(h, now)
+        sent = _card_call("sendMessage", text, chat_id=config.TG_CHAT, reply_markup=buttons)
         if sent is None:
             _retry_at[h["id"]] = now + RETRY  # Telegram не принял: повтор на одном из следующих кругов
             continue
         _retry_at.pop(h["id"], None)
         con.execute("INSERT OR REPLACE INTO tg_cards(handoff_id, chat_id, message_id, text, quote, ts) "
-                    "VALUES(?,?,?,?,?,?)", (h["id"], str(config.TG_CHAT), sent["message_id"], text,
+                    "VALUES(?,?,?,?,?,?)", (h["id"], str(config.TG_CHAT), sent["message_id"], mark,
                                             _send_quote(h, card, sent["message_id"]), now))
         con.commit()
         done += 1
     shown = con.execute("SELECT t.*, h.session_id FROM tg_cards t JOIN handoffs h ON h.id = t.handoff_id "
-                        "WHERE t.ts > ?", (now - WATCH,)).fetchall()
+                        "WHERE t.ts > ? AND t.chat_id=?", (now - WATCH, str(config.TG_CHAT))).fetchall()
     for t in shown:
         h = _handoff(t["handoff_id"])
-        card = handoff_card.build(h, now)
-        text, quote = card_text(h, card), t["quote"]
-        if text != t["text"] and _later(h["id"], now):
-            text = t["text"]  # правка недавно не прошла: повтор позже
-        elif text != t["text"]:
+        card, text, mark, buttons = _manager_card(h, now)
+        quote = t["quote"]
+        if mark != t["text"] and _later(h["id"], now):
+            mark = t["text"]
+        elif mark != t["text"]:
             if _card_call("editMessageText", text, chat_id=t["chat_id"], message_id=t["message_id"],
-                          reply_markup=_buttons(h)) is None:  # не прошла: в базе остается текст, который в Telegram
-                _retry_at[h["id"]], text = now + RETRY, t["text"]
+                          reply_markup=buttons) is None:
+                _retry_at[h["id"]], mark = now + RETRY, t["text"]
             else:
                 _retry_at.pop(h["id"], None)
                 done += 1
         if card["quote"] and _quote_mark(card) != quote:
             quote = _send_quote(h, card, t["message_id"]) or quote
-        if text != t["text"] or quote != t["quote"]:
-            con.execute("UPDATE tg_cards SET text=?, quote=? WHERE handoff_id=?", (text, quote, t["handoff_id"]))
+        if mark != t["text"] or quote != t["quote"]:
+            con.execute("UPDATE tg_cards SET text=?, quote=? WHERE handoff_id=?", (mark, quote, t["handoff_id"]))
             con.commit()
     return done + _sync_drafts(con, now)
 
 
 def _card_price(c: dict) -> str:
     if c.get("price"):
-        return _rub(c["price"])
+        return _rub(c["price"]) + (f" · {kp.FEED_UNAVAILABLE}" if c.get("available") is False else "")
     if c.get("price_min"):
         return ("" if c["price_min"] == c.get("price_max") else "от ") + _rub(c["price_min"])
     return "цена по запросу"
@@ -340,12 +361,39 @@ def _who(user: dict) -> str:
     return (" ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) or "менеджер")[:60]
 
 
+def invoice_with(state, approve):
+    global _invoice_state, _invoice_action
+    _invoice_state, _invoice_action = state, approve
+
+
+def _invoice_click(cb, chat, data):
+    match = re.fullmatch(r"([1-9][0-9]{0,18}):([a-f0-9]{24})", data)
+    user = cb.get('from') or {}
+    if not (_invoice_action and config.TG_CHAT and chat == str(config.TG_CHAT) and match and
+            user.get('id') and not user.get('is_bot') and (chat.startswith('-') or str(user['id']) == chat)):
+        return 'ignored'
+    hid, rev = match.groups()
+    row = _db().execute("SELECT t.text,h.session_id,h.status FROM tg_cards t JOIN handoffs h ON h.id=t.handoff_id "
+                        "WHERE t.chat_id=? AND t.message_id=? AND t.handoff_id=?",
+                        (chat, cb['message'].get('message_id'), hid)).fetchone()
+    if not row:
+        return 'ignored'
+    if row['status'] not in ('new', 'taken') or not row['text'].endswith('\ninv:' + rev):
+        result = {'ok': False, 'detail': 'Карточка устарела.'}
+    else:
+        result = _invoice_action(row['session_id'], rev, 'telegram:' + str(user['id']))
+    call('answerCallbackQuery', callback_query_id=cb['id'], text=result['detail'][:180])
+    return 'invoice' if result['ok'] else 'stale'
+
+
 def handle(update: dict) -> str:
     """Одно событие из Telegram: ответ менеджера реплаем на карточку или кнопка под ней. Возвращает, что сделано."""
     cb = update.get("callback_query")
     if cb:
         chat = str(cb.get("message", {}).get("chat", {}).get("id", ""))
         action, _, hid = (cb.get("data") or "").partition(":")
+        if action == 'inv':
+            return _invoice_click(cb, chat, hid)
         if chat != str(config.TG_CHAT) or not hid.isdigit():
             return "ignored"
         if action in ("send", "drop"):  # кнопки под черновиком ответа агента

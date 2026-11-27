@@ -203,7 +203,7 @@ _NOT_PROMISE = re.compile(r"\bне\b|\bнет\b|нельзя|невозможн|
 
 
 def promised_deferral(replies: list[str]) -> list[str]:
-    """Фразы, где агент соглашается на отсрочку или постоплату (в магазине их нет). Отказ и передача менеджеру не в счет."""
+    """Фразы, где агент соглашается на отсрочку или постоплату без решения менеджера. Отказ и передача менеджеру не в счет."""
     sentences = [s.strip() for r in replies for s in re.split(r"(?<=[.!?])\s+|\n", r)]
     return [s for s in sentences if _DEFERRAL.search(s) and not _NOT_PROMISE.search(s)]
 
@@ -214,11 +214,55 @@ def quote_prices_off_catalog(run: dict) -> list[str]:
     return quote_check.arithmetic(quote, _catalog_price) if quote else []
 
 
+# В тексте без карточки нужен явно названный вариант с собственной ценой, а не
+# соседство названия и суммы бюджета в разных фразах. Неоднозначный текст пропускаем.
+_OFFER_NAME = r'(?:«[^«»\n]+»|"[^"\n]+"|(?-i:[А-ЯЁA-Z][\w.+-]*(?: [А-ЯЁA-Z0-9][\w.+-]*){0,5}))'
+_TEXT_OFFER = re.compile(
+    r'(?:^|[\n.!?]\s*)(?:[-*•]\s*)?'
+    r'(?:(?:подойд[её]т|предлагаю|рекомендую)\s+(?:(?:вариант|лицензию|редакцию|продукт)\s+)?'
+    r'|(?:вариант|лицензия|редакция|продукт)\s+|(?=[«"]))'
+    rf'{_OFFER_NAME}\s*(?:[—–:-]|стоит|за)\s*'
+    r'(?P<price>\d+(?:[   ]\d{3})*(?:[.,]\d{1,2})?)\s*(?:₽|руб\b|рублей\b|рубля\b|рубль\b)', re.I)
+
+
+def _priced_offer(res: dict) -> bool:
+    def positive(value):
+        return type(value) in (int, float) and value > 0
+
+    for card in res["cards"]:
+        if card.get("type") == "offer" and positive(card.get("price")):
+            return True
+        if (card.get("type") == "product" and positive(card.get("price_min"))
+                and card["price_min"] == card.get("price_max")):  # не диапазон «от …»
+            return True
+    for event in res["events"]:
+        if event["type"] == "quote" and event.get("url") and positive(event.get("total")):
+            return True
+        if event["type"] == "spec" and any(row.get("status") == "точно" and row.get("name") and positive(row.get("price"))
+                                           for row in event.get("rows", [])):
+            return True
+    return any(re.search(r'[1-9]', m['price']) for m in _TEXT_OFFER.finditer(res["reply"]))
+
+
+_RUN_TIMING = "eval_run_to_output_seconds"
+_TIMING_SCOPE = ("Замер прогона от начала кейса до выдачи ответа из run_turn. Это не время в браузере "
+                 "пользователя и не замер на клиенте или стенде. При bridge включено ожидание эмулятора моста.")
+
+
 def play(case: dict) -> dict:
     """Проигрывает один кейс и возвращает переписку со следом шагов."""
     sid, turns, started = None, [], time.time()
+    timing = {"scope": _TIMING_SCOPE, "provider": config.LLM_PROVIDER, "first_reply": None, "first_priced_offer": None}
+    start = time.monotonic()
     for text in case["turns"]:
         res = loop.run_turn(sid, text, client_id="eval-" + case["id"])
+        elapsed = time.monotonic() - start
+        document = any(e["type"] == "quote" and e.get("url") or e["type"] == "spec" and e.get("rows")
+                       for e in res["events"])
+        if timing["first_reply"] is None and (res["reply"].strip() or res["cards"] or res["choices"] or document):
+            timing["first_reply"] = elapsed
+        if timing["first_priced_offer"] is None and _priced_offer(res):
+            timing["first_priced_offer"] = elapsed
         sid = res["session_id"]
         turns.append({"user": text, "reply": res["reply"], "cards": res["cards"], "choices": res["choices"],
                       "events": res["events"], "usage": res["usage"],
@@ -228,7 +272,7 @@ def play(case: dict) -> dict:
     seconds = store.db().execute("SELECT SUM(seconds) FROM steps WHERE session_id=? AND kind='llm'",
                                  (sid,)).fetchone()[0] or 0.0
     return {"id": case["id"], "session_id": sid, "turns": turns, "model_seconds": round(seconds, 1),
-            "wall_seconds": round(time.time() - started, 1)}
+            "wall_seconds": round(time.time() - started, 1), _RUN_TIMING: timing}
 
 
 def _catalog_price(offer_id) -> float | None:
@@ -385,6 +429,8 @@ def merge(cases: list[dict], dirs: list[str], out: Path):
             for raw in f.read_text(encoding="utf-8").splitlines():
                 run = json.loads(raw)
                 runs[run["id"]] = {k: run[k] for k in ("id", "session_id", "turns", "model_seconds", "wall_seconds")}
+                if _RUN_TIMING in run:  # Старые записи не содержат замера; не восстанавливаем его из wall/model.
+                    runs[run["id"]][_RUN_TIMING] = run[_RUN_TIMING]
     rows = [judge(by_id[i], runs[i]) for i in sorted(runs)]
     out_dir = out / msk("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -413,6 +459,23 @@ def outcome_rows(title: str, got: dict) -> list[str]:
             f"| {title}: лишнее вырезал код | {got['cut']} |"]
     old = [f"| {title}: исход не записан (прогон до 26.11.2026) | {got['unknown']} |"] if got["unknown"] else []
     return rows + old
+
+
+def _timing_rows(rows: list[dict]) -> list[str]:
+    lines = ["", "## Время прогона до выдачи ответа", "", _TIMING_SCOPE, "",
+             "| От начала кейса до первой выдачи | Среднее / медиана по источнику (замеров из всех кейсов) |", "|---|---|"]
+    for key, label in (("first_reply", "Клиентская реплика, включая уточнение"),
+                       ("first_priced_offer", "Распознанный вариант с конкретной ценой")):
+        samples = {}
+        for row in rows:
+            timing = row["run"].get(_RUN_TIMING, {})
+            if timing.get(key) is not None:
+                samples.setdefault(timing["provider"], []).append(timing[key])
+        parts = [f"{provider}: {statistics.mean(values):.2f} / {statistics.median(values):.2f} с ({len(values)} из {len(rows)})"
+                 for provider, values in sorted(samples.items())]
+        value = "; ".join(parts) if parts else f"нет замера (0 из {len(rows)})"
+        lines.append(f"| {label} | {value} |")
+    return lines
 
 
 def report(rows: list[dict], out_dir: Path):
@@ -453,7 +516,10 @@ def report(rows: list[dict], out_dir: Path):
              f"| Срабатываний проверки цен | {price_guard['fired']} |",
              *outcome_rows("Проверка цен", price_guard),
              f"| Срабатываний проверки скидки | {discount_guard['fired']} |",
-             *outcome_rows("Проверка скидки", discount_guard),
+             *outcome_rows("Проверка скидки", discount_guard), "",
+             "Без передачи — не разбивка закрытий по критерию трека. Чистый автоответ и КП с одним подтверждением "
+             "менеджера учитываются в треке раздельно; подтверждения КП этот счётчик не измеряет.",
+             *_timing_rows(rows),
              "", "## По проверкам", "", "| Проверка | Прошло | Не прошло | Не относится |", "|---|---|---|---|"]
     names = list(dict.fromkeys(k for r in rows for k in r["checks"]))
     for k in names:

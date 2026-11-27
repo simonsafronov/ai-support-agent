@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS handoffs(
 CREATE TABLE IF NOT EXISTS quotes(
   id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, ts REAL, number TEXT, customer TEXT, items_json TEXT,
   total REAL, file TEXT);
+CREATE TABLE IF NOT EXISTS invoices(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, ts REAL, number TEXT UNIQUE, data_json TEXT,
+  status TEXT DEFAULT 'draft', issued_at REAL, issued_by TEXT);
 CREATE TABLE IF NOT EXISTS answers(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, handoff_id INT, session_id TEXT, question TEXT, answer TEXT,
   teach INT DEFAULT 0);
@@ -339,7 +342,7 @@ def drop_session(session_id: str):
         # отметка о черновике, отправленном в Telegram, уходит вместе с черновиком
         con.execute("DELETE FROM tg_drafts WHERE draft_id IN (SELECT id FROM drafts WHERE session_id=?)",
                     (session_id,))
-    for table in ("messages", "steps", "handoffs", "quotes", "drafts"):
+    for table in ("messages", "steps", "handoffs", "quotes", "drafts", "invoices"):
         con.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
     con.execute("DELETE FROM sessions WHERE id=?", (session_id,))
     con.commit()
@@ -362,6 +365,48 @@ def update_quote(quote_id: int, customer: str, items: list[dict], total: float):
     db().execute("UPDATE quotes SET ts=?, customer=?, items_json=?, total=? WHERE id=?",
                  (time.time(), customer, _j(items), total, quote_id))
     db().commit()
+
+
+def _invoice(row) -> dict | None:
+    if row is None:
+        return None
+    inv = dict(row)
+    inv["data"] = json.loads(inv.pop("data_json") or "{}")
+    return inv
+
+
+def invoice(invoice_id: int) -> dict | None:
+    return _invoice(db().execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone())
+
+
+def invoice_by_number(number: str) -> dict | None:
+    return _invoice(db().execute("SELECT * FROM invoices WHERE number=?", (number,)).fetchone())
+
+
+def last_invoice(session_id: str) -> dict | None:
+    return _invoice(db().execute("SELECT * FROM invoices WHERE session_id=? ORDER BY id DESC LIMIT 1",
+                                 (session_id,)).fetchone())
+
+
+def add_invoice(session_id: str, number: str, data: dict) -> int:
+    cur = db().execute("INSERT INTO invoices(session_id, ts, number, data_json) VALUES(?,?,?,?)",
+                       (session_id, time.time(), number, _j(data)))
+    db().commit()
+    return cur.lastrowid
+
+
+def update_invoice(invoice_id: int, data: dict):
+    db().execute("UPDATE invoices SET ts=?, data_json=? WHERE id=? AND status='draft'",
+                 (time.time(), _j(data), invoice_id))
+    db().commit()
+
+
+def issue_invoice(invoice_id: int, who: str) -> bool:
+    """Проект становится выставленным счетом один раз: повтор нажатия ничего не меняет."""
+    cur = db().execute("UPDATE invoices SET status='issued', issued_at=?, issued_by=? WHERE id=? AND status='draft'",
+                       (time.time(), who[:60], invoice_id))
+    db().commit()
+    return cur.rowcount == 1
 
 
 def previous_session(client_id: str, exclude: str) -> dict | None:
@@ -388,7 +433,8 @@ def purge(days: int) -> int:
     old = [r[0] for r in con.execute("SELECT id FROM sessions WHERE updated_at<?", (time.time() - days * 86400,))]
     for sid in old:
         # в PDF черновика название компании и ИНН клиента: файл уходит вместе с диалогом
-        for (number,) in con.execute("SELECT number FROM quotes WHERE session_id=?", (sid,)).fetchall():
+        for (number,) in con.execute("SELECT number FROM quotes WHERE session_id=? UNION ALL "
+                                     "SELECT number FROM invoices WHERE session_id=?", (sid, sid)).fetchall():
             (config.QUOTES_DIR / f"{number}.pdf").unlink(missing_ok=True)
         drop_session(sid)
     if old:  # прежние версии страниц с удаленным текстом лежат в журнале WAL: переносим его в базу и обнуляем

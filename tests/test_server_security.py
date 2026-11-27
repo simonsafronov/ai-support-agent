@@ -48,28 +48,28 @@ def quote(monkeypatch, offer, client_id="buyer") -> dict:
 
 @pytest.mark.needs_data
 def test_shared_manager_answer_does_not_carry_client_data(monkeypatch):
-    first = loop.run_turn(None, "ООО Ромашка ИНН 7707083893, Иванов Петр, тел. +7 916 123-45-67: можно ли постоплату "
+    first = loop.run_turn(None, "ООО Ромашка ИНН 7707083893, Иванов Петр, тел. +7 916 123-45-67: как получить документы "
                                 "за лицензии?", client_id="a", llm=Scripted([
-        {"name": "handoff_to_manager", "args": {"reason": "просит постоплату",
-                                                "summary": "ООО Ромашка, Иванов Петр просит постоплату за лицензии"}},
+        {"name": "handoff_to_manager", "args": {"reason": "просит документы",
+                                                "summary": "ООО Ромашка, Иванов Петр просит документы за лицензии"}},
         "Передал вопрос менеджеру."]))
     hid = store.open_handoff(first["session_id"])["id"]
-    said = "Постоплаты в магазине нет, оплата по счету до отгрузки. Иванову на ivanov@romashka.example написал."
+    said = "Закрывающие документы доступны в личном кабинете. Иванову на ivanov@romashka.example написал."
     r = client.post(f"/api/admin/handoff/{hid}/answer", headers=KEY, json={"answer": said, "teach": True})
     assert r.status_code == 200 and r.json()["teach"]
     # сам клиент видит ответ менеджера как есть
     mine = client.get(f"/api/session/{first['session_id']}?client_id=a").json()["messages"][-1]
     assert mine["from"] == "manager" and "ivanov@romashka.example" in mine["content"]
     # второй клиент спрашивает о том же: агент получает ответ менеджера без вопроса и данных первого клиента
-    out = tools.call(tools.ToolContext("other"), "kb_search", {"query": "можно ли постоплату за лицензии"})
+    out = tools.call(tools.ToolContext("other"), "kb_search", {"query": "как получить документы за лицензии"})
     learned = json.dumps(out["manager_answers"], ensure_ascii=False)
-    assert "Постоплаты в магазине нет" in learned and "question" not in out["manager_answers"][0]
+    assert "Закрывающие документы доступны в личном кабинете" in learned and "question" not in out["manager_answers"][0]
     for secret in ("7707083893", "Ромашка", "Иванов Петр", "916", "ivanov@"):
         assert secret not in learned
     # и в поток, который уходит в браузер второго клиента, они тоже не попадают
-    reply, raw = chat(monkeypatch, [{"name": "kb_search", "args": {"query": "можно ли постоплату за лицензии"}},
-                                    "Постоплаты нет, оплата по счету."], message="Можно ли постоплату?", client_id="b")
-    assert reply["reply"].startswith("Постоплаты нет")
+    reply, raw = chat(monkeypatch, [{"name": "kb_search", "args": {"query": "как получить документы за лицензии"}},
+                                    "Документы доступны в личном кабинете."], message="Как получить документы за лицензии?", client_id="b")
+    assert reply["reply"].startswith("Документы доступны")
     for secret in ("7707083893", "Ромашка", "Иванов", "ivanov@", "916 123"):
         assert secret not in raw
     stored = [dict(r) for r in store.db().execute("SELECT question, answer FROM answers")]

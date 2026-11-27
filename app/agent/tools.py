@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from app import config, store
 from app.catalog import cards, search as catalog
 from app.kb import answers, search as kb
-from app.quote import kp
+from app.quote import delivery as invoice_delivery, kp
 
 
 @dataclass
@@ -18,6 +18,13 @@ class ToolContext:
     session_id: str
     facts: dict = field(default_factory=dict)
     events: list = field(default_factory=list)  # что показать оператору и интерфейсу: КП, передача менеджеру
+    exact_products: dict[str, str] = field(default_factory=dict, init=False)  # для условий с карточки в этом ходе
+    checked_help: bool = field(default=False, init=False)
+    user_request: str = ""  # текущий ход: просьба об отсрочке сама по себе не даёт основания менять цену
+
+    def deferral_without_discount(self) -> bool:
+        return bool(re.search(r"отсрочк|постоплат|оплат\w* после (?:поставки|получения|отгрузки)", self.user_request, re.I)
+                    and not re.search(r"скидк|дисконт|дешевле|снизить цену", self.user_request, re.I))
 
 
 def _obj(properties: dict, required: list[str] | None = None) -> dict:
@@ -33,7 +40,13 @@ def _search_products(ctx, query: str, vendor: str = "", only_available: bool = F
         p["about"] = cards.about(p["product_id"], p.get("url"), limit=ABOUT_IN_SEARCH, fetch=False)
     first = (res.get("products") or [None])[0]
     if first and res.get("match") == "all" and res.get("total", 0) <= 2:
-        # продукт найден однозначно: его варианты отдаются сразу, второй вызов модели на get_product не нужен
+        # Это сокращение для подбора вариантов, само по себе не доказательство совпадения карточки.
+        title = first["title"].casefold()
+        identifiers = {title, f"{first.get('vendor', '')} {title}".strip().casefold(),
+                       (first.get("offer_hit") or {}).get("vendor_code", "").casefold()}
+        name = query.strip().casefold()
+        if res.get("total") == 1 and name and name in identifiers:
+            ctx.exact_products[str(first["product_id"])] = name
         top = catalog.get_product(first["product_id"], limit=4)
         res["first_product"] = {"product_id": first["product_id"], **{k: top[k] for k in (
             "matching", "facets", "clarify", "offers", "delivery", "shown", "all_matching") if top.get(k)}}
@@ -48,7 +61,35 @@ def _with_answers(res: dict, query: str) -> dict:
     return res
 
 
-def _get_product(ctx, product_id: str, quantity: int | None = None, **filters):
+def _named_by_buyer(ctx, name: str) -> bool:
+    """Повторный поиск полного названия, взятого лишь из нечеткой выдачи, не подтверждает товар."""
+    if not name:
+        return False
+    mention = re.compile(r"(?<!\w)" + re.escape(name) + r"(?!\w)", re.I)
+    return bool(mention.search(ctx.user_request)) or any(
+        m["role"] == "user" and mention.search(m["content"]) for m in store.messages(ctx.session_id, limit=12))
+
+
+def _get_product(ctx, product_id: str, quantity: int | None = None, card_section: str = "", **filters):
+    if card_section:
+        if card_section not in ("licensing", "requirements"):
+            return {"error": "Неизвестный раздел карточки."}
+        if not ctx.checked_help or not _named_by_buyer(ctx, ctx.exact_products.get(str(product_id), "")):
+            return {"error": "Сначала проверьте kb_search и найдите конкретный товар через search_products "
+                             "по полному названию или артикулу клиента. Неоднозначно: уточните товар."}
+        if filters or quantity:
+            return {"error": "Карточка относится к продукту, не к отфильтрованным вариантам. "
+                             "Редакцию и условия сверяйте по самому тексту карточки."}
+        res = catalog.get_product(str(product_id), limit=0)
+        product = res.get("product")
+        if not product:
+            return res
+        text = cards.terms(str(product_id), product.get("url"), card_section)
+        out = {"product_id": str(product_id), "title": product["title"]}
+        if text:
+            return {**out, card_section: text}
+        return {**out, "note": "Полного текста этого раздела нет. Не додумывайте условия."}
+
     filters = {k: v for k, v in filters.items()
                if v is not None and v != "" and v is not False and (v != 0 or k == "term_months")}
     if quantity:  # одно число на все виды ступеней: комплект на N пользователей, диапазон узлов, объем покупки
@@ -67,11 +108,16 @@ def _find_analogs(ctx, product_id: str, russian_only: bool = True):
     return catalog.find_analogs(str(product_id), russian_only=russian_only, limit=6)
 
 
-def _kb_search(ctx, query: str):
-    res = kb.kb_search(query, limit=6)
+def _kb_search(ctx, query: str, buyer_help: bool = False):
+    res = kb.kb_search(query, limit=6, buyer_help=True) if buyer_help else kb.kb_search(query, limit=6)
+    ctx.checked_help = bool(query.strip()) and "error" not in res
     for r in res.get("results", []):
         r["snippet"] = r["snippet"][:700]
         r.pop("score", None)
+    if buyer_help:
+        if not res.get("results"):
+            res["note"] = "Без безопасного шага в справке передайте вопрос менеджеру."
+        return res  # прошлый ответ о чужом заказе не служит инструкцией
     return _with_answers(res, query)
 
 
@@ -117,6 +163,8 @@ def save_facts(ctx, facts: dict, from_model: bool = False) -> dict:
         if from_model and key in MODEL_CANNOT_SET:
             continue
         if from_model and key == "скидка":
+            if ctx.deferral_without_discount():
+                continue
             number = re.search(r"\d+(?:[.,]\d+)?", v)
             given = kp.allowed_discount(number.group().replace(",", ".")) if number else 0
             if not given:
@@ -144,17 +192,16 @@ def _contact(ctx, given: str) -> str:
 
 def _discount(ctx, asked) -> float:
     """Скидка расчета: названная в вызове либо уже данная клиенту в этом диалоге, в пределах полномочий агента."""
-    given = kp.allowed_discount(asked or str(ctx.facts.get("скидка", "0")).rstrip("% "))
+    percent, _ = kp.discount_arg(asked or ctx.facts.get("скидка", "0"))
+    given = kp.allowed_discount(percent)
     if given:
         save_facts(ctx, {"discount": f"{float(given):g}%"})
     return float(given)
 
 
 def _over_limit(asked) -> str:
-    try:
-        over = float(asked or 0) > config.AGENT_DISCOUNT_MAX
-    except (TypeError, ValueError):
-        over = False
+    percent, _ = kp.discount_arg(asked)
+    over = percent > config.AGENT_DISCOUNT_MAX
     return (f"Сами вы даете не больше {config.AGENT_DISCOUNT_MAX:g}%: посчитано с этой скидкой, скидку больше "
             "согласует менеджер, передайте ему запрос.") if over else ""
 
@@ -174,6 +221,8 @@ def _calc_total(ctx, items: list[dict], discount_percent: float = 0):
             return {"error": tier[0].upper() + tier[1:] + "."}
         line = {"offer_id": o["offer_id"], "name": o["name"], "qty": qty, "price": price,
                 "sum": round(price * qty, 2) if price else None}
+        if o.get("available") is False:
+            line.update(available=False, availability_note=kp.FEED_UNAVAILABLE)
         if price and discount:  # цена со скидкой считается так же, как в КП: до копейки, затем на количество
             cut = float(kp.discounted(kp.Decimal(str(price)), kp.Decimal(str(discount))))
             line.update(price_with_discount=cut, sum_without_discount=line["sum"], sum=round(cut * qty, 2))
@@ -269,6 +318,17 @@ def _handoff(ctx, reason: str, summary: str, contact: str = ""):
                        else ", и попросите почту или телефон для связи.")}
 
 
+def _make_invoice(ctx):
+    if not invoice_delivery.requested(ctx.session_id):
+        return {'ok': False, 'error': 'Учебный счёт выдаётся только по явной просьбе покупателя об образце.'}
+    result = invoice_delivery.publish(ctx.session_id, 'agent')
+    if result.get('customer_missing'):
+        return {'ok': False, 'customer_missing': result['customer_missing']}
+    if not (result['ok'] or result.get('already_sent')):
+        return {'ok': False, 'error': result['detail']}
+    return {'ok': True, 'status': 'issued', 'note': 'Учебный PDF доступен покупателю в этом чате. Не для оплаты; заказ не создан.'}
+
+
 TOOLS = [
     {"name": "search_products", "handler": _search_products,
      "description": "Поиск продуктов в каталоге магазина по названию, вендору или задаче. Возвращает продукты "
@@ -279,7 +339,7 @@ TOOLS = [
          "query": {"type": "string", "description": "только название продукта, вендор, артикул или тип ПО в "
                    "нормальном написании: без приветствий, количества и слов 'цена', 'лицензия', 'купить'"},
          "vendor": {"type": "string", "description": "вендор, если клиент его назвал"},
-         "only_available": {"type": "boolean", "description": "только то, что можно купить сейчас по цене из каталога"},
+         "only_available": {"type": "boolean", "description": "только варианты с отметкой наличия в фиде (для КП фильтр не обязателен)"},
          "russian_only": {"type": "boolean", "description": "только российские вендоры и реестр отечественного ПО"},
          "category_id": {"type": "integer", "description": "искать внутри категории (id из browse_categories)"},
          "product_type": {"type": "string", "enum": ["софт", "электроника"]},
@@ -292,6 +352,10 @@ TOOLS = [
                     "несколько цен. Вызывайте после search_products и повторно, когда клиент ответил на уточнение.",
      "parameters": _obj({
          "product_id": {"type": "string", "description": "id продукта из search_products"},
+         "card_section": {"type": "string", "enum": ["licensing", "requirements"],
+                          "description": "Только если каталог и kb_search не дали прямого ответа и продукт точно "
+                                         "определен. Вернет текст вкладки о лицензировании или системных требованиях "
+                                         "вместо вариантов. Не сочетайте с фильтрами."},
          "quantity": {"type": "integer", "description": "сколько нужно клиенту: пользователей, рабочих мест, "
                       "устройств, узлов или лицензий. Останутся комплекты и ступени цены под это количество"},
          "term_months": {"type": "integer", "description": "срок лицензии в месяцах, 0 = бессрочная"},
@@ -323,9 +387,12 @@ TOOLS = [
     {"name": "kb_search", "handler": _kb_search,
      "description": "База знаний магазина: доставка и получение лицензий, оплата, НДС, документы, возврат, "
                     "сроки, условия для юрлиц и физлиц, личный кабинет, акции. Отвечайте на такие вопросы только "
-                    "по ней.",
+                    "по ней. После покупки сначала найдите безопасные шаги для покупателя; инструмент не "
+                    "проверяет конкретный заказ и не оформляет возврат.",
      "parameters": _obj({"query": {"type": "string", "description": "тема существительными, как в справке: "
-                                   "'доставка электронной лицензии', 'способы оплаты', 'закрывающие документы'"}},
+                                   "'доставка электронной лицензии', 'способы оплаты', 'закрывающие документы'"},
+                         "buyer_help": {"type": "boolean", "description": "true для безопасной инструкции после покупки: "
+                                        "только справка покупателя, без API и чужих обращений"}},
                         ["query"])},
     {"name": "calc_total", "handler": _calc_total,
      "description": "Посчитать стоимость: цена варианта на количество и итог по позициям одной покупки. Любую "
@@ -337,11 +404,11 @@ TOOLS = [
                    "items": _obj({"offer_id": {"type": "integer"}, "qty": {"type": "integer"}},
                                  ["offer_id", "qty"])},
          "discount_percent": {"type": "number", "description": "скидка в процентах, только когда клиент сам попросил "
-                              "скидку или отсрочку; сами вы даете до 5, больше согласует менеджер"},
+                              "скидку; до 5 включительно без купона. Отсрочку не заменяйте скидкой"},
      }, ["items"])},
     {"name": "make_quote", "handler": _make_quote,
-     "description": "Сформировать черновик коммерческого предложения (PDF по шаблону Softline) для проверки "
-                    "менеджером, когда вариант и количество понятны. В графу «Заказчик» идут название "
+     "description": "Сформировать коммерческое предложение (PDF по шаблону Softline). При известной цене выдайте "
+                    "его клиенту без подтверждения менеджера, когда вариант и количество понятны. В графу «Заказчик» идут название "
                     "организации, ИНН и КПП: передайте те, что клиент назвал, без них черновик тоже формируется. "
                     "Повторный вызов в том же диалоге обновляет тот же черновик.",
      "parameters": _obj({
@@ -353,12 +420,17 @@ TOOLS = [
          "kpp": {"type": "string", "description": "КПП заказчика: 9 знаков, у ИП его нет"},
          "contact": {"type": "string", "description": "почта или телефон клиента"},
          "discount_percent": {"type": "number", "description": "скидка в процентах, только когда клиент сам попросил "
-                              "скидку или отсрочку; сами вы даете до 5, больше согласует менеджер"},
+                              "скидку; до 5 включительно без купона. Отсрочку не заменяйте скидкой"},
      }, ["items"])},
+    {"name": "make_invoice", "handler": _make_invoice,
+     "description": "Только по явной просьбе об учебном образце счета. По проверенным ценам последнего КП автоматически выдаёт PDF только владельцу чата. Поставку не подтверждает. Не для оплаты; вопросы о способах оплаты направляйте в kb_search.",
+     "parameters": _obj({})},
     {"name": "handoff_to_manager", "handler": _handoff,
      "description": "Передать обращение менеджеру: продукта нет в каталоге, клиент просит цену или КП на вариант с ценой "
-                    "по запросу, скидка больше 5%, госзакупка, жалоба, просьба позвать человека; вопрос вне "
-                    "каталога и базы знаний после согласия клиента. В summary кратко: кто клиент, "
+                    "по запросу, отсрочка или постоплата, скидка больше 5%, госзакупка, жалоба, просьба позвать человека; вопрос вне "
+                    "каталога и базы знаний после согласия клиента. После покупки передайте без ожидания согласия, "
+                    "если нет безопасного шага в справке, он не помог или просят персональную проверку либо "
+                    "оформление возврата. В summary кратко: кто клиент,"
                     "что нужно, что уже подобрано. На диалог хватает одного вызова: контакт и новые детали, "
                     "которые клиент сообщит после передачи, менеджер увидит в карточке обращения сам.",
      "parameters": _obj({
@@ -447,6 +519,9 @@ def call(ctx: ToolContext, name: str, args: dict) -> dict:
     if tool is None:
         return {"error": f"нет инструмента {name}", "available": list(BY_NAME)}
     allowed, args = tool["parameters"]["properties"], dict(args or {})
+    if name in ("calc_total", "make_quote") and args.get("discount_percent") and ctx.deferral_without_discount():
+        return {"error": "Клиент просил отсрочку, а не скидку. Передайте просьбу менеджеру через handoff_to_manager; "
+                         "для расчёта повторите вызов без новой скидки."}
     for alias, to in ALIASES.get(name, {}).items():  # имя измерения из facets и clarify самого ответа каталога
         if alias in args and to not in args:
             args[to] = args[alias]

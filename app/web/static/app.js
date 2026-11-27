@@ -29,14 +29,14 @@ const starters = $("starters");  // подсказки живут в журна�
 const TOOL = {
   search_products: "Поиск в каталоге", get_product: "Варианты лицензий", browse_categories: "Категории каталога",
   find_analogs: "Аналоги", kb_search: "База знаний", note_facts: "Память о клиенте", calc_total: "Расчет суммы",
-  make_quote: "Черновик КП", match_spec: "Сверка списка с каталогом",
+  make_quote: "Черновик КП", make_invoice: "Учебный счёт", match_spec: "Сверка списка с каталогом",
   handoff_to_manager: "Передача менеджеру",
 };
 const WAIT = {
   search_products: "Ищу в каталоге", get_product: "Сверяю варианты лицензий", browse_categories: "Смотрю категории",
   find_analogs: "Подбираю аналоги", kb_search: "Смотрю базу знаний", note_facts: "Записываю детали",
   calc_total: "Считаю сумму", match_spec: "Сверяю список с каталогом",
-  make_quote: "Готовлю КП", handoff_to_manager: "Передаю менеджеру",
+  make_quote: "Готовлю КП", make_invoice: "Готовлю учебный счёт", handoff_to_manager: "Передаю менеджеру",
 };
 // подписи аргументов в «Ходе работы»: что не названо здесь (номера, контакты, сводка), клиенту не показывается
 const ARG = {
@@ -97,11 +97,11 @@ function card(c) {
   const go = url ? `<a class="go" href="${esc(url)}" target="_blank" rel="noopener">Открыть в магазине</a>` : "";
   if (c.type === "offer") {
     const d = c.details && typeof c.details === "object" ? Object.entries(c.details) : [];
-    const pick = "Беру: " + title + (c.vendor_code ? ", артикул " + c.vendor_code : "");  // по артикулу агент найдет именно этот вариант
+    const pick = (c.available === false ? "Выбираю для расчёта: " : "Беру: ") + title + (c.vendor_code ? ", артикул " + c.vendor_code : "");  // по артикулу агент найдет именно этот вариант
     return `<div class="v">${esc(c.vendor || "")}</div><div class="t">${esc(title)}</div>
       ${d.length ? `<div class="d">${d.map(([k, v]) => esc(k) + ": " + esc(v)).join(" · ")}</div>` : ""}
       <div class="row"><div>${c.price ? `<div class="p">${rub(c.price)}</div>` : `<div class="p req">Цена по запросу</div>`}
-      <span>${[c.vendor_code ? "Артикул " + esc(c.vendor_code) : "", c.available ? '<span class="badge">в продаже</span>' : ""].filter(Boolean).join(" · ")}</span></div>
+      <span>${[c.vendor_code ? "Артикул " + esc(c.vendor_code) : "", c.available ? '<span class="badge">в продаже</span>' : c.available === false ? 'По фиду: нет в наличии' : "", c.price_to_confirm ? "Цену подтвердит менеджер" : ""].filter(Boolean).join(" · ")}</span></div>
       <span class="acts"><button type="button" class="take" data-say="${esc(pick)}">Выбрать</button>${go}</span></div>`;
   }
   let price = "Цена по запросу";
@@ -179,6 +179,10 @@ function showReply(r, restoring = false) {
   for (const e of r.events || []) {
     if (e.type === "spec") add("card spec", specTable(e));
     if (e.type === "quote") quote(e);
+    if (e.type === "demo_invoice" && (r.from === "manager" || r.from === "agent") && /^\/api\/session\/[\w-]+\/invoices\/\d+\.pdf$/.test(e.url)) {
+      add("card doc", `<div class="t">Демонстрационный счёт</div><div class="row"><span>Не для оплаты</span>
+        <span class="acts"><a class="go" href="${esc(e.url)}" target="_blank" rel="noopener">Открыть PDF</a></span></div>`);
+    }
     if (e.type === "handoff") {
       add("msg sys", Number.isInteger(e.sla_minutes)
         ? `Обращение № ${esc(e.id)} у менеджера. В рабочее время отвечаем в течение ${e.sla_minutes} мин, ответ придет в этот чат.`
@@ -289,7 +293,7 @@ async function send(message) {
   message = (message || "").trim();
   if (!message || state.busy) return;
   const gen = state.gen, ctrl = state.ctrl = new AbortController();
-  let idle = setTimeout(() => ctrl.abort(), IDLE_MS), got = false;
+  let idle = setTimeout(() => ctrl.abort(), IDLE_MS), got = false, invoiceRequested = false;
   lock(true); starters.hidden = true;
   document.querySelectorAll(".choices").forEach((e) => e.remove());
   document.querySelectorAll(".msg.user.failed").forEach((e) => { if (e.textContent === message) e.remove(); });
@@ -303,6 +307,7 @@ async function send(message) {
     const ev = JSON.parse(line);
     if (ev.type === "session") saveSession(ev.session_id, gen);
     else if (ev.type === "tool") {
+      if (ev.name === "make_invoice") invoiceRequested = true;
       typing.querySelector("span").textContent = WAIT[ev.name] || "Работаю";
       pending.push(step("", TOOL[ev.name] || "Шаг агента", ev.args, "", ev.name));
     } else if (ev.type === "reply") {
@@ -351,6 +356,7 @@ async function send(message) {
   }
   if (gen !== state.gen) return;
   state.ctrl = null; lock(false); $("t").focus();
+  if (invoiceRequested) answersPoll();  // cookie выдаётся вместе с вложением, не ждём следующего таймера
 }
 
 // Клиент сам переключается на менеджера: модель для этого не нужна
@@ -435,9 +441,11 @@ async function answersPoll() {
     for (const m of found) {
       if (m.id <= state.seen) continue;
       state.seen = state.last = Math.max(state.last, m.id);
-      document.querySelectorAll("#log .msg.review").forEach((e) => e.remove());  // проверка закончилась
-      showReply(m.reviewed ? { ...m, reply: m.content } : { reply: m.content, from: "manager" });
-      step("turn", m.reviewed ? "Менеджер проверил и отправил ответ" : "Менеджер ответил в чат");
+      if (!(m.events || []).some((e) => e.type === "demo_invoice")) {
+        document.querySelectorAll("#log .msg.review").forEach((e) => e.remove());  // проверка ответа закончилась
+      }
+      showReply({ ...m, reply: m.content, from: m.from || (m.reviewed ? "" : "manager") });
+      step("turn", m.from === "agent" ? "Учебный счёт выдан в чат" : m.reviewed ? "Менеджер проверил и отправил ответ" : "Менеджер ответил в чат");
     }
   } catch (e) { /* связь пропала: спросим на следующем круге */ }
 }
@@ -464,14 +472,14 @@ function history(s) {
   msgs.forEach((m, i) => {
     state.last = m.id;
     if (m.role === "user") { add("msg user", esc(m.content)); if (traced) step("turn", said(m.content)); return; }
-    if (m.from === "manager" || m.reviewed) state.seen = Math.max(state.seen, m.id);  // опрос ответов их не повторит
+    if (m.from === "manager" || m.from === "agent" || m.reviewed) state.seen = Math.max(state.seen, m.id);  // опрос ответов их не повторит
     if (m.from === "manager" && traced) step("turn", "Менеджер ответил в чат");
     trace(m.trace);
     showReply({ reply: m.content, from: m.from, reviewed: m.reviewed, cards: m.cards, events: m.events, choices: i === msgs.length - 1 ? m.choices : [] }, true);
   });
   if (s.review) { trace(s.review.trace); showReply({ review: s.review }, true); }  // ответ на последнюю реплику на проверке
   if (s.usage) meter(s.usage, true);
-  if (s.status) callState(s.status === "handoff" ? (state.seen ? "in" : "wait") : "");  // менеджер мог вернуть диалог агенту
+  if (s.status) callState(s.status === "handoff" ? (s.messages.some((m) => m.from === "manager") ? "in" : "wait") : "");  // менеджер мог вернуть диалог агенту
   scrollEnd(); document.fonts?.ready.then(scrollEnd);  // шрифт догрузился и переверстал строки: журнал снова внизу
 }
 
