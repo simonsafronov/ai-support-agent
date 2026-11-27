@@ -15,6 +15,7 @@ UNAVAILABLE = kp.FEED_UNAVAILABLE + '. Поставка требует подт�
 
 
 def bind_search(items, offers, product_id=None):
+    items.pop('consult', None)  # a new router search must not inherit the former product's constraints
     items['compact_product_id'] = product_id
     items.pop('compact_filter_qty', None)
     items['compact_offers'] = offers[:3]
@@ -102,6 +103,7 @@ def handle(ctx, items, tool, render_catalog):
         if not items['compact_offers']: return 'В этом продукте по указанному количеству вариантов не найдено.'
         return render_catalog(dict(products=[out['product']], total=1, match='all', first_product=out)) + f' Количество {qty} сохранено; выберите артикул.'
     if qty_only and selected:
+        items.pop('consult', None)  # an explicit order quantity supersedes inferred role counts
         qty = int(qty_only['count'])
     else:
         pick = PICK.fullmatch(raw)
@@ -109,10 +111,12 @@ def handle(ctx, items, tool, render_catalog):
         candidates = [o for o in offers if o.get('vendor_code') and o['vendor_code'].casefold()==pick['sku'].casefold()]
         if len(candidates)!=1:
             if pick['verb']:
+                items.pop('consult', None)
                 for key in ('compact_selected','compact_qty','compact_lines','compact_pending_quote'): items.pop(key,None)
                 return 'Не могу однозначно выбрать этот артикул среди показанных. Уточните позицию.'
             return None
         selected = candidates[0]
+        items.pop('consult', None)  # an explicit variant replaces the provisional recommendation
         if (pick['verb'] or '').lower() not in ('добавьте','добавить'):
             items['compact_lines'] = []
         items['compact_selected'] = selected

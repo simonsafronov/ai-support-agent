@@ -4,8 +4,11 @@ import re
 from urllib.parse import urlsplit
 
 from app import config, store
-from app.agent import compact_order, tools
-from app.agent.compact_knowledge import buyer_terms, fits_buyer, learned_reply, without_manager_answers
+from app.agent import compact_order, consult, tools
+from app.agent.compact_knowledge import (
+    buyer_procedure, buyer_terms, choosing_software, fits_buyer, learned_reply,
+    support_followup, without_manager_answers,
+)
 from app.quote import kp
 
 CONTRACT = ('Route a software shop customer request. Return ONLY JSON: '
@@ -120,7 +123,7 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
     history = [m['content'] for m in store.messages(sid, limit=12) if m['role']=='user']
     trace, usage = [], dict(prompt_tokens=0, completion_tokens=0, llm_calls=0, tool_calls=0)
 
-    def tool(name, args, *, buyer_question=None):
+    def tool(name, args, *, buyer_question=None, product_filter=None):
         visible = args if name != 'handoff_to_manager' else {'reason':args['reason']}
         emit({'type':'tool','name':name,'args':visible})
         out = without_manager_answers(tools.call(ctx,name,args))
@@ -128,6 +131,8 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
             # The widget also renders sources from the tool trace, live and on reload.
             out = {**out, 'results': [r for r in out.get('results', [])
                                       if not out.get('note') and fits_buyer(r, buyer_question)]}
+        if product_filter is not None:
+            out = {**out, 'results':[r for r in out.get('results',[]) if not out.get('note') and product_filter(r)]}
         store.add_step(sid,turn,'tool',name,visible,out)
         trace.append(dict(kind='tool',name=name,input=visible,output=out)); usage['tool_calls'] += 1
         return out
@@ -146,21 +151,43 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
         if company: value = value.replace(company, '[покупатель]')
         return compact_order.COMPANY.sub('[организация]', value)
 
+    def buyer_help(question, search_text):
+        out = tool('kb_search', dict(query=search_text, buyer_help=True), buyer_question=question)
+        return learned_reply(question, out) or help_reply(out)
+
     request = safe(raw) if len(raw) <= 800 else ''
+    previous_user = safe(history[-2]) if len(history)>1 else ''
+    explicit_action = (consult.QUOTE_ACTION.search(request) or compact_order.QUOTE.fullmatch(request.strip('.! '))
+                       or TOTAL.fullmatch(raw) or compact_order.delivery.requested(sid))
     reply = selection_question(items)
     asks_to_choose = (reply != CLARIFY and re.search(r'\b(?:из (?:этих|них|показанных)|между ними)\b', request, re.I)
                       and re.search(r'\b(?:лучше|выбрать|сравн\w*|предпоч\w*|подойд\w*|отлич\w*)\b', request, re.I))
     last = store.messages(sid,limit=2)
     confirmation = (len(last)==2 and last[0]['role']=='assistant' and last[0]['content']==CONFIRM)
+    proposed = items.pop('consult_confirm_quote', None)
+    quote_confirmation = (proposed and proposed==items.get('compact_lines') and len(last)==2
+                          and last[0]['role']=='assistant' and 'Сформировать черновик только на эту позицию' in last[0]['content'])
     if wants_person(raw) or (confirmation and re.fullmatch(r'\s*да[.! ]*',raw,re.I)):
         reply = handoff()
     elif confirmation and re.fullmatch(r'\s*нет[.! ]*',raw,re.I):
         reply = 'Хорошо, обращение не передаю.'
+    elif quote_confirmation and re.fullmatch(r'\s*(?:да(?:,? сформируйте)?|подтверждаю|сформируйте)[.! ]*',request,re.I):
+        reply = compact_order._quote(items,tool)
+    elif quote_confirmation and re.fullmatch(r'\s*(?:нет|не надо|отмена)[.! ]*',request,re.I):
+        reply = 'Хорошо, черновик КП не создаю.'
+    elif not explicit_action and (followup := support_followup(request, previous_user)):
+        reply = followup
+    elif not explicit_action and buyer_procedure(request):
+        reply = buyer_help(request, request)
+    elif (consult_reply := consult.handle(request, [safe(t) for t in history], items, tool)) is not None:
+        reply = consult_reply
     elif (order_reply := compact_order.handle(ctx, items, tool, catalog_reply)) is not None:
         reply = order_reply
     elif TOTAL.fullmatch(raw):
         reply = total_reply(raw,items.get('compact_offers',[]),tool)
         compact_order.remember_total(items, trace)
+    elif not asks_to_choose and choosing_software(request) and re.search(r'не (?:знаю|понимаю|решил\w*)|затрудняюсь|растерял\w*', request, re.I):
+        reply = learned_reply(request, {'results':[]}) or CLARIFY
     elif buyer_terms(request) and not asks_to_choose and not spent():
         try:
             payload = dict(previous=safe(history[-2])[-120:] if len(history)>1 else '',request=request)
@@ -179,8 +206,7 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
                 items['compact_products'] = [p['title'] for p in out.get('products', [])[:4]] if out.get('match') == 'all' else []
             elif route=='total': reply=total_reply(raw,items.get('compact_offers',[]),tool)
             elif route=='help' and query.strip():
-                out = tool('kb_search',dict(query=query,buyer_help=True), buyer_question=payload['request'])
-                reply = learned_reply(payload['request'], out) or help_reply(out)
+                reply = buyer_help(payload['request'],query)
             elif route=='human': reply=CONFIRM
         except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
             trace.append(dict(kind='error',name='compact',output=type(exc).__name__))

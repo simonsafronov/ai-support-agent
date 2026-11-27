@@ -14,6 +14,7 @@ import json
 import re
 import sqlite3
 import sys
+from urllib.parse import urlsplit
 from functools import lru_cache
 from pathlib import Path
 
@@ -166,11 +167,30 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
+def buyer_source(url: str, source: str, heading: str) -> bool:
+    """The row's label is not provenance. Match the official origin *and* buyer audience."""
+    if not isinstance(url, str) or re.search(r'[\s<>\\%]', url):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if (parts.scheme != 'https' or parts.fragment or (parts.query and not (source == 'store'
+            and re.fullmatch(r'page=[1-9][0-9]*', parts.query))) or '..' in parts.path.split('/')
+            or re.search(r'\b(?:api|seller|vendor)\b', heading, re.I)):
+        return False
+    if source == 'store':
+        return parts.netloc == 'store.softline.ru'
+    return (source == 'docs' and parts.netloc == 'docs.softline.com'
+            and any(parts.path == f'/ru-ru/{section}' or parts.path.startswith(f'/ru-ru/{section}/')
+                    for section in SHOP_DOCS_SECTIONS))
+
+
 def _shop_condition() -> str:
     """SQL-условие «кусок о покупках в магазине»: сам магазин и разделы SHOP_DOCS_SECTIONS без API."""
-    parts = ["d.source = 'store'"]
+    parts = ["(d.source = 'store' AND d.url LIKE 'https://store.softline.ru/%')"]
     for section in SHOP_DOCS_SECTIONS:
-        parts += [f"d.url = '{DOCS_BASE}/{section}'", f"d.url LIKE '{DOCS_BASE}/{section}/%'"]
+        parts.append(f"(d.source = 'docs' AND (d.url = '{DOCS_BASE}/{section}' OR d.url LIKE '{DOCS_BASE}/{section}/%'))")
     return f"({' OR '.join(parts)}) AND c.heading NOT LIKE '%{API_HEADING_MARK}%'"
 
 
@@ -190,7 +210,7 @@ def kb_search(query: str, limit: int = 5, source: str | None = None, db_path: Pa
         return {"query": query, "results": []}
     limit = max(1, min(int(limit), 50))
     sql = (
-        "SELECT d.title, d.url, c.heading, c.text, d.source, "
+        "SELECT d.title, d.url, c.heading, c.text, d.source, d.fetched_at, "
         f"bm25(chunks_fts, {HEADING_WEIGHT}, 1.0) * "
         f"CASE WHEN {_shop_condition()} THEN 1.0 ELSE {OTHER_SERVICE_FACTOR} END AS rank "
         "FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN docs d ON d.id = c.doc_id "
@@ -225,8 +245,9 @@ def kb_search(query: str, limit: int = 5, source: str | None = None, db_path: Pa
             "snippet": best_snippet(text, terms),
             "source": src,
             "score": round(-rank, 4),
+            **({"example": True} if buyer_help and fetched_at in ("fixture", "synthetic") else {}),
         }
-        for title, url, heading, text, src, rank in rows
+        for title, url, heading, text, src, fetched_at, rank in rows
     ]
     return {"query": query, "results": results, **({"note": note} if note else {})}
 
