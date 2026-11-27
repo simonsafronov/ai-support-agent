@@ -403,26 +403,60 @@ _PAYMENT_ONLY = re.compile(
     r"оплата после (?:поставки|получения|отгрузки))(?: (?:на |через )?(?:\d+ )?(?:дней|дня|день|месяц))?[?!. ]*", re.I)
 
 
-def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: str = "", llm=None,
-             on_event=None) -> dict:
-    """Один ход: сообщение клиента -> ответ агента с карточками, кнопками и следом шагов."""
-    if config.COMPACT_LOCAL:
-        from app.agent import compact
-        compact.validate_local()
-    llm = llm or get_llm()
-    emit = on_event or (lambda e: None)
-    s = store.get_session(session_id, client_id, page_url)
-    sid = s["id"]
-    turn = sum(1 for m in store.messages(sid) if m["role"] == "user") + 1
-    store.add_message(sid, "user", text)
-
-    ctx = tools.ToolContext(sid, facts=dict(s["facts"]), user_request=text)
+def buyer_context(s, text):
+    ctx = tools.ToolContext(s["id"], facts=dict(s["facts"]), user_request=text)
     without_requisites, requisites = mask_requisites(text)
     contacts = mask_contacts(without_requisites)[1]  # после реквизитов: ИНН на 9 не должен стать телефоном
     if contacts:  # контакт запоминается кодом: модель видит только метку, менеджер получает настоящий адрес
         tools.save_facts(ctx, {"contact": ", ".join(contacts)})
     if requisites:  # так же кодом запоминаются ИНН и КПП: в графу "Заказчик" они попадут без участия модели
         tools.save_facts(ctx, requisites)
+    return ctx
+
+
+def handoff_receipt(sid, text):
+    """A taken conversation belongs to the operator. Compact queues also accept notes only."""
+    ticket = store.open_handoff(sid)
+    if not ticket or (ticket['status'] == 'new' and not config.COMPACT_LOCAL):
+        return None
+    store.add_message(sid, 'user', text)
+    session = store.get_session(sid)
+    ctx = buyer_context(session, text)
+    if ticket['status'] == 'taken':
+        reply = f"Менеджер принял обращение №{ticket['id']}. Ваше сообщение добавлено в переписку."
+    else:
+        reply = f"Обращение №{ticket['id']} в очереди. Менеджер увидит ваше дополнение и ответит здесь."
+        # For a terse label (including an unknown product), invite context once per ticket.
+        # Don't guess the product, restart a search or ask again after a corrected spelling.
+        items = session['items']
+        if items.get('queue_prompt_ticket') == ticket['id']:
+            reply = f"Дополнение сохранено в обращении №{ticket['id']}. Оно по-прежнему в очереди."
+        elif len(text.split()) <= 4 and ctx.facts == session['facts'] and '?' not in text:
+            reply += ' Можно описать задачу своими словами — точное название программы не обязательно.'
+            items['queue_prompt_ticket'] = ticket['id']
+    store.update_session(sid, facts=ctx.facts, items=session['items'])
+    meta = {'from': 'system', 'cards': [], 'choices': [], 'events': []}
+    store.add_message(sid, 'assistant', reply, meta)
+    return {'session_id': sid, 'reply': reply, 'trace': [], 'handoff_status': ticket['status'], **meta,
+            'usage': dict(prompt_tokens=0, completion_tokens=0, llm_calls=0, tool_calls=0, cost_rub=0)}
+
+
+def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: str = "", llm=None,
+             on_event=None) -> dict:
+    """Один ход: сообщение клиента -> ответ агента с карточками, кнопками и следом шагов."""
+    if config.COMPACT_LOCAL:
+        from app.agent import compact
+        compact.validate_local()
+    emit = on_event or (lambda e: None)
+    s = store.get_session(session_id, client_id, page_url)
+    sid = s["id"]
+    if receipt := handoff_receipt(sid, text):
+        return receipt
+    llm = llm or get_llm()
+    turn = sum(1 for m in store.messages(sid) if m["role"] == "user") + 1
+    store.add_message(sid, "user", text)
+
+    ctx = buyer_context(s, text)
     s["facts"] = dict(ctx.facts)
     if config.COMPACT_LOCAL:
         return compact.run(llm, ctx, turn, emit, for_model, cost_rub, budget_spent, s['items'])

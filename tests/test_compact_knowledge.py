@@ -153,3 +153,28 @@ def test_catalog_trace_projection_preserves_offers_not_answers():
            'manager_answers': [{'answer': HINT}]}
     assert knowledge.without_manager_answers(out) == {'total': 1, 'products': out['products']}
     assert 'manager_answers' in out
+
+
+@pytest.mark.parametrize('question,expected', [
+    ('Не знаю что выбрать', 'задач'),
+    ('Помогите определиться с выбором', 'задач'),
+    ('Как выбрать способ доставки?', 'не нашёл'),
+    ('Как отключить 2FA?', 'не нашёл'),  # right subject, wrong action
+    ('Как включить 2FA?', 'Источник:'),
+    ('Как включить 2FA в личном кабинете?', 'Источник:'),
+])
+def test_buyer_subject_not_router_suggestion(corpus, monkeypatch, question, expected):
+    from app import config
+    from app.agent import loop
+    from app.agent.llm import Scripted
+    for k, v in dict(COMPACT_LOCAL=True, LLM_PROVIDER='openai', LLM_API_KEY='',
+                     LLM_BASE_URL='http://127.0.0.1:18347/v1').items():
+        monkeypatch.setattr(config, k, v)
+    url = 'https://docs.softline.com/ru-ru/id/2fa'
+    corpus(url, 'Как включить 2FA', 'Чтобы включить 2FA, нужно выбрать способ подтверждения входа.')
+    model = Scripted(['{"route":"help","query":"2FA"}'])
+    result = loop.run_turn(None, question, llm=model)
+    assert expected in result['reply'], result['reply']
+    if expected != 'Источник:':
+        assert url not in str(server.public_reply(result))
+        assert url not in str(server.steps_trace(store.steps(result['session_id'])))

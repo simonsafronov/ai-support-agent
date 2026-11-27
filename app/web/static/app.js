@@ -149,10 +149,12 @@ function specTable(e) {
     ${e.total ? `<div class="row"><span>Итого по строкам "точно"</span><span class="sum">${rub(e.total)}</span></div>` : ""}`;
 }
 
-// Кнопка в шапке показывает, что обращение у менеджера: "wait" ждет ответа, "in" менеджер уже ответил
-function callState(s) {
+// Состояние открытого обращения, а не наличие старого ответа менеджера в истории.
+function callState(status) {
   const b = $("call");
-  b.textContent = s === "in" ? "Менеджер в чате" : s === "wait" ? "Менеджер подключится" : "Позвать менеджера";
+  const s = status === "taken" ? "in" : status === "new" ? "wait" : "";
+  b.textContent = s === "in" ? "Менеджер принял обращение" : s === "wait" ? "В очереди к менеджеру" : "Позвать менеджера";
+  $("t").placeholder = s ? "Дополните обращение в этом чате" : "Напишите вопрос";
   b.disabled = !!s; b.dataset.state = s;
 }
 
@@ -166,13 +168,14 @@ function pricesLine() {
 
 function showReply(r, restoring = false) {
   const log = $("log"), start = log.children.length;
-  if (r.reply) {
+  if (r.reply && r.from === "system") {
+    add("msg sys", text(r.reply));
+  } else if (r.reply) {
     const mgr = r.from === "manager";
     const ok = r.reviewed ? '<span class="ok">проверено менеджером</span>' : "";
     // подпись "Менеджер Softline" уже над сообщением; приставка в тексте нужна модели в истории диалога, клиенту нет
     const body = mgr ? String(r.reply).replace(/^Ответ менеджера:\s*/, "") : r.reply;
     add(mgr ? "msg bot mgr" : "msg bot", `<span class="who">${mgr ? "Менеджер Softline" : "ИИ-консультант"}${ok}</span>${text(body)}`);
-    if (mgr) callState("in");
   }
   for (const c of r.cards || []) add("card", card(c)).querySelector(".take")?.addEventListener("click", (e) => send(e.target.dataset.say));
   if ((r.cards || []).some((c) => c.price || c.price_min)) add("fresh", pricesLine());  // пустая строка заполнится, когда придет время с /api/health
@@ -185,11 +188,12 @@ function showReply(r, restoring = false) {
     }
     if (e.type === "handoff") {
       add("msg sys", Number.isInteger(e.sla_minutes)
-        ? `Обращение № ${esc(e.id)} у менеджера. В рабочее время отвечаем в течение ${e.sla_minutes} мин, ответ придет в этот чат.`
+        ? `Обращение № ${esc(e.id)} в очереди. В рабочее время отвечаем в течение ${e.sla_minutes} мин, ответ придет в этот чат.`
         : `Обращение передано менеджеру, номер ${esc(e.id)}`);
-      if (!$("call").dataset.state) callState("wait");
+      if (!$("call").dataset.state) callState("new");
     }
   }
+  if (r.handoff_status) callState(r.handoff_status);
   if (r.review) add("msg sys review", esc(r.review.text));  // режим "ответ проверяет менеджер": срок вместо текста
   if ((r.choices || []).length) {
     const d = add("choices", r.choices.map((c) => `<button type="button">${esc(c)}</button>`).join(""));
@@ -299,8 +303,8 @@ async function send(message) {
   document.querySelectorAll(".msg.user.failed").forEach((e) => { if (e.textContent === message) e.remove(); });
   const mine = add("msg user", esc(message));
   step("turn", said(message));
-  $("say").textContent = "Консультант отвечает";
-  const typing = add("typing", '<i></i><i></i><i></i><span>Думаю</span>');
+  $("say").textContent = $("call").dataset.state ? "Отправляем сообщение" : "Консультант отвечает";
+  const typing = add("typing", '<i></i><i></i><i></i><span>Отправляем…</span>');
   typing.setAttribute("aria-hidden", "true");
   const pending = [];
   const handle = (line) => {
@@ -378,7 +382,6 @@ async function call() {
     saveSession(ev.session_id, gen);
     step("turn", "Клиент нажал: позвать менеджера");
     showReply(ev);
-    if (!$("call").dataset.state) callState("wait");
   } catch (e) {
     if (gen !== state.gen) return;
     add("msg sys", "Не удалось позвать менеджера: " + (e instanceof TypeError ? "нет связи" : esc(e.message)) + ". Нажмите еще раз.");
@@ -437,7 +440,7 @@ async function answersPoll() {
     const r = await fetch(`/api/session/${encodeURIComponent(state.session)}/answers?client_id=${encodeURIComponent(state.client)}&after=${state.seen}`);
     if (!r.ok) return;
     const found = (await r.json()).answers || [];
-    if (gen !== state.gen) return;  // пока шел запрос, клиент начал новый диалог
+    if (gen !== state.gen || state.busy) return;  // новый диалог или начался ход
     for (const m of found) {
       if (m.id <= state.seen) continue;
       state.seen = state.last = Math.max(state.last, m.id);
@@ -447,6 +450,7 @@ async function answersPoll() {
       showReply({ ...m, reply: m.content, from: m.from || (m.reviewed ? "" : "manager") });
       step("turn", m.from === "agent" ? "Учебный счёт выдан в чат" : m.reviewed ? "Менеджер проверил и отправил ответ" : "Менеджер ответил в чат");
     }
+    callState(r.headers.get("X-Handoff-Status"));
   } catch (e) { /* связь пропала: спросим на следующем круге */ }
 }
 setInterval(answersPoll, 4000);
@@ -479,7 +483,7 @@ function history(s) {
   });
   if (s.review) { trace(s.review.trace); showReply({ review: s.review }, true); }  // ответ на последнюю реплику на проверке
   if (s.usage) meter(s.usage, true);
-  if (s.status) callState(s.status === "handoff" ? (s.messages.some((m) => m.from === "manager") ? "in" : "wait") : "");  // менеджер мог вернуть диалог агенту
+  callState(s.handoff_status);
   scrollEnd(); document.fonts?.ready.then(scrollEnd);  // шрифт догрузился и переверстал строки: журнал снова внизу
 }
 
@@ -502,7 +506,8 @@ async function awaitReply(gen) {
       if (gen !== state.gen) return;
       const msgs = s.messages || [];
       if (s.review || (msgs.length && msgs[msgs.length - 1].role !== "user")) { typing.remove(); history(s); return; }
-    } catch (e) { /* связь пропала: спросим на следующем круге */ }
+      callState(r.headers.get("X-Handoff-Status"));
+  } catch (e) { /* связь пропала: спросим на следующем круге */ }
   }
   typing.remove(); add("msg sys", "Ответ не пришел. Отправьте сообщение еще раз.");
 }

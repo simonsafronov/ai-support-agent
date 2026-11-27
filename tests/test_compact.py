@@ -64,3 +64,82 @@ def test_total_needs_shown_sku_and_buyer_quantity():
 def test_refuse_remote(monkeypatch):
     monkeypatch.setattr(config,'LLM_BASE_URL','https://example.invalid/v1')
     with pytest.raises(ValueError): loop.run_turn(None,'Запрос',llm=Scripted([]))
+
+
+@pytest.mark.small_catalog
+def test_selection_question_keeps_shown_variant():
+    model = Scripted(['{"route":"catalog","query":"Kaspersky Endpoint Security"}'])
+    first = loop.run_turn(None, 'Покажите Kaspersky Endpoint Security', llm=model)
+    sid = first['session_id']
+    offer = first['trace'][0]['output']['first_product']['offers'][0]
+    sku = offer['vendor_code']
+    for selected in (False, True):
+        if selected:
+            loop.run_turn(sid, f"Выбираю {sku}, {offer['qty_min']} шт.", llm=model)
+        result = loop.run_turn(sid, 'Какой из этих вариантов мне подойдёт?', llm=model)
+        assert sku in result['reply'] and '?' in result['reply']
+        if selected:
+            assert f"{offer['qty_min']} шт." in result['reply']
+        assert len(model.calls) == 1
+
+
+def test_queue_and_taken_visible_before_first_manager_reply(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.web import server
+    client = TestClient(server.app)
+    who = {'client_id': 'synthetic-10849'}
+    called = client.post('/api/chat/handoff', json=who).json()
+    sid = called['session_id']
+    hid = store.open_handoff(sid)['id']
+    # Queue and operator messages must not become drafts or need a model slot.
+    store.set_setting(server.REVIEW, '1')
+    monkeypatch.setattr(server, '_slots', None)
+    for state in ('new', 'taken'):
+        if state == 'taken':
+            assert store.take_handoff(hid, 'Fixture')
+        assert client.get(f'/api/session/{sid}', params=who).json()['handoff_status'] == state
+        poll = client.get(f'/api/session/{sid}/answers', params=who)
+        assert poll.headers['X-Handoff-Status'] == state
+        text = f'Дополнение {state}, пишите test@example.invalid'
+        resp = client.post('/api/chat', json={**who, 'session_id': sid, 'message': text})
+        result = json.loads(resp.text.splitlines()[-1])
+        assert ('очереди' if state == 'new' else 'принял') in result['reply']
+        assert result['from'] == 'system' and not result['trace'] and not result['events']
+        assert [m['content'] for m in store.messages(sid) if m['role'] == 'user'].count(text) == 1
+        assert store.open_handoff(sid)['contact'] == 'test@example.invalid'
+        assert not store.pending_draft(sid)
+    assert store.return_handoff(hid)
+    assert client.get(f'/api/session/{sid}/answers', params=who).headers['X-Handoff-Status'] == 'none'
+    model = Scripted(['{"route":"clarify","query":""}'])
+    assert loop.run_turn(sid, 'Нужен совет по автоматизации', llm=model)['reply'] == compact.CLARIFY
+    assert len(model.calls) == 1  # returning ownership actually re-enables consultation
+
+
+@pytest.mark.parametrize('name', ['абоба фет', 'Зонтик Саламандра', 'Quokka Nebula'])
+def test_waiting_buyer_can_add_an_unknown_name_without_a_loop(name):
+    model = Scripted([])
+    sid = loop.run_turn(None, 'Позовите менеджера', llm=model)['session_id']
+    first, second = [loop.run_turn(sid, text, llm=model) for text in (name, name + ' 2')]
+    assert 'очереди' in first['reply'] and 'задач' in first['reply']
+    assert 'обращени' in second['reply'] and 'задач' not in second['reply']
+    assert all(not r['events'] and not r['trace'] and 'передать' not in r['reply'] for r in (first, second))
+    assert not model.calls
+    assert [m['content'] for m in store.messages(sid) if m['role'] == 'user'][-2:] == [name, name + ' 2']
+
+
+def test_new_ticket_after_manager_answer_uses_current_status():
+    from fastapi.testclient import TestClient
+    from app.web import server
+    client = TestClient(server.app)
+    who = {'client_id': 'synthetic-return'}
+    sid = client.post('/api/chat/handoff', json=who).json()['session_id']
+    hid = store.open_handoff(sid)['id']
+    assert store.take_handoff(hid, 'Fixture')
+    assert server.manager_answer(hid, 'Синтетический ответ.', False)
+    def history():
+        return client.get(f'/api/session/{sid}', params=who).json()
+    assert history()['handoff_status'] == 'none'
+    client.post('/api/chat/handoff', json={**who, 'session_id': sid})
+    snapshot = history()
+    assert snapshot['handoff_status'] == 'new'
+    assert any(m['from'] == 'manager' for m in snapshot['messages'])

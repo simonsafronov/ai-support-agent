@@ -440,7 +440,7 @@ def chat(body: ChatIn):
             with session_lock(sid):
                 store.stale_drafts(sid)  # клиент написал снова: неразобранный черновик прошлого ответа устарел
                 res = turn_in_slot(sid, text, body, received, q.put)
-            q.put({"type": "reply", **public_reply(res)})
+            q.put({"type": "reply", **public_reply(res), "handoff_status": store.handoff_status(sid)})
         except Exception as e:  # не записалось и обращение: ответ клиенту все равно уходит
             q.put({"type": "reply", "session_id": sid, "reply": loop.FALLBACK, "cards": [], "choices": [],
                    "events": [], "trace": public_trace([{"kind": "error", "name": type(e).__name__}])})
@@ -480,6 +480,9 @@ def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event) -
     обычно, а ответ ложится черновиком (store.drafting). Канал получает шаги хода и поле review со сроком и текстом
     ожидания; текст, карточки и КП клиент получит через deliver, когда менеджер отправит черновик.
     """
+    # Human-owned messages require neither a model slot nor manager review of a draft.
+    if receipt := loop.handoff_receipt(sid, text):
+        return receipt
     until = received + config.TURN_DEADLINE if config.TURN_DEADLINE else None
     if not _slots.acquire(timeout=None if until is None else max(0.0, until - time.monotonic())):
         return failed_turn(sid, text, TimeoutError(f"нет свободного места у модели за {config.TURN_DEADLINE:.0f} с"))
@@ -547,7 +550,7 @@ class CallIn(BaseModel):
     page_url: str = Field(default="", max_length=500)
 
 
-CALLED = "Позвал менеджера: он ответит в этом чате в рабочее время."
+CALLED = "Обращение в очереди. Менеджер ответит в этом чате в рабочее время."
 
 
 @app.post("/api/chat/handoff")
@@ -564,10 +567,12 @@ def call_manager(body: CallIn):
             hid, created = store.handoff(sid, "клиент позвал менеджера кнопкой", said, s["facts"].get("контакт", ""))
         else:
             hid = ticket["id"]
-        reply = CALLED + ("" if s["facts"].get("контакт") else " Оставьте, пожалуйста, почту или телефон для связи.")
+        status = ticket['status'] if ticket else 'new'
+        note = 'Менеджер уже принял обращение.' if status == 'taken' else CALLED
+        reply = note + ("" if s["facts"].get("контакт") else " Оставьте, пожалуйста, почту или телефон для связи.")
         events = [{"type": "handoff", "id": hid, "reason": "клиент позвал менеджера кнопкой"}] if created else []
         store.add_message(sid, "assistant", reply, {"cards": [], "choices": [], "events": events})
-    return {"session_id": sid, "reply": reply, "cards": [], "choices": [], "events": public_events(events)}
+    return {"session_id": sid, "reply": reply, "handoff_status": status, "cards": [], "choices": [], "events": public_events(events)}
 
 
 @app.get("/api/session/{session_id}")
@@ -592,7 +597,7 @@ def session(request: Request, response: Response, session_id: str, client_id: st
             msg["trace"], traced = steps_trace(turns.get(turn, [])), True
         messages.append(msg)
     usage = {k: s[k] for k in ("llm_calls", "tool_calls", "prompt_tokens", "completion_tokens")}
-    out = {"session_id": s["id"], "status": s["status"], "messages": messages,
+    out = {"session_id": s["id"], "status": s["status"], "handoff_status": store.handoff_status(session_id), "messages": messages,
            "usage": {**usage, "cost_rub": loop.cost_rub(s["prompt_tokens"], s["completion_tokens"])}}
     draft = store.pending_draft(session_id)
     if draft:  # ответ на последнюю реплику ждет проверки менеджера: чат показывает срок и шаги хода, но не текст
@@ -625,6 +630,7 @@ def session_answers(request: Request, response: Response, session_id: str, clien
                           "cards": m["meta"].get("cards", []), "choices": m["meta"].get("choices", []),
                           "events": public_events(m["meta"].get("events", []))})
     invoice_cookie(request, response, s, found)
+    response.headers['X-Handoff-Status'] = store.handoff_status(session_id)
     return {"answers": found}
 
 

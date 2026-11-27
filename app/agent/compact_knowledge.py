@@ -27,6 +27,32 @@ _GENERIC = {s for s, _ in search.query_terms(
     'инструкция меню личный профиль вкладка интерфейс настройка')}
 
 
+# Words about asking/choosing do not identify *what* the buyer is asking about.
+_CONVERSATION = {s for s, _ in search.query_terms(
+    'знать знаю понимаю разобраться решить определиться выбор выбрать выбирать выберите подобрать подбор '
+    'посоветуйте порекомендуйте предложите помочь помогите помощь нужен нужна лучше лучший всего '
+    'подойдет подходящий подходят предпочесть взять посоветуете отличаются отличие разница сравнить '
+    'программа продукт софт вариант этих них какой-нибудь что-нибудь затрудняюсь сомневаюсь вопрос ищу')}
+_HELP_SCAFFOLD = _CONVERSATION | _GENERIC | {s for s, _ in search.query_terms(
+    'настроить включить отключить изменить сменить восстановить лицензию нажать использовать')}
+
+
+_UI_CONTEXT = {s for s, _ in search.query_terms('личный кабинет страница раздел меню интерфейс')}
+
+
+def buyer_terms(text):
+    return {s for s, _ in search.query_terms(text, fallback=False)} - _CONVERSATION
+
+
+def fits_buyer(item, original):
+    # bm25 ranks OR hits *within* one corpus; it isn't an absolute confidence.
+    # Require a specific subject AND coverage of the request (including its action).
+    needed = buyer_terms(original) - _UI_CONTEXT
+    subject = {s for s in needed - _HELP_SCAFFOLD if not s.isdigit()}
+    topic = buyer_terms(item.get('title', '') + ' ' + item.get('heading', ''))
+    return (bool(subject & topic) or len(subject) >= 2) and needed <= buyer_terms(item.get('snippet', ''))
+
+
 def _terms(text: str) -> set[str]:
     return {s for s, _ in search.query_terms(text)} - _GENERIC
 

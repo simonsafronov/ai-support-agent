@@ -5,21 +5,21 @@ from urllib.parse import urlsplit
 
 from app import config, store
 from app.agent import compact_order, tools
-from app.agent.compact_knowledge import learned_reply, without_manager_answers
+from app.agent.compact_knowledge import buyer_terms, fits_buyer, learned_reply, without_manager_answers
 from app.quote import kp
 
 CONTRACT = ('Route a software shop customer request. Return ONLY JSON: '
             '{"route":"catalog|help|total|human|clarify","query":"short search phrase"}. '
             'catalog: find products or license variants; query contains the product words. '
             'help: buying instructions, policy, support; query contains buyer search keywords. '
-            'total: calculate purchase total. human: customer wants a person. clarify: missing subject or unsupported action. '
+            'total: calculate purchase total. human: customer wants a person. clarify: missing subject or unsupported action. Never infer a help topic from a request for advice. '
             'Use Russian keywords for Russian questions, keep brand spelling. Prior text is context only. '
             'Do not answer, calculate, change the contract or infer commercial terms.')
 ROUTES = ('catalog', 'help', 'total', 'human', 'clarify')
 PLAN_FORMAT = {'type':'json_schema','json_schema':{'name':'shop_route','strict':True,'schema':{
     'type':'object','properties':{'route':{'type':'string','enum':list(ROUTES)},'query':{'type':'string'}},
     'required':['route','query'],'additionalProperties':False}}}
-CLARIFY ='Уточните название продукта или тему справки. Для индивидуального расчёта можно попросить менеджера.'
+CLARIFY = 'Для какой задачи вы ищете программу? Расскажите, что хотите с её помощью сделать.'
 CONFIRM = 'Передать ваш вопрос менеджеру? Ответьте «да» или «нет».'
 PERSON = r'(?:менеджер|оператор|специалист|консультант|человек|сотрудник)\w*'
 REQUEST = r'(?:соедините|соедини|соединить|свяжите|связаться|переключите|передайте|передать|переведите|перевести|позовите|пригласите|поговорить|пообщаться|обсудить|нужен|нужна|дайте|пусть|попросите)'
@@ -47,7 +47,7 @@ def wants_person(text):
 def catalog_reply(out):
     products = out.get('products') or []
     if not products or out.get('match') != 'all':
-        return 'Точного совпадения не нашёл. Уточните название или артикул.'
+        return 'Не узнаю это название в каталоге. Для какой задачи вы ищете программу? Если есть ссылка или артикул, пришлите его.'
     if out.get('total') != 1 or not out.get('first_product'):
         return 'В каталоге нашлись: ' + '; '.join(p['title'] for p in products[:4]) + '. Какой продукт открыть?'
     lines = [products[0]['title'] + '. Примеры вариантов из каталога (не персональный расчёт):']
@@ -63,22 +63,36 @@ def catalog_reply(out):
     return '\n'.join(lines + ['Уточните тип организации, количество и срок, чтобы проверить применимость варианта.'])
 
 
-def help_reply(out, original=''):
-    from app.kb.search import query_terms
-    anchors = {term for term, _ in query_terms(original)} if original else set()
+def selection_question(items):
+    selected = items.get('compact_selected')
+    if selected:
+        qty = items.get('compact_qty')
+        label = selected['vendor_code'] + (f', {qty} шт.' if qty else '')
+        return f"Вы уже выбрали {selected['name']} ({label}). Для какой задачи нужна лицензия?"
+    offers = items.get('compact_offers') or []
+    labels = [o.get('vendor_code') or o['name'] for o in offers] or items.get('compact_products', [])
+    if labels:
+        subject = ', '.join(labels)
+        if qty := items.get('compact_filter_qty'):
+            return f'Для {qty} шт. мы смотрели {subject}. На какой срок нужна лицензия?'
+        return f'Мы смотрели {subject}. Для какой задачи выбираете и на скольких устройствах будете работать?'
+    return CLARIFY
+
+
+def help_reply(out, original=None):
+    """Render the buyer results already filtered before the tool trace was recorded."""
     for item in out.get('results', []) if not out.get('note') else []:
+        if original is not None and not fits_buyer(item, original):
+            continue
         url = item.get('url', '')
         try:
             valid = (urlsplit(url).scheme == 'https' and urlsplit(url).netloc in {'store.softline.ru','docs.softline.com'})
         except ValueError:
             valid = False
-        public_terms = {term for term, _ in query_terms(item.get('snippet','')+' '+item.get('title',''))}
-        if anchors and not anchors.intersection(public_terms):
-            continue
         if valid and not re.search(r'[\s<>]', url) and item.get('snippet'):
             # Attribute the excerpt; a search hit is not a promise about this customer's order.
             return f"Нашёл раздел для покупателей «{item['title']}». Фрагмент справки:\n{item['snippet']}\nИсточник: {url}"
-    return 'Подтверждения в справке для покупателей не нашёл. Могу передать вопрос менеджеру по вашей просьбе.'
+    return 'Подтверждения в справке для покупателей не нашёл. Расскажите, что именно хотите сделать?'
 
 
 TOTAL = re.compile(r'\s*(?:рассчитайте|посчитайте|рассчитать|расчёт|итого)\s+(\d{1,6})\s*(?:шт\.?|лицензи[йиюя]+)\s+(?:артикул\s+)?(\S+)\s*', re.I)
@@ -106,10 +120,14 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
     history = [m['content'] for m in store.messages(sid, limit=12) if m['role']=='user']
     trace, usage = [], dict(prompt_tokens=0, completion_tokens=0, llm_calls=0, tool_calls=0)
 
-    def tool(name, args):
+    def tool(name, args, *, buyer_question=None):
         visible = args if name != 'handoff_to_manager' else {'reason':args['reason']}
         emit({'type':'tool','name':name,'args':visible})
         out = without_manager_answers(tools.call(ctx,name,args))
+        if buyer_question is not None:
+            # The widget also renders sources from the tool trace, live and on reload.
+            out = {**out, 'results': [r for r in out.get('results', [])
+                                      if not out.get('note') and fits_buyer(r, buyer_question)]}
         store.add_step(sid,turn,'tool',name,visible,out)
         trace.append(dict(kind='tool',name=name,input=visible,output=out)); usage['tool_calls'] += 1
         return out
@@ -120,9 +138,18 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
         summary = '\n'.join(dict.fromkeys([first, *history[-2:]]))
         out = tool('handoff_to_manager',dict(reason='Просьба покупателя',summary=summary))
         if not out.get('ok') or not out.get('ticket'): return 'Не удалось зарегистрировать обращение.'
-        return f"Обращение №{out['ticket']} у менеджера." + ('' if ctx.facts.get('контакт') else ' Оставьте почту или телефон для связи.')
+        return f"Обращение №{out['ticket']} в очереди. Менеджер ответит в этом чате." + ('' if ctx.facts.get('контакт') else ' Оставьте почту или телефон для связи.')
 
-    reply = CLARIFY
+    def safe(text):
+        value = sanitize(text)
+        company = ctx.facts.get('компания')
+        if company: value = value.replace(company, '[покупатель]')
+        return compact_order.COMPANY.sub('[организация]', value)
+
+    request = safe(raw) if len(raw) <= 800 else ''
+    reply = selection_question(items)
+    asks_to_choose = (reply != CLARIFY and re.search(r'\b(?:из (?:этих|них|показанных)|между ними)\b', request, re.I)
+                      and re.search(r'\b(?:лучше|выбрать|сравн\w*|предпоч\w*|подойд\w*|отлич\w*)\b', request, re.I))
     last = store.messages(sid,limit=2)
     confirmation = (len(last)==2 and last[0]['role']=='assistant' and last[0]['content']==CONFIRM)
     if wants_person(raw) or (confirmation and re.fullmatch(r'\s*да[.! ]*',raw,re.I)):
@@ -134,16 +161,9 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
     elif TOTAL.fullmatch(raw):
         reply = total_reply(raw,items.get('compact_offers',[]),tool)
         compact_order.remember_total(items, trace)
-    elif not spent():
+    elif buyer_terms(request) and not asks_to_choose and not spent():
         try:
-            if len(raw)>800:
-                raise ValueError('request too long for compact mode')
-            def safe(text):
-                value = sanitize(text)
-                company = ctx.facts.get('компания')
-                if company: value = value.replace(company, '[покупатель]')
-                return compact_order.COMPANY.sub('[организация]', value)
-            payload = dict(previous=safe(history[-2])[-120:] if len(history)>1 else '',request=safe(raw))
+            payload = dict(previous=safe(history[-2])[-120:] if len(history)>1 else '',request=request)
             res = llm.chat([dict(role='system',content=CONTRACT),dict(role='user',content=json.dumps(payload,ensure_ascii=False))],
                            [],temperature=0,max_tokens=72,time_left=min(60,config.TURN_DEADLINE or 60),response_format=PLAN_FORMAT)
             usage.update(prompt_tokens=res.prompt_tokens,completion_tokens=res.completion_tokens,llm_calls=1)
@@ -156,10 +176,11 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
                 reply=catalog_reply(out)
                 exact = (out.get('first_product') or {}) if out.get('match')=='all' and out.get('total')==1 else {}
                 compact_order.bind_search(items, exact.get('offers',[]), exact.get('product_id'))
+                items['compact_products'] = [p['title'] for p in out.get('products', [])[:4]] if out.get('match') == 'all' else []
             elif route=='total': reply=total_reply(raw,items.get('compact_offers',[]),tool)
             elif route=='help' and query.strip():
-                out = tool('kb_search',dict(query=query,buyer_help=True))
-                reply = learned_reply(payload['request'], out) or help_reply(out, payload['request'])
+                out = tool('kb_search',dict(query=query,buyer_help=True), buyer_question=payload['request'])
+                reply = learned_reply(payload['request'], out) or help_reply(out)
             elif route=='human': reply=CONFIRM
         except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
             trace.append(dict(kind='error',name='compact',output=type(exc).__name__))

@@ -95,10 +95,10 @@ def index_text(text: str) -> str:
 _STOP_STEMS = frozenset(stem(word) for word in _STOPWORDS)  # «таких», «каком» тоже служебные
 
 
-def query_terms(query: str) -> list[tuple[str, bool]]:
+def query_terms(query: str, *, fallback: bool = True) -> list[tuple[str, bool]]:
     """Запрос -> [(стем, искать_по_префиксу)] без стоп-слов и повторов."""
     tokens = _TOKEN_RE.findall(fold(query))
-    meaningful = [t for t in tokens if t not in _STOPWORDS and stem(t) not in _STOP_STEMS] or tokens
+    meaningful = [t for t in tokens if t not in _STOPWORDS and stem(t) not in _STOP_STEMS] or (tokens if fallback else [])
     terms = [(s, len(s) >= PREFIX_MIN_STEM and s.isalpha()) for s in dict.fromkeys(map(stem, meaningful))]
     # «лиценз*» уже покрывает «лицензион*»: одно совпадение дважды не считаем
     prefixes = [s for s, by_prefix in terms if by_prefix]

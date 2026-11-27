@@ -149,7 +149,7 @@ def drafting(minutes: int | None):
 def add_message(session_id: str, role: str, content: str, meta: dict | None = None) -> int:
     """Реплика в переписку. Ответ агента в ходе под drafting становится черновиком: возвращается его номер."""
     minutes = getattr(_drafting, "minutes", None)
-    if role == "assistant" and minutes is not None:
+    if role == "assistant" and minutes is not None and (meta or {}).get("from") != "system":
         cur = db().execute("INSERT INTO drafts(session_id, ts, content, meta_json, minutes) VALUES(?,?,?,?,?)",
                            (session_id, time.time(), content, _j(meta or {}), minutes))
         db().commit()
@@ -281,9 +281,14 @@ def add_handoff(session_id: str, reason: str, summary: str, contact: str) -> int
 
 
 def open_handoff(session_id: str) -> dict | None:
-    row = db().execute("SELECT id, reason, summary, contact FROM handoffs WHERE session_id=? "
+    row = db().execute("SELECT id, status, reason, summary, contact FROM handoffs WHERE session_id=? "
                        "AND status IN ('new', 'taken') ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
     return dict(row) if row else None
+
+
+def handoff_status(session_id: str) -> str:
+    ticket = open_handoff(session_id)
+    return ticket['status'] if ticket else 'none'
 
 
 def update_handoff(handoff_id: int, summary: str, contact: str):
