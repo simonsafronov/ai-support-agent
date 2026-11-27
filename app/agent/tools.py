@@ -96,7 +96,7 @@ def _get_product(ctx, product_id: str, quantity: int | None = None, card_section
         filters.update(users=quantity, nodes=quantity, qty=quantity)
     res = catalog.get_product(str(product_id), filters=filters, limit=6)
     if res.get("product"):  # описание со страницы товара: для чего продукт и чем отличается от соседних
-        res["product"]["about"] = cards.about(res["product"]["product_id"], res["product"].get("url"))
+        res["product"]["about"] = cards.about(res["product"]["product_id"], res["product"].get("url"), fetch=not config.COMPACT_LOCAL)
     return res
 
 

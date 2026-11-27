@@ -32,6 +32,7 @@ CASES_ADDED = Path(env("CASES_ADDED", str(ROOT / "data/cases_added.jsonl")))
 
 # Модель: gigachat | openai (любой OpenAI-совместимый сервис, в том числе on-prem через vLLM) |
 # bridge (разработка без ключа: запросы к модели идут файлами через BRIDGE_DIR, см. app/agent/bridge.py)
+COMPACT_LOCAL = env("COMPACT_LOCAL", "0") == "1"  # opt-in: short local router rather than full agent
 LLM_PROVIDER = env("LLM_PROVIDER", "gigachat")
 LLM_MODEL = env("LLM_MODEL", "GigaChat-2-Max")
 LLM_LABEL = env("LLM_LABEL", "") or LLM_MODEL  # имя модели для экрана: чат и экран оператора показывают его

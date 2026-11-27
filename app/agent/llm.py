@@ -156,7 +156,7 @@ class OpenAICompat:
             raise LLMError("не задан LLM_BASE_URL")
         self.base_url, self.model = base_url.rstrip("/"), model
         self.client = httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT),
-                                   headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
+                                   headers={"Authorization": f"Bearer {api_key}"} if api_key else {}, trust_env=not config.COMPACT_LOCAL)
 
     @staticmethod
     def _to_wire(messages: list[dict]) -> list[dict]:
@@ -175,10 +175,12 @@ class OpenAICompat:
         return out
 
     def chat(self, messages: list[dict], tools: list[dict], temperature: float = 0.1,
-             max_tokens: int = 1200, time_left: float | None = None) -> LLMResult:
+             max_tokens: int = 1200, time_left: float | None = None, response_format: dict | None = None) -> LLMResult:
         """time_left: секунд до конца хода клиента; запрос и его повторы в него укладываются."""
         body = {"model": self.model, "messages": self._to_wire(messages), "temperature": temperature,
                 "max_tokens": max_tokens}
+        if response_format is not None:
+            body["response_format"] = response_format
         if tools:
             body["tools"] = [{"type": "function", "function": {
                 "name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]

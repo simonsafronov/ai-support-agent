@@ -406,6 +406,9 @@ _PAYMENT_ONLY = re.compile(
 def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: str = "", llm=None,
              on_event=None) -> dict:
     """Один ход: сообщение клиента -> ответ агента с карточками, кнопками и следом шагов."""
+    if config.COMPACT_LOCAL:
+        from app.agent import compact
+        compact.validate_local()
     llm = llm or get_llm()
     emit = on_event or (lambda e: None)
     s = store.get_session(session_id, client_id, page_url)
@@ -421,6 +424,8 @@ def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: s
     if requisites:  # так же кодом запоминаются ИНН и КПП: в графу "Заказчик" они попадут без участия модели
         tools.save_facts(ctx, requisites)
     s["facts"] = dict(ctx.facts)
+    if config.COMPACT_LOCAL:
+        return compact.run(llm, ctx, turn, emit, for_model, cost_rub, budget_spent, s['items'])
     items = s["items"]
     known = {float(o["price"]) for o in items.get("offers", []) if o.get("price")}
     known.update(items.get("prices", []))  # суммы из прошлых ходов: итог расчета или КП можно повторить
