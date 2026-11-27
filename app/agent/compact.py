@@ -4,7 +4,7 @@ import re
 from urllib.parse import urlsplit
 
 from app import config, store
-from app.agent import compact_order, consult, tools
+from app.agent import billing_request, compact_order, consult, tools
 from app.agent.compact_knowledge import (
     buyer_procedure, buyer_terms, choosing_software, fits_buyer, learned_reply,
     support_followup, without_manager_answers,
@@ -137,12 +137,18 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
         trace.append(dict(kind='tool',name=name,input=visible,output=out)); usage['tool_calls'] += 1
         return out
 
-    def handoff():
+    def handoff(reason='Просьба покупателя'):
         # The original request and buyer contact stay in the app; do not ask the LLM to rephrase them.
         first = store.db().execute("SELECT content FROM messages WHERE session_id=? AND role='user' ORDER BY id LIMIT 1", (sid,)).fetchone()[0]
         summary = '\n'.join(dict.fromkeys([first, *history[-2:]]))
-        out = tool('handoff_to_manager',dict(reason='Просьба покупателя',summary=summary))
+        out = tool('handoff_to_manager',dict(reason=reason,summary=summary))
         if not out.get('ok') or not out.get('ticket'): return 'Не удалось зарегистрировать обращение.'
+        if reason == 'Оформление счёта на оплату':
+            units = billing_request.specified_units(raw)
+            scope = f' В запросе указано: {units}.' if units else ''
+            return (f"Запрос на оформление счёта на оплату передан менеджеру, обращение №{out['ticket']}.{scope} "
+                    'Менеджер получил ваши параметры и уточнит недостающие реквизиты покупателя в этом чате. '
+                    'Счёт ещё не выставлен, заказ и платёж не созданы.')
         return f"Обращение №{out['ticket']} в очереди. Менеджер ответит в этом чате." + ('' if ctx.facts.get('контакт') else ' Оставьте почту или телефон для связи.')
 
     def safe(text):
@@ -167,7 +173,16 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
     proposed = items.pop('consult_confirm_quote', None)
     quote_confirmation = (proposed and proposed==items.get('compact_lines') and len(last)==2
                           and last[0]['role']=='assistant' and 'Сформировать черновик только на эту позицию' in last[0]['content'])
-    if wants_person(raw) or (confirmation and re.fullmatch(r'\s*да[.! ]*',raw,re.I)):
+    billing = billing_request.intent(raw, has_quote=bool(store.last_quote(sid)),
+                                     previous_sample=len(last)==2 and any(e.get('type')=='invoice_form_example' for e in last[0]['meta'].get('events',[])))
+    if billing == 'real':
+        reply = handoff('Оформление счёта на оплату')
+    elif billing == 'form':
+        ctx.events.append({'type':'invoice_form_example'})
+        reply = 'Вот образец формы счёта с вымышленными данными. Не для оплаты. КП, заказ и реальные реквизиты не нужны.'
+    elif billing == 'no_action':
+        reply = 'Ничего не оформляю и не передаю менеджеру. По просьбе могу показать общий образец или передать запрос на счёт на оплату.'
+    elif wants_person(raw) or (confirmation and re.fullmatch(r'\s*да[.! ]*',raw,re.I)):
         reply = handoff()
     elif confirmation and re.fullmatch(r'\s*нет[.! ]*',raw,re.I):
         reply = 'Хорошо, обращение не передаю.'

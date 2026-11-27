@@ -54,6 +54,18 @@ def session_id(chat_id: int) -> str:
     return f"webim-{chat_id}-{tag}"
 
 
+def buyer_chat_id(sid: str):
+    """A private manager reply may only go to the Webim chat that originated this session."""
+    if not config.WEBIM_TOKEN:
+        return None
+    m = re.fullmatch(r'webim-([1-9][0-9]{0,18})-[0-9a-f]{12}', sid)
+    if m and hmac.compare_digest(session_id(int(m[1])), sid):
+        session = store.find_session(sid)
+        if session and session['client_id'] == sid:
+            return int(m[1])
+    return None
+
+
 def first_time(chat_id: int, message: dict) -> bool:
     """Сообщение принято впервые. Webim повторяет доставку события, если не дождался ответа: второго хода нет."""
     key = f"{chat_id}:{message.get('id') or hashlib.sha256(json.dumps(message, sort_keys=True).encode()).hexdigest()}"
@@ -227,6 +239,11 @@ def card_text(c: dict) -> str:
 def redirect(chat_id: int, dep_key: str) -> bool:
     """Перевод чата к людям: в отдел, если он задан, иначе в общую очередь. Отдел не принял чат (все операторы
     офлайн, неверный ключ): общая очередь."""
+    from app.agent import partner_stock
+    if partner_stock.is_stock_ticket(session_id(chat_id)):
+        # Only the configured internal queue. Its rejection is not permission
+        # to forward this chat to a different department or the default queue.
+        return bool(config.WEBIM_DEP_KEY and call('redirect_chat', {'chat_id':chat_id, 'dep_key':config.WEBIM_DEP_KEY}))
     if dep_key and call("redirect_chat", {"chat_id": chat_id, "dep_key": dep_key}):
         return True
     return call("redirect_chat", {"chat_id": chat_id})

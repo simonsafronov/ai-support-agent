@@ -417,7 +417,12 @@ def buyer_context(s, text):
 def handoff_receipt(sid, text):
     """A taken conversation belongs to the operator. Compact queues also accept notes only."""
     ticket = store.open_handoff(sid)
-    if not ticket or (ticket['status'] == 'new' and not config.COMPACT_LOCAL):
+    from app.agent import partner_stock
+    if partner_stock.PARTNER.search(text) or re.match(r'^\s*(да|именно|верно)\b',text,re.I):
+        partner_reply = partner_stock.receipt(sid, text, ticket)
+        if partner_reply is not None:
+            return partner_reply
+    if not ticket or (ticket['status'] == 'new' and not config.COMPACT_LOCAL and not partner_stock.is_stock_ticket(sid,ticket)):
         return None
     store.add_message(sid, 'user', text)
     session = store.get_session(sid)

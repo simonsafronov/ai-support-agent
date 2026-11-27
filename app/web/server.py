@@ -861,7 +861,16 @@ def _manager_answer(handoff_id: int, answer: str, teach: bool) -> dict | None:
     asked = [m["content"] for m in store.messages(h["session_id"]) if m["role"] == "user"][-3:]
     # вопрос и ответ остаются в знаниях дольше диалога и уходят в модель: контакты и реквизиты из них убираются
     question = _for_knowledge(" ".join(asked))[:600] + " | " + h["reason"] + ": " + _for_knowledge(h["summary"])
-    return answers.add(handoff_id, answer, teach, question, _for_knowledge(answer))
+    done = answers.add(handoff_id, answer, teach, question, _for_knowledge(answer))
+    if done and h['session_id'].startswith('webim-'):
+        from app import webim
+        from app.agent import partner_stock
+        chat_id = webim.buyer_chat_id(h['session_id'])
+        if chat_id is not None and partner_stock.is_stock_ticket(h['session_id'], h):
+            # A Webim visitor cannot poll the website inbox. Use only the authenticated
+            # originating chat, never an address or department from the buyer's text.
+            done['webim_delivered'] = webim.send(chat_id, {'kind':'operator', 'text':webim.plain(answer)})
+    return done
 
 
 @app.post("/api/admin/handoff/{handoff_id}/answer", dependencies=[Depends(admin)])
@@ -973,9 +982,10 @@ def review_draft(draft_id: int, action: str, answer: str = "") -> dict | None:
     else:
         hid = manager_handoff(sid, MANAGER_TAKES[action])
         if action == "edit":
-            manager_answer(hid, answer)
-            deliver(sid, {"session_id": sid, "reply": answer, "from": "manager", "cards": [], "choices": [],
-                          "events": [], "trace": []})
+            done = manager_answer(hid, answer)
+            if 'webim_delivered' not in (done or {}):
+                deliver(sid, {"session_id": sid, "reply": answer, "from": "manager", "cards": [], "choices": [],
+                              "events": [], "trace": []})
     return {"ok": True, "status": DECIDED[action]}
 
 

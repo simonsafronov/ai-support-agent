@@ -182,6 +182,10 @@ function showReply(r, restoring = false) {
   for (const e of r.events || []) {
     if (e.type === "spec") add("card spec", specTable(e));
     if (e.type === "quote") quote(e);
+    if (e.type === "invoice_form_example") {
+      // A public, immutable teaching form. Never use a URL from the conversation.
+      add("card doc", '<div class="t">Образец формы · не для оплаты</div><a class="go" href="/invoice-form-example.html" target="_blank" rel="noopener">Открыть пример</a>');
+    }
     if (e.type === "demo_invoice" && (r.from === "manager" || r.from === "agent") && /^\/api\/session\/[\w-]+\/invoices\/\d+\.pdf$/.test(e.url)) {
       add("card doc", `<div class="t">Демонстрационный счёт</div><div class="row"><span>Не для оплаты</span>
         <span class="acts"><a class="go" href="${esc(e.url)}" target="_blank" rel="noopener">Открыть PDF</a></span></div>`);
