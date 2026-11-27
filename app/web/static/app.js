@@ -169,7 +169,9 @@ function showReply(r, restoring = false) {
   if (r.reply) {
     const mgr = r.from === "manager";
     const ok = r.reviewed ? '<span class="ok">проверено менеджером</span>' : "";
-    add(mgr ? "msg bot mgr" : "msg bot", `<span class="who">${mgr ? "Менеджер Softline" : "ИИ-консультант"}${ok}</span>${text(r.reply)}`);
+    // подпись "Менеджер Softline" уже над сообщением; приставка в тексте нужна модели в истории диалога, клиенту нет
+    const body = mgr ? String(r.reply).replace(/^Ответ менеджера:\s*/, "") : r.reply;
+    add(mgr ? "msg bot mgr" : "msg bot", `<span class="who">${mgr ? "Менеджер Softline" : "ИИ-консультант"}${ok}</span>${text(body)}`);
     if (mgr) callState("in");
   }
   for (const c of r.cards || []) add("card", card(c)).querySelector(".take")?.addEventListener("click", (e) => send(e.target.dataset.say));
