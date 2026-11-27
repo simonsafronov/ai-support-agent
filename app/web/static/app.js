@@ -46,6 +46,9 @@ const ARG = {
   items: "позиции", discount_percent: "скидка", customer: "заказчик", reason: "причина",
 };
 
+// измерения вариантов, которые агент предлагает уточнить (clarify из get_product)
+const DIM = { users_max: "число пользователей", nodes: "число устройств", qty: "количество", lang: "язык" };
+
 function arg(k, v) {
   if (k === "term_months") return v ? v + " мес." : "бессрочная";
   if (k === "discount_percent") return v + "%";
@@ -199,7 +202,7 @@ function summary(name, out) {
     return p.length ? esc(`Найдено: ${out.total ?? p.length}. Первые: ${p.slice(0, 3).map((x) => x.title).join("; ")}`) : "Ничего не найдено";
   }
   if (name === "get_product") {
-    const c = (out.clarify || []).slice(0, 3).join(", ");
+    const c = (out.clarify || []).slice(0, 3).map((k) => DIM[k] || ARG[k] || k).join(", ");
     return esc(`Подходит вариантов: ${out.matching ?? "?"} из ${out.total_offers ?? "?"}${c ? ". Уточнить: " + c : ""}`);
   }
   if (name === "browse_categories") return esc((out.categories || []).slice(0, 4).map((x) => x.name).join("; ")) || "Категорий не найдено";
