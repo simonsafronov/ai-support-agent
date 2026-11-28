@@ -414,7 +414,7 @@ def buyer_context(s, text):
     return ctx
 
 
-def handoff_receipt(sid, text):
+def handoff_receipt(sid, text, *, queue_only=False):
     """A taken conversation belongs to the operator. Compact queues also accept notes only."""
     ticket = store.open_handoff(sid)
     from app.agent import partner_stock
@@ -422,7 +422,7 @@ def handoff_receipt(sid, text):
         partner_reply = partner_stock.receipt(sid, text, ticket)
         if partner_reply is not None:
             return partner_reply
-    if not ticket or (ticket['status'] == 'new' and not config.COMPACT_LOCAL and not partner_stock.is_stock_ticket(sid,ticket)):
+    if not ticket or (ticket['status'] == 'new' and not queue_only and not config.COMPACT_LOCAL and not partner_stock.is_stock_ticket(sid,ticket)):
         return None
     store.add_message(sid, 'user', text)
     session = store.get_session(sid)
@@ -447,22 +447,25 @@ def handoff_receipt(sid, text):
 
 
 def run_turn(session_id: str | None, text: str, client_id: str = "", page_url: str = "", llm=None,
-             on_event=None) -> dict:
+             on_event=None, hosted=None) -> dict:
     """Один ход: сообщение клиента -> ответ агента с карточками, кнопками и следом шагов."""
-    if config.COMPACT_LOCAL:
+    if config.COMPACT_LOCAL or hosted is not None:
         from app.agent import compact
-        compact.validate_local()
+        if hosted is None:
+            compact.validate_local()
     emit = on_event or (lambda e: None)
     s = store.get_session(session_id, client_id, page_url)
     sid = s["id"]
-    if receipt := handoff_receipt(sid, text):
+    if receipt := handoff_receipt(sid, text, queue_only=hosted is not None):
         return receipt
-    llm = llm or get_llm()
     turn = sum(1 for m in store.messages(sid) if m["role"] == "user") + 1
     store.add_message(sid, "user", text)
 
     ctx = buyer_context(s, text)
     s["facts"] = dict(ctx.facts)
+    if hosted is not None:
+        return compact.run(None, ctx, turn, emit, for_model, cost_rub, budget_spent, s['items'], hosted=hosted)
+    llm = llm or get_llm()
     if config.COMPACT_LOCAL:
         return compact.run(llm, ctx, turn, emit, for_model, cost_rub, budget_spent, s['items'])
     items = s["items"]

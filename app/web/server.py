@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from functools import partial
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -30,7 +31,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import cases, config, economy, insights, notify, store
-from app.agent import handoff_card, llm, loop, proof
+from app.agent import handoff_card, llm, loop, proof, sitechat
 from app.catalog import search as catalog, update as catalog_update
 from app.kb import answers, search as kb
 from app.quote import delivery as invoice_delivery, invoice
@@ -418,9 +419,11 @@ class ChatIn(BaseModel):
 @app.get("/api/health")
 def health():
     c = catalog.stats()
+    model = ({"model": None, "provider": "sitechat", "label": sitechat.LABEL, "online": None}
+             if sitechat.PROVIDER == "sitechat" else
+             {"model": config.LLM_MODEL, "provider": config.LLM_PROVIDER, "label": config.LLM_LABEL, "online": llm.model_online()})
     return {"ok": True, "offers": c["offers"], "products": c["products"], "feed_date": c.get("feed_date"),
-            "kb_chunks": kb.stats()["chunks"], "model": config.LLM_MODEL, "provider": config.LLM_PROVIDER,
-            "label": config.LLM_LABEL, "online": llm.model_online(), "prices_at": catalog_update.prices_at()}
+            "kb_chunks": kb.stats()["chunks"], **model, "prices_at": catalog_update.prices_at()}
 
 
 STREAM_POLL, STREAM_WAIT = 0.1, 20  # секунд: как часто поток ответа смотрит в очередь; молчание до строки "wait"
@@ -439,10 +442,11 @@ def chat(body: ChatIn):
         try:
             with session_lock(sid):
                 store.stale_drafts(sid)  # клиент написал снова: неразобранный черновик прошлого ответа устарел
-                res = turn_in_slot(sid, text, body, received, q.put)
+                res = turn_in_slot(sid, text, body, received, q.put, hosted_shop=sitechat.PROVIDER == "sitechat")
             q.put({"type": "reply", **public_reply(res), "handoff_status": store.handoff_status(sid)})
         except Exception as e:  # не записалось и обращение: ответ клиенту все равно уходит
-            q.put({"type": "reply", "session_id": sid, "reply": loop.FALLBACK, "cards": [], "choices": [],
+            reply = "Не удалось подтвердить ответ или передачу менеджеру." if sitechat.PROVIDER == "sitechat" else loop.FALLBACK
+            q.put({"type": "reply", "session_id": sid, "reply": reply, "cards": [], "choices": [],
                    "events": [], "trace": public_trace([{"kind": "error", "name": type(e).__name__}])})
         q.put(None)
 
@@ -470,7 +474,7 @@ def chat(body: ChatIn):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event) -> dict:
+def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event, *, hosted_shop=False) -> dict:
     """Ход агента на свободном месте у модели (MAX_PARALLEL_TURNS) в срок TURN_DEADLINE с приема сообщения.
 
     Место не освободилось до срока: ход не начинается, клиент получает ответ о передаче, а менеджер обращение,
@@ -481,7 +485,7 @@ def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event) -
     ожидания; текст, карточки и КП клиент получит через deliver, когда менеджер отправит черновик.
     """
     # Human-owned messages require neither a model slot nor manager review of a draft.
-    if receipt := loop.handoff_receipt(sid, text):
+    if receipt := loop.handoff_receipt(sid, text, queue_only=hosted_shop):
         return receipt
     until = received + config.TURN_DEADLINE if config.TURN_DEADLINE else None
     if not _slots.acquire(timeout=None if until is None else max(0.0, until - time.monotonic())):
@@ -489,8 +493,9 @@ def turn_in_slot(sid: str, text: str, body: ChatIn, received: float, on_event) -
     try:
         minutes = review_minutes(sid, text) if review_on() else None
         with store.drafting(minutes) as held:
-            res = loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=on_event,
-                                llm=llm.Limited(loop.get_llm(), until) if until else None)
+            engine = ({"hosted": partial(sitechat.answer, until=until)} if hosted_shop else
+                      {"llm": llm.Limited(loop.get_llm(), until) if until else None})
+            res = loop.run_turn(sid, text, client_id=body.client_id, page_url=body.page_url, on_event=on_event, **engine)
         if held:
             res = {**res, "reply": "", "cards": [], "choices": [], "events": [], "review": review_note(minutes)}
         return res

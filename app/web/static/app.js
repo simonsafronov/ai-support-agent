@@ -463,9 +463,12 @@ setInterval(answersPoll, 4000);
 async function model() {
   try {
     const h = await (await fetch("/api/health")).json(), el = $("model");
-    el.textContent = h.online ? `Отвечает модель ${h.label}. Цены и суммы проверяет код.`
+    el.textContent = h.provider === "sitechat" ? `${h.label}. Каталог, документы и передача менеджеру — в этом магазине.`
+      : h.online ? `Отвечает модель ${h.label}. Цены и суммы проверяет код.`
       : `Модель ${h.label} сейчас не на связи: вопрос сразу уйдет менеджеру.`;
-    el.classList.toggle("off", !h.online);
+    el.classList.toggle("off", h.online === false);
+    // Sitechat does not report token usage or cost. Do not present local counters as its bill.
+    for (const id of ["m2", "m3"]) $(id).parentElement.hidden = h.provider === "sitechat";
     el.hidden = false;
     state.pricesAt = h.prices_at || 0;
     document.querySelectorAll(".fresh:empty").forEach((e) => (e.textContent = pricesLine()));

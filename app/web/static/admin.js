@@ -272,7 +272,7 @@ function renderProblems(p) {
     || `<li class="empty">${p.rated ? "Проблемных диалогов нет." : "Оценивать пока нечего."}</li>`);
 }
 
-get("/api/health").then((h) => { model = h; $("model").textContent = "модель " + h.label + (h.online ? "" : ", сейчас не на связи"); }).catch(() => {});
+get("/api/health").then((h) => { model = h; $("model").textContent = h.provider === "sitechat" ? "чат сайта: " + h.label : "модель " + h.label + (h.online ? "" : ", сейчас не на связи"); }).catch(() => {});
 
 function catalogLine(cat) {
   const lu = cat.last_update || {};

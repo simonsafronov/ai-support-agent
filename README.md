@@ -103,6 +103,8 @@ cp .env.example .env            # вписать ключ модели и ADMIN_
 
 Каталог можно собрать и из файла: `python -m app.catalog.ingest --feed data/raw/feed.xml`. Контейнер: `docker compose up --build` после сборки баз (том `./data`, порт открыт только на локальный адрес, процесс работает не от root, есть проверка здоровья). Настройки с пояснениями: `.env.example`. Модель меняется настройкой `LLM_PROVIDER`: `openai` (любой OpenAI-совместимый сервис, в том числе свой контур), `gigachat`, `bridge` (мост разработки).
 
+Внешний консультант EmAGI в существующем веб-чате: [включение Sitechat, возврат к локальному Qwen и проверка без сети](docs/sitechat.md). По умолчанию выключен.
+
 Чат Webim: настройки `WEBIM_TOKEN`, `WEBIM_SECRET`, `WEBIM_API_URL`, `WEBIM_DEP_KEY` в `.env`; без `WEBIM_TOKEN` адаптер выключен. Как завести бота в кабинете Webim и проверить адаптер эмулятором: [docs/webim.md](docs/webim.md).
 
 ## Что проверяет код

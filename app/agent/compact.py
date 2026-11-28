@@ -4,7 +4,7 @@ import re
 from urllib.parse import urlsplit
 
 from app import config, store
-from app.agent import billing_request, compact_order, consult, tools
+from app.agent import billing_request, compact_order, compact_spec, consult, quote_choice, request_card, selection_dialog, task_selection, tools
 from app.agent.compact_knowledge import (
     buyer_procedure, buyer_terms, choosing_software, fits_buyer, learned_reply,
     support_followup, without_manager_answers,
@@ -118,7 +118,7 @@ def total_reply(raw, offers, tool):
     return f"{line['name']}: {line['qty']} шт., итого {line['sum']} ₽. {offer.get('org_type','')} {line.get('price_for','')}. Только для выбранного варианта." + (' ' + compact_order.UNAVAILABLE if line.get('available') is False else '')
 
 
-def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
+def run(llm, ctx, turn, emit, sanitize, cost, spent, items, *, hosted=None):
     sid, raw = ctx.session_id, ctx.user_request
     history = [m['content'] for m in store.messages(sid, limit=12) if m['role']=='user']
     trace, usage = [], dict(prompt_tokens=0, completion_tokens=0, llm_calls=0, tool_calls=0)
@@ -163,6 +163,7 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
 
     request = safe(raw) if len(raw) <= 800 else ''
     previous_user = safe(history[-2]) if len(history)>1 else ''
+    card = request_card.prepare(items,request_card.clean(request),turn) if config.COMPACT_REQUEST_CARD else None
     explicit_action = (consult.QUOTE_ACTION.search(request) or compact_order.QUOTE.fullmatch(request.strip('.! '))
                        or TOTAL.fullmatch(raw) or compact_order.delivery.requested(sid))
     reply = selection_question(items)
@@ -186,14 +187,27 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
         reply = handoff()
     elif confirmation and re.fullmatch(r'\s*нет[.! ]*',raw,re.I):
         reply = 'Хорошо, обращение не передаю.'
+    elif config.COMPACT_REQUEST_CARD and request_card.CANCEL.fullmatch(request):
+        consult._reset_selection(items)
+        for key in ('consult', 'compact_products', 'consult_confirm_quote', compact_spec._STATE, quote_choice.KEY, task_selection.KEY, selection_dialog.KEY):
+            items.pop(key,None)
+        reply = 'Текущий подбор отменён. Новый документ или обращение не создаю.'
+    elif (listed := compact_spec.handle(safe(raw), items, tool)) is not None:
+        reply = listed
     elif quote_confirmation and re.fullmatch(r'\s*(?:да(?:,? сформируйте)?|подтверждаю|сформируйте)[.! ]*',request,re.I):
         reply = compact_order._quote(items,tool)
     elif quote_confirmation and re.fullmatch(r'\s*(?:нет|не надо|отмена)[.! ]*',request,re.I):
         reply = 'Хорошо, черновик КП не создаю.'
+    elif (quote_reply := quote_choice.handle(request,items,tool,turn,previous_user,card_fields=card['fields'] if card is not None else None)) is not None:
+        reply = quote_reply
     elif not explicit_action and (followup := support_followup(request, previous_user)):
         reply = followup
     elif not explicit_action and buyer_procedure(request):
         reply = buyer_help(request, request)
+    elif not explicit_action and not asks_to_choose and (answer_to_question := selection_dialog.handle(request,items,tool,turn)) is not None:
+        reply = answer_to_question
+    elif (shortlist_reply := task_selection.handle(request,items,tool,turn)) is not None:
+        reply = shortlist_reply
     elif (consult_reply := consult.handle(request, [safe(t) for t in history], items, tool)) is not None:
         reply = consult_reply
     elif (order_reply := compact_order.handle(ctx, items, tool, catalog_reply)) is not None:
@@ -203,29 +217,52 @@ def run(llm, ctx, turn, emit, sanitize, cost, spent, items):
         compact_order.remember_total(items, trace)
     elif not asks_to_choose and choosing_software(request) and re.search(r'не (?:знаю|понимаю|решил\w*)|затрудняюсь|растерял\w*', request, re.I):
         reply = learned_reply(request, {'results':[]}) or CLARIFY
+    elif hosted is not None:
+        from app.agent import sitechat
+        reply = sitechat.shop_reply(hosted, sid, request, tool, items, catalog_reply)
     elif buyer_terms(request) and not asks_to_choose and not spent():
         try:
-            payload = dict(previous=safe(history[-2])[-120:] if len(history)>1 else '',request=request)
-            res = llm.chat([dict(role='system',content=CONTRACT),dict(role='user',content=json.dumps(payload,ensure_ascii=False))],
-                           [],temperature=0,max_tokens=72,time_left=min(60,config.TURN_DEADLINE or 60),response_format=PLAN_FORMAT)
+            if card is not None:
+                payload = request_card.payload(card,request,[safe(t) for t in history[-4:]],turn)
+                contract,fmt,limit=request_card.CONTRACT,request_card.FORMAT,128
+            else:
+                payload=dict(previous=previous_user[-120:],request=request)
+                contract,fmt,limit=CONTRACT,PLAN_FORMAT,72
+            res = llm.chat([dict(role='system',content=contract),dict(role='user',content=json.dumps(payload,ensure_ascii=False))],
+                           [],temperature=0,max_tokens=limit,time_left=min(60,config.TURN_DEADLINE or 60),response_format=fmt)
             usage.update(prompt_tokens=res.prompt_tokens,completion_tokens=res.completion_tokens,llm_calls=1)
             plan=json.loads(res.text); route=plan['route']; query=plan['query']
             if not isinstance(query,str) or len(query)>160 or route not in ROUTES:
                 raise ValueError('invalid route')
+            ask='none'
+            if card is not None:
+                query,ask=request_card.apply(card,plan,payload)
+                if route=='clarify' or (route=='catalog' and not query):
+                    reply=request_card.question(card,ask,turn)
             store.add_step(sid,turn,'llm',res.model,{},dict(route=route),res.prompt_tokens,res.completion_tokens,res.seconds)
             if route=='catalog' and query.strip():
                 out=tool('search_products',dict(query=query))
-                reply=catalog_reply(out)
+                if card is not None:
+                    narrowed=request_card.narrow(card,out,tool)
+                    reply=(f"Для {out['products'][0]['title']} в проверенных вариантах не подтверждены указанные условия. Какое условие можно изменить?"
+                           if narrowed is not out and not narrowed.get('products') else catalog_reply(narrowed))
+                    out=narrowed
+                else:reply=catalog_reply(out)
                 exact = (out.get('first_product') or {}) if out.get('match')=='all' and out.get('total')==1 else {}
                 compact_order.bind_search(items, exact.get('offers',[]), exact.get('product_id'))
                 items['compact_products'] = [p['title'] for p in out.get('products', [])[:4]] if out.get('match') == 'all' else []
             elif route=='total': reply=total_reply(raw,items.get('compact_offers',[]),tool)
-            elif route=='help' and query.strip():
-                reply = buyer_help(payload['request'],query)
+            elif route=='help' and (query.strip() or card is not None):
+                reply = buyer_help(payload['request'],query or payload['request'])
             elif route=='human': reply=CONFIRM
         except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
             trace.append(dict(kind='error',name='compact',output=type(exc).__name__))
             store.add_step(sid,turn,'error','compact',{},dict(error=type(exc).__name__))
+    elif card is not None and card['fields'] and not asks_to_choose:
+        # A terse answer (e.g. a bare count) need not qualify as a search term.
+        # Keep the facts already recorded; ask only about an unresolved dimension.
+        reply=request_card.question(card,'none',turn)
+    selection_dialog.note(items,reply,turn)
     store.update_session(sid,facts=ctx.facts,items=items)
     store.add_usage(sid,usage['prompt_tokens'],usage['completion_tokens'],usage['llm_calls'],usage['tool_calls'])
     usage['cost_rub']=cost(usage['prompt_tokens'],usage['completion_tokens'])
